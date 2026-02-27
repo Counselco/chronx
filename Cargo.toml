@@ -1,0 +1,89 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/chronx-core",
+    "crates/chronx-crypto",
+    "crates/chronx-dag",
+    "crates/chronx-state",
+    "crates/chronx-consensus",
+    "crates/chronx-timelock",
+    "crates/chronx-recovery",
+    "crates/chronx-p2p",
+    "crates/chronx-rpc",
+    "crates/chronx-node",
+    "crates/chronx-wallet",
+    "crates/chronx-genesis",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["ChronX Protocol"]
+license = "MIT"
+repository = "https://github.com/chronx-protocol/chronx"
+
+[workspace.dependencies]
+# Internal crates
+chronx-core    = { path = "crates/chronx-core" }
+chronx-crypto  = { path = "crates/chronx-crypto" }
+chronx-dag     = { path = "crates/chronx-dag" }
+chronx-state   = { path = "crates/chronx-state" }
+chronx-consensus = { path = "crates/chronx-consensus" }
+chronx-timelock  = { path = "crates/chronx-timelock" }
+chronx-recovery  = { path = "crates/chronx-recovery" }
+chronx-p2p     = { path = "crates/chronx-p2p" }
+chronx-rpc     = { path = "crates/chronx-rpc" }
+chronx-genesis = { path = "crates/chronx-genesis" }
+
+# Serialization
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+bincode      = "1"
+
+# Cryptography
+blake3       = "1"
+sha3         = "0.10"
+pqcrypto-dilithium = "0.5"
+pqcrypto-traits    = "0.3"
+zeroize      = { version = "1", features = ["derive"] }
+
+# Hashing / encoding
+hex          = "0.4"
+bs58         = "0.5"
+
+# Storage — sled: pure-Rust embedded DB (no C/LLVM deps)
+sled         = "0.34"
+
+# Async runtime
+tokio        = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures      = "0.3"
+
+# Networking
+libp2p       = { version = "0.54", features = ["gossipsub", "kad", "noise", "tcp", "yamux", "identify", "ping", "tokio", "macros"] }
+
+# RPC
+jsonrpsee    = { version = "0.24", features = ["server", "client", "http-client", "ws-client", "macros"] }
+
+# HTTP client (wallet)
+reqwest      = { version = "0.12", features = ["json"] }
+
+# CLI
+clap         = { version = "4", features = ["derive"] }
+
+# Logging
+tracing         = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+thiserror    = "2"
+anyhow       = "1"
+chrono       = { version = "0.4", features = ["serde"] }
+rand         = "0.8"
+once_cell    = "1"
+
+[profile.release]
+opt-level    = 3
+lto          = true
+codegen-units = 1
+panic        = "abort"

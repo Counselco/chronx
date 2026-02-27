@@ -1,0 +1,16 @@
+[package]
+name = "chronx-state"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+chronx-core   = { workspace = true }
+chronx-crypto = { workspace = true }
+chronx-dag    = { workspace = true }
+serde         = { workspace = true }
+bincode       = { workspace = true }
+thiserror     = { workspace = true }
+sled          = { workspace = true }
+tracing       = { workspace = true }

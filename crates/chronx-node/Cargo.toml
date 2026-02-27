@@ -1,0 +1,29 @@
+[package]
+name = "chronx-node"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chronx-node"
+path = "src/main.rs"
+
+[dependencies]
+chronx-core      = { workspace = true }
+chronx-crypto    = { workspace = true }
+chronx-state     = { workspace = true }
+chronx-consensus = { workspace = true }
+chronx-p2p       = { workspace = true }
+chronx-rpc       = { workspace = true }
+chronx-genesis   = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+bincode          = { workspace = true }
+thiserror        = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio            = { workspace = true }
+clap             = { workspace = true }
+anyhow           = { workspace = true }
+chrono           = { workspace = true }

@@ -1,0 +1,332 @@
+//! chronx-wallet
+//!
+//! CLI wallet for ChronX. Manages Dilithium2 keypairs, builds and signs
+//! transactions, and submits them to a running node via JSON-RPC.
+//!
+//! Usage:
+//!   chronx-wallet keygen    [--keyfile <path>]
+//!   chronx-wallet transfer  --to <account> --amount <kx> [--rpc <url>] [--keyfile <path>]
+//!   chronx-wallet timelock  --to-pubkey <hex> --amount <kx> --unlock <unix_ts> [--rpc <url>] [--keyfile <path>]
+//!   chronx-wallet claim     --lock-id <hex> [--rpc <url>] [--keyfile <path>]
+//!   chronx-wallet balance   --account <b58> [--rpc <url>]
+//!   chronx-wallet info      [--rpc <url>]
+
+use std::path::PathBuf;
+
+use anyhow::{bail, Context};
+use clap::{Parser, Subcommand};
+use tracing::info;
+
+use chronx_core::{
+    constants::{CHRONOS_PER_KX, POW_INITIAL_DIFFICULTY},
+    transaction::{Action, AuthScheme, Transaction},
+    types::{AccountId, DilithiumPublicKey, TimeLockId, TxId},
+};
+use chronx_crypto::{hash::tx_id_from_body, mine_pow, KeyPair};
+
+mod rpc_client;
+use rpc_client::WalletRpcClient;
+
+// ── CLI definition ────────────────────────────────────────────────────────────
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "chronx-wallet",
+    version,
+    about = "ChronX wallet — sign and submit transactions"
+)]
+struct Args {
+    /// Path to the keyfile (JSON).
+    #[arg(long, global = true, default_value = "~/.chronx/wallet.json")]
+    keyfile: PathBuf,
+
+    /// Node RPC endpoint.
+    #[arg(long, global = true, default_value = "http://127.0.0.1:8545")]
+    rpc: String,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Generate a new Dilithium2 keypair and save to the keyfile.
+    Keygen,
+
+    /// Print the account ID and balance.
+    Balance {
+        /// Account to query (base-58). Defaults to the local keypair's account.
+        #[arg(long)]
+        account: Option<String>,
+    },
+
+    /// Transfer KX to another account.
+    Transfer {
+        /// Recipient account ID (base-58).
+        #[arg(long)]
+        to: String,
+        /// Amount in KX (will be converted to Chronos internally).
+        #[arg(long)]
+        amount: f64,
+    },
+
+    /// Create a time-lock sending KX to a recipient key.
+    Timelock {
+        /// Recipient Dilithium2 public key (hex-encoded).
+        #[arg(long)]
+        to_pubkey: String,
+        /// Amount in KX.
+        #[arg(long)]
+        amount: f64,
+        /// Unlock Unix timestamp (UTC seconds).
+        #[arg(long)]
+        unlock: i64,
+        /// Optional memo (max 256 chars).
+        #[arg(long)]
+        memo: Option<String>,
+    },
+
+    /// Claim a matured time-lock.
+    Claim {
+        /// Lock ID (TxId hex of the creating transaction).
+        #[arg(long)]
+        lock_id: String,
+    },
+
+    /// Initiate account recovery for a target account.
+    Recover {
+        /// Target account (base-58).
+        #[arg(long)]
+        target: String,
+        /// Proposed new owner public key (hex).
+        #[arg(long)]
+        new_key: String,
+        /// Blake3 hash of off-chain evidence (hex, 32 bytes).
+        #[arg(long)]
+        evidence: String,
+        /// Bond amount in KX.
+        #[arg(long)]
+        bond: f64,
+    },
+
+    /// Print genesis/protocol info from the node.
+    Info,
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter("warn,chronx_wallet=info")
+        .init();
+
+    let args = Args::parse();
+    let keyfile = expand_tilde(&args.keyfile);
+    let client = WalletRpcClient::new(&args.rpc);
+
+    match args.command {
+        Command::Keygen => cmd_keygen(&keyfile),
+
+        Command::Balance { account } => {
+            let addr = match account {
+                Some(a) => a,
+                None => {
+                    let kp = load_keypair(&keyfile)?;
+                    kp.account_id.to_b58()
+                }
+            };
+            let bal = client.get_balance(&addr).await?;
+            let bal_kx = bal / CHRONOS_PER_KX;
+            println!("Account:  {}", addr);
+            println!("Balance:  {} KX  ({} Chronos)", bal_kx, bal);
+            Ok(())
+        }
+
+        Command::Transfer { to, amount } => {
+            let kp = load_keypair(&keyfile)?;
+            let to_id = AccountId::from_b58(&to)
+                .map_err(|e| anyhow::anyhow!("invalid account: {e}"))?;
+            let chronos = kx_to_chronos(amount);
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::Transfer { to: to_id, amount: chronos }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Submitted: {}", tx_id);
+            Ok(())
+        }
+
+        Command::Timelock { to_pubkey, amount, unlock, memo } => {
+            let kp = load_keypair(&keyfile)?;
+            let pk_bytes =
+                hex::decode(&to_pubkey).context("decoding recipient public key hex")?;
+            let chronos = kx_to_chronos(amount);
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::TimeLockCreate {
+                    recipient: DilithiumPublicKey(pk_bytes),
+                    amount: chronos,
+                    unlock_at: unlock,
+                    memo,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("TimeLock created: {}", tx_id);
+            Ok(())
+        }
+
+        Command::Claim { lock_id } => {
+            let kp = load_keypair(&keyfile)?;
+            let lock_txid =
+                TxId::from_hex(&lock_id).map_err(|e| anyhow::anyhow!("invalid lock id: {e}"))?;
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::TimeLockClaim {
+                    lock_id: TimeLockId(lock_txid),
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Claim submitted: {}", tx_id);
+            Ok(())
+        }
+
+        Command::Recover { target, new_key, evidence, bond } => {
+            let kp = load_keypair(&keyfile)?;
+            let target_id = AccountId::from_b58(&target)
+                .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
+            let new_pk_bytes =
+                hex::decode(&new_key).context("decoding proposed owner key hex")?;
+            let ev_bytes = hex::decode(&evidence).context("decoding evidence hash hex")?;
+            if ev_bytes.len() != 32 {
+                bail!("evidence hash must be 32 bytes (64 hex chars)");
+            }
+            let mut ev_arr = [0u8; 32];
+            ev_arr.copy_from_slice(&ev_bytes);
+            let bond_chronos = kx_to_chronos(bond);
+
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::StartRecovery {
+                    target_account: target_id,
+                    proposed_owner_key: DilithiumPublicKey(new_pk_bytes),
+                    evidence_hash: chronx_core::types::EvidenceHash(ev_arr),
+                    bond_amount: bond_chronos,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Recovery started: {}", tx_id);
+            Ok(())
+        }
+
+        Command::Info => {
+            let info = client.get_genesis_info().await?;
+            println!("Protocol:     {}", info.protocol);
+            println!("Ticker:       {}", info.ticker);
+            println!("Base unit:    {}", info.base_unit);
+            println!("Total supply: {} {}", info.total_supply_kx, info.ticker);
+            println!("PoW difficulty: {} bits", info.pow_difficulty);
+            Ok(())
+        }
+    }
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+fn cmd_keygen(keyfile: &PathBuf) -> anyhow::Result<()> {
+    if keyfile.exists() {
+        bail!(
+            "Keyfile {} already exists. Delete it first to generate a new key.",
+            keyfile.display()
+        );
+    }
+    if let Some(parent) = keyfile.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let kp = KeyPair::generate();
+    let json = serde_json::to_string_pretty(&kp)?;
+    std::fs::write(keyfile, &json)
+        .with_context(|| format!("writing keyfile to {}", keyfile.display()))?;
+
+    println!("Generated new keypair.");
+    println!("Account ID: {}", kp.account_id.to_b58());
+    println!("Public key: {}", hex::encode(&kp.public_key.0));
+    println!("Keyfile:    {}", keyfile.display());
+    println!("\nBACK UP YOUR KEYFILE. Loss = permanent loss of funds.");
+    Ok(())
+}
+
+// ── Transaction builder ───────────────────────────────────────────────────────
+
+async fn build_and_sign(
+    kp: &KeyPair,
+    actions: Vec<Action>,
+    client: &WalletRpcClient,
+) -> anyhow::Result<Transaction> {
+    // Fetch current nonce and DAG tips from the node.
+    let nonce = client.get_nonce(&kp.account_id.to_b58()).await?;
+    let tips = client.get_dag_tips().await?;
+
+    let timestamp = chrono::Utc::now().timestamp();
+
+    // Serialize body (does NOT include pow_nonce — stable for mining).
+    let body_fields = chronx_core::transaction::TransactionBody {
+        parents: &tips,
+        timestamp,
+        nonce,
+        from: &kp.account_id,
+        actions: &actions,
+        auth_scheme: &AuthScheme::SingleSig,
+    };
+    let body_bytes = bincode::serialize(&body_fields)?;
+
+    info!("Mining PoW (difficulty={})...", POW_INITIAL_DIFFICULTY);
+    let pow_nonce = mine_pow(&body_bytes, POW_INITIAL_DIFFICULTY);
+    info!("PoW solved: nonce={}", pow_nonce);
+
+    let signature = kp.sign(&body_bytes);
+    let tx_id = tx_id_from_body(&body_bytes);
+
+    Ok(Transaction {
+        tx_id,
+        parents: tips,
+        timestamp,
+        nonce,
+        from: kp.account_id.clone(),
+        actions,
+        pow_nonce,
+        signatures: vec![signature],
+        auth_scheme: AuthScheme::SingleSig,
+    })
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn load_keypair(keyfile: &PathBuf) -> anyhow::Result<KeyPair> {
+    let json = std::fs::read_to_string(keyfile)
+        .with_context(|| format!("reading keyfile {}", keyfile.display()))?;
+    let kp: KeyPair =
+        serde_json::from_str(&json).context("parsing keyfile — is it a valid ChronX keyfile?")?;
+    Ok(kp)
+}
+
+fn kx_to_chronos(kx: f64) -> u128 {
+    (kx * CHRONOS_PER_KX as f64) as u128
+}
+
+fn expand_tilde(path: &PathBuf) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~") {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+    path.clone()
+}

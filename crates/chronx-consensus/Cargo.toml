@@ -1,0 +1,15 @@
+[package]
+name = "chronx-consensus"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+chronx-core   = { workspace = true }
+chronx-crypto = { workspace = true }
+chronx-dag    = { workspace = true }
+chronx-state  = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe:*)",
+      "Bash(powershell.exe:*)",
+      "Bash(export:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(do:*)",
+      "Bash(/c/Users/josep/chronx/crates/chronx-genesis/Cargo.toml:*)",
+      "Bash(/c/Users/josep/chronx/Cargo.toml:*)",
+      "Bash(sed:*)",
+      "Bash(/c/Users/josep/chronx/crates/chronx-p2p/Cargo.toml:*)",
+      "Bash(read d:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
