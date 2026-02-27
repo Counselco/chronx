@@ -12,7 +12,7 @@ use chronx_core::types::{AccountId, TxId};
 use chronx_state::StateDb;
 
 use crate::api::ChronxApiServer;
-use crate::types::{RpcAccount, RpcGenesisInfo, RpcTimeLock};
+use crate::types::{RpcAccount, RpcGenesisInfo, RpcNetworkInfo, RpcTimeLock};
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
     ErrorObject::owned(code, msg.into(), None::<()>)
@@ -24,6 +24,9 @@ pub struct RpcServerState {
     pub pow_difficulty: u8,
     /// Optional sender to forward incoming transactions to the node pipeline.
     pub tx_sender: Option<tokio::sync::mpsc::Sender<Transaction>>,
+    /// Full libp2p multiaddress of this node (e.g. `/ip4/127.0.0.1/tcp/7777/p2p/<PeerId>`).
+    /// Used by peers to bootstrap; returned by `chronx_getNetworkInfo`.
+    pub peer_multiaddr: Option<String>,
 }
 
 /// The RPC server implementation.
@@ -145,5 +148,11 @@ impl ChronxApiServer for RpcServer {
 
     async fn get_genesis_info(&self) -> RpcResult<RpcGenesisInfo> {
         Ok(RpcGenesisInfo::current(self.state.pow_difficulty))
+    }
+
+    async fn get_network_info(&self) -> RpcResult<RpcNetworkInfo> {
+        Ok(RpcNetworkInfo {
+            peer_multiaddr: self.state.peer_multiaddr.clone().unwrap_or_default(),
+        })
     }
 }

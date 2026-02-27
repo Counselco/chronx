@@ -85,10 +85,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── State engine ──────────────────────────────────────────────────────────
-    let engine = Arc::new(StateEngine::new(
-        StateDb::open(&data_dir).context("opening state engine db")?,
-        args.pow_difficulty,
-    ));
+    // Share the same DB handle — sled uses an Arc internally so this is safe.
+    let engine = Arc::new(StateEngine::new(Arc::clone(&db), args.pow_difficulty));
 
     // ── Inbound transaction queue ─────────────────────────────────────────────
     let (tx_sender, mut tx_receiver) =
@@ -104,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
     let (p2p_network, mut p2p_handle) = P2pNetwork::new(&p2p_config)
         .map_err(|e| anyhow::anyhow!("building P2P network: {e}"))?;
     info!(peer_id = %p2p_handle.local_peer_id, "P2P identity");
+
+    // Full multiaddr for peer discovery (used by chronx_getNetworkInfo).
+    let peer_multiaddr = format!("{}/p2p/{}", p2p_config.listen_addr, p2p_handle.local_peer_id);
 
     let outbound_tx = p2p_handle.outbound_tx.clone();
 
@@ -127,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::clone(&db),
         pow_difficulty: args.pow_difficulty,
         tx_sender: Some(tx_sender),
+        peer_multiaddr: Some(peer_multiaddr),
     });
     let _rpc_handle = RpcServer::new(rpc_state)
         .start(args.rpc_addr)

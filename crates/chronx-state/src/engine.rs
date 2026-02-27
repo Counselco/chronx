@@ -3,11 +3,14 @@ use chronx_core::constants::{
     MIN_CHALLENGE_BOND_CHRONOS, MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS,
     RECOVERY_CHALLENGE_WINDOW_SECS, RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD,
 };
+use std::sync::Arc;
+
 use chronx_core::error::ChronxError;
 use chronx_core::transaction::{Action, Transaction};
 use chronx_core::types::Timestamp;
 use chronx_crypto::hash::account_id_from_pubkey;
 use chronx_dag::validation::{validate_signatures, validate_vertex};
+use chronx_dag::vertex::Vertex;
 use tracing::{info, warn};
 
 use crate::db::StateDb;
@@ -19,12 +22,12 @@ use crate::db::StateDb;
 /// (using a staged write approach — accounts are read, mutations staged,
 /// then written only on full success).
 pub struct StateEngine {
-    pub db: StateDb,
+    pub db: Arc<StateDb>,
     pub pow_difficulty: u8,
 }
 
 impl StateEngine {
-    pub fn new(db: StateDb, pow_difficulty: u8) -> Self {
+    pub fn new(db: Arc<StateDb>, pow_difficulty: u8) -> Self {
         Self { db, pow_difficulty }
     }
 
@@ -91,6 +94,21 @@ impl StateEngine {
             let _ = self.db.remove_tip(parent_id);
         }
         self.db.add_tip(&tx.tx_id)?;
+
+        // Persist the vertex so that vertex_exists() returns true for future
+        // duplicate checks and parent-existence validation.
+        let depth = if tx.parents.is_empty() {
+            0
+        } else {
+            tx.parents
+                .iter()
+                .filter_map(|pid| self.db.get_vertex(pid).ok().flatten())
+                .map(|v| v.depth)
+                .max()
+                .unwrap_or(0)
+                + 1
+        };
+        self.db.put_vertex(&Vertex::new(tx.clone(), depth, now))?;
 
         info!(tx_id = %tx.tx_id, "applied transaction");
         Ok(())
@@ -386,13 +404,14 @@ impl StateEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use chronx_core::account::{AuthPolicy, TimeLockContract, TimeLockStatus};
     use chronx_core::constants::{
         CHRONOS_PER_KX, MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS,
     };
     use chronx_core::transaction::{Action, AuthScheme, Transaction};
     use chronx_core::types::{EvidenceHash, TimeLockId, TxId};
-    use chronx_crypto::{tx_id_from_body, KeyPair};
+    use chronx_crypto::{mine_pow, tx_id_from_body, KeyPair};
     use chronx_crypto::hash::account_id_from_pubkey;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -455,7 +474,7 @@ mod tests {
 
     #[test]
     fn transfer_valid() {
-        let engine = StateEngine::new(temp_db("t_valid"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("t_valid")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
@@ -475,7 +494,7 @@ mod tests {
 
     #[test]
     fn transfer_self_rejected() {
-        let engine = StateEngine::new(temp_db("t_self"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("t_self")), 0);
         let kp = KeyPair::generate();
         seed_account(&engine.db, &kp, 100 * CHRONOS_PER_KX);
 
@@ -488,7 +507,7 @@ mod tests {
 
     #[test]
     fn transfer_insufficient_balance() {
-        let engine = StateEngine::new(temp_db("t_insuf"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("t_insuf")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 5 * CHRONOS_PER_KX);
@@ -502,7 +521,7 @@ mod tests {
 
     #[test]
     fn transfer_bad_nonce() {
-        let engine = StateEngine::new(temp_db("t_nonce"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("t_nonce")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
@@ -518,7 +537,7 @@ mod tests {
 
     #[test]
     fn timelock_create_valid() {
-        let engine = StateEngine::new(temp_db("tlc_valid"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("tlc_valid")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
@@ -543,7 +562,7 @@ mod tests {
 
     #[test]
     fn timelock_create_past_unlock_rejected() {
-        let engine = StateEngine::new(temp_db("tlc_past"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("tlc_past")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
@@ -559,7 +578,7 @@ mod tests {
 
     #[test]
     fn timelock_create_zero_amount_rejected() {
-        let engine = StateEngine::new(temp_db("tlc_zero"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("tlc_zero")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
@@ -577,7 +596,7 @@ mod tests {
 
     #[test]
     fn timelock_claim_after_maturity() {
-        let engine = StateEngine::new(temp_db("tl_claim"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("tl_claim")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 0);
@@ -597,7 +616,7 @@ mod tests {
 
     #[test]
     fn timelock_claim_too_early() {
-        let engine = StateEngine::new(temp_db("tl_early"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("tl_early")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 0);
@@ -614,7 +633,7 @@ mod tests {
 
     #[test]
     fn timelock_claim_wrong_claimer() {
-        let engine = StateEngine::new(temp_db("tl_wrong"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("tl_wrong")), 0);
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         let impostor = KeyPair::generate();
@@ -634,7 +653,7 @@ mod tests {
 
     #[test]
     fn recovery_start_valid() {
-        let engine = StateEngine::new(temp_db("rec_start"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("rec_start")), 0);
         let requester = KeyPair::generate();
         let target_kp = KeyPair::generate();
         let new_owner = KeyPair::generate();
@@ -663,7 +682,7 @@ mod tests {
 
     #[test]
     fn recovery_bond_too_low() {
-        let engine = StateEngine::new(temp_db("rec_bond_low"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("rec_bond_low")), 0);
         let requester = KeyPair::generate();
         let target_kp = KeyPair::generate();
         let new_owner = KeyPair::generate();
@@ -686,7 +705,7 @@ mod tests {
 
     #[test]
     fn register_verifier_valid() {
-        let engine = StateEngine::new(temp_db("reg_verifier"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("reg_verifier")), 0);
         let kp = KeyPair::generate();
         seed_account(&engine.db, &kp, MIN_VERIFIER_STAKE_CHRONOS + CHRONOS_PER_KX);
 
@@ -704,7 +723,7 @@ mod tests {
     #[test]
     fn recovery_full_workflow() {
         // StartRecovery → RegisterVerifier × 3 → VoteRecovery × 3 → FinalizeRecovery
-        let engine = StateEngine::new(temp_db("rec_full"), 0);
+        let engine = StateEngine::new(Arc::new(temp_db("rec_full")), 0);
 
         let requester = KeyPair::generate();
         let target_kp = KeyPair::generate();
@@ -763,5 +782,96 @@ mod tests {
             }
             _ => panic!("expected RecoveryEnabled after finalization"),
         }
+    }
+
+    // ── DAG vertex persistence (bug regression) ───────────────────────────────
+
+    /// Build a signed transaction that lists `parents` (difficulty 0 PoW).
+    fn make_tx_with_parents(kp: &KeyPair, nonce: u64, parents: Vec<TxId>, actions: Vec<Action>) -> Transaction {
+        let mut tx = Transaction {
+            tx_id: TxId::from_bytes([0u8; 32]),
+            parents,
+            timestamp: 1_000_000,
+            nonce,
+            from: kp.account_id.clone(),
+            actions,
+            pow_nonce: 0,
+            signatures: vec![],
+            auth_scheme: AuthScheme::SingleSig,
+        };
+        let body_bytes = tx.body_bytes();
+        // difficulty = 0 means any nonce works; mine_pow returns 0 immediately.
+        tx.pow_nonce = mine_pow(&body_bytes, 0);
+        tx.tx_id = tx_id_from_body(&body_bytes);
+        tx.signatures = vec![kp.sign(&body_bytes)];
+        tx
+    }
+
+    #[test]
+    fn vertex_written_to_db_after_apply() {
+        // Regression: apply() must write to the `vertices` tree, not just `dag_tips`.
+        let engine = StateEngine::new(Arc::new(temp_db("dag_vertex_persist")), 0);
+        let sender = KeyPair::generate();
+        let recipient = KeyPair::generate();
+        seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
+
+        let tx = make_tx(&sender, 0, vec![Action::Transfer {
+            to: recipient.account_id.clone(),
+            amount: CHRONOS_PER_KX,
+        }]);
+        engine.apply(&tx, NOW).unwrap();
+
+        // The vertex must now be retrievable from the vertices tree.
+        assert!(engine.db.vertex_exists(&tx.tx_id), "vertex not persisted after apply");
+        let v = engine.db.get_vertex(&tx.tx_id).unwrap().unwrap();
+        assert_eq!(v.depth, 0);
+    }
+
+    #[test]
+    fn chained_tx_parent_accepted() {
+        // Regression: a second tx that references the first as parent must be accepted.
+        // Before the fix this always failed with UnknownParent.
+        let engine = StateEngine::new(Arc::new(temp_db("dag_chain")), 0);
+        let sender = KeyPair::generate();
+        let recipient = KeyPair::generate();
+        seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
+
+        // tx1 — genesis-style (no parents).
+        let tx1 = make_tx(&sender, 0, vec![Action::Transfer {
+            to: recipient.account_id.clone(),
+            amount: CHRONOS_PER_KX,
+        }]);
+        engine.apply(&tx1, NOW).unwrap();
+
+        // tx2 — references tx1 as a parent.
+        let tx2 = make_tx_with_parents(&sender, 1, vec![tx1.tx_id.clone()], vec![Action::Transfer {
+            to: recipient.account_id.clone(),
+            amount: CHRONOS_PER_KX,
+        }]);
+        engine.apply(&tx2, NOW).unwrap();
+
+        let v2 = engine.db.get_vertex(&tx2.tx_id).unwrap().unwrap();
+        assert_eq!(v2.depth, 1, "chained tx depth should be parent_depth + 1");
+
+        let s = engine.db.get_account(&sender.account_id).unwrap().unwrap();
+        assert_eq!(s.balance, 98 * CHRONOS_PER_KX);
+        assert_eq!(s.nonce, 2);
+    }
+
+    #[test]
+    fn duplicate_tx_rejected() {
+        // Regression: applying the same tx twice must return DuplicateVertex.
+        let engine = StateEngine::new(Arc::new(temp_db("dag_dup")), 0);
+        let sender = KeyPair::generate();
+        let recipient = KeyPair::generate();
+        seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
+
+        let tx = make_tx(&sender, 0, vec![Action::Transfer {
+            to: recipient.account_id.clone(),
+            amount: CHRONOS_PER_KX,
+        }]);
+        engine.apply(&tx, NOW).unwrap();
+        let err = engine.apply(&tx, NOW).unwrap_err();
+        assert!(matches!(err, ChronxError::DuplicateVertex(_)), "expected DuplicateVertex, got {err:?}");
     }
 }

@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// P2P network identity returned by `chronx_getNetworkInfo`.
+/// The `peer_multiaddr` field is the full libp2p multiaddress (including
+/// `/p2p/<PeerId>`) that other nodes should pass as `--bootstrap` to
+/// connect to this node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcNetworkInfo {
+    pub peer_multiaddr: String,
+}
+
 /// JSON-serializable account summary returned by `chronx_getAccount`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcAccount {

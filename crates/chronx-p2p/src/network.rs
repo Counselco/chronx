@@ -102,7 +102,10 @@ impl P2pNetwork {
             if let Ok(addr) = addr_str.parse::<Multiaddr>() {
                 if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
-                    debug!(peer = %peer_id, "added bootstrap peer");
+                    // Also dial immediately so the TCP connection is established
+                    // as soon as the swarm event loop starts.
+                    let _ = swarm.dial(addr.clone());
+                    debug!(peer = %peer_id, "added bootstrap peer, dialing");
                 }
             }
         }

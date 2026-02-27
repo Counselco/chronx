@@ -23,6 +23,7 @@ use chronx_core::{
     types::{AccountId, DilithiumPublicKey, TimeLockId, TxId},
 };
 use chronx_crypto::{hash::tx_id_from_body, mine_pow, KeyPair};
+use chronx_genesis::GenesisParams;
 
 mod rpc_client;
 use rpc_client::WalletRpcClient;
@@ -144,6 +145,16 @@ enum Command {
 
     /// Print genesis/protocol info from the node.
     Info,
+
+    /// Generate three genesis keypairs (public_sale, treasury, humanity) and
+    /// write genesis-params.json to the output directory.
+    /// Run this ONCE before launching a new chain, then store the private keys
+    /// in cold storage.
+    GenesisParams {
+        /// Directory to write keypairs and genesis-params.json into.
+        #[arg(long, default_value = "~/.chronx/genesis")]
+        out_dir: PathBuf,
+    },
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -336,6 +347,11 @@ async fn main() -> anyhow::Result<()> {
             println!("PoW difficulty: {} bits", info.pow_difficulty);
             Ok(())
         }
+
+        Command::GenesisParams { out_dir } => {
+            let dir = expand_tilde(&out_dir);
+            cmd_genesis_params(&dir)
+        }
     }
 }
 
@@ -361,6 +377,68 @@ fn cmd_keygen(keyfile: &PathBuf) -> anyhow::Result<()> {
     println!("Public key: {}", hex::encode(&kp.public_key.0));
     println!("Keyfile:    {}", keyfile.display());
     println!("\nBACK UP YOUR KEYFILE. Loss = permanent loss of funds.");
+    Ok(())
+}
+
+fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
+    if out_dir.exists() {
+        bail!(
+            "Output directory {} already exists. Delete it first to avoid overwriting a previous genesis ceremony.",
+            out_dir.display()
+        );
+    }
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("creating output directory {}", out_dir.display()))?;
+
+    // Generate all three keypairs.
+    let public_sale_kp = KeyPair::generate();
+    let treasury_kp    = KeyPair::generate();
+    let humanity_kp    = KeyPair::generate();
+
+    // Write each private keyfile.
+    let ps_path = out_dir.join("public_sale.json");
+    let tr_path = out_dir.join("treasury.json");
+    let hu_path = out_dir.join("humanity.json");
+
+    std::fs::write(&ps_path, serde_json::to_string_pretty(&public_sale_kp)?)
+        .with_context(|| format!("writing {}", ps_path.display()))?;
+    std::fs::write(&tr_path, serde_json::to_string_pretty(&treasury_kp)?)
+        .with_context(|| format!("writing {}", tr_path.display()))?;
+    std::fs::write(&hu_path, serde_json::to_string_pretty(&humanity_kp)?)
+        .with_context(|| format!("writing {}", hu_path.display()))?;
+
+    // Build GenesisParams (public keys only) and write genesis-params.json.
+    let params = GenesisParams {
+        public_sale_key: public_sale_kp.public_key.clone(),
+        treasury_key:    treasury_kp.public_key.clone(),
+        humanity_key:    humanity_kp.public_key.clone(),
+    };
+    let params_path = out_dir.join("genesis-params.json");
+    std::fs::write(&params_path, serde_json::to_string_pretty(&params)?)
+        .with_context(|| format!("writing {}", params_path.display()))?;
+
+    println!("Genesis keypair ceremony complete.");
+    println!();
+    println!("Public sale");
+    println!("  Account:  {}", public_sale_kp.account_id.to_b58());
+    println!("  PubKey:   {}", hex::encode(&public_sale_kp.public_key.0));
+    println!("  Keyfile:  {}", ps_path.display());
+    println!();
+    println!("Treasury");
+    println!("  Account:  {}", treasury_kp.account_id.to_b58());
+    println!("  PubKey:   {}", hex::encode(&treasury_kp.public_key.0));
+    println!("  Keyfile:  {}", tr_path.display());
+    println!();
+    println!("Humanity stake");
+    println!("  Account:  {}", humanity_kp.account_id.to_b58());
+    println!("  PubKey:   {}", hex::encode(&humanity_kp.public_key.0));
+    println!("  Keyfile:  {}", hu_path.display());
+    println!();
+    println!("genesis-params.json written to: {}", params_path.display());
+    println!();
+    println!("CRITICAL: Move private keyfiles off this machine and into cold storage NOW.");
+    println!("Only genesis-params.json is needed by the node (--genesis-params flag).");
+
     Ok(())
 }
 

@@ -17,4 +17,5 @@ pub mod server;
 pub mod types;
 
 pub use server::RpcServer;
-pub use types::{RpcAccount, RpcGenesisInfo, RpcTimeLock};
+pub use server::RpcServerState;
+pub use types::{RpcAccount, RpcGenesisInfo, RpcNetworkInfo, RpcTimeLock};

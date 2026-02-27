@@ -10,9 +10,10 @@ name = "chronx-wallet"
 path = "src/main.rs"
 
 [dependencies]
-chronx-core   = { workspace = true }
-chronx-crypto = { workspace = true }
-chronx-rpc    = { workspace = true }
+chronx-core    = { workspace = true }
+chronx-crypto  = { workspace = true }
+chronx-genesis = { workspace = true }
+chronx-rpc     = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 bincode       = { workspace = true }

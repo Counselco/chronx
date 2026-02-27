@@ -1,7 +1,7 @@
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
-use crate::types::{RpcAccount, RpcGenesisInfo, RpcTimeLock};
+use crate::types::{RpcAccount, RpcGenesisInfo, RpcNetworkInfo, RpcTimeLock};
 
 /// ChronX JSON-RPC 2.0 API definition.
 ///
@@ -37,4 +37,9 @@ pub trait ChronxApi {
     /// Return genesis/protocol constants.
     #[method(name = "getGenesisInfo")]
     async fn get_genesis_info(&self) -> RpcResult<RpcGenesisInfo>;
+
+    /// Return the node's P2P identity (peer multiaddress).
+    /// Other nodes pass this as `--bootstrap` to connect.
+    #[method(name = "getNetworkInfo")]
+    async fn get_network_info(&self) -> RpcResult<RpcNetworkInfo>;
 }
