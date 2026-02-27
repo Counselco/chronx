@@ -64,7 +64,6 @@ impl ChronxSigner {
 mod tests {
     use super::*;
     use pqcrypto_dilithium::dilithium2;
-    use pqcrypto_traits::sign::{PublicKey as _, SecretKey as _};
 
     #[test]
     fn sign_verify_round_trip() {

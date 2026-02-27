@@ -109,6 +109,39 @@ enum Command {
         bond: f64,
     },
 
+    /// Challenge an in-progress recovery for a target account.
+    ChallengeRecovery {
+        /// Target account whose recovery you are challenging (base-58).
+        #[arg(long)]
+        target: String,
+        /// Blake3 hash of off-chain counter-evidence (hex, 32 bytes).
+        #[arg(long)]
+        counter_evidence: String,
+        /// Challenge bond amount in KX.
+        #[arg(long)]
+        bond: f64,
+    },
+
+    /// Cast a verifier vote on an active recovery.
+    VoteRecovery {
+        /// Target account under recovery (base-58).
+        #[arg(long)]
+        target: String,
+        /// Approve the recovery (pass --approve) or reject (omit flag).
+        #[arg(long, default_value_t = false)]
+        approve: bool,
+        /// Fee bid in KX (paid from recovery bond if approved).
+        #[arg(long, default_value_t = 0.0)]
+        fee_bid: f64,
+    },
+
+    /// Finalize an approved recovery after the delay has elapsed.
+    FinalizeRecovery {
+        /// Target account to finalize recovery for (base-58).
+        #[arg(long)]
+        target: String,
+    },
+
     /// Print genesis/protocol info from the node.
     Info,
 }
@@ -224,6 +257,73 @@ async fn main() -> anyhow::Result<()> {
             .await?;
             let tx_id = client.send_transaction(&tx).await?;
             println!("Recovery started: {}", tx_id);
+            Ok(())
+        }
+
+        Command::ChallengeRecovery { target, counter_evidence, bond } => {
+            let kp = load_keypair(&keyfile)?;
+            let target_id = AccountId::from_b58(&target)
+                .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
+            let ev_bytes = hex::decode(&counter_evidence)
+                .context("decoding counter-evidence hash hex")?;
+            if ev_bytes.len() != 32 {
+                bail!("counter-evidence hash must be 32 bytes (64 hex chars)");
+            }
+            let mut ev_arr = [0u8; 32];
+            ev_arr.copy_from_slice(&ev_bytes);
+            let bond_chronos = kx_to_chronos(bond);
+
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::ChallengeRecovery {
+                    target_account: target_id,
+                    counter_evidence_hash: chronx_core::types::EvidenceHash(ev_arr),
+                    bond_amount: bond_chronos,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Challenge submitted: {}", tx_id);
+            Ok(())
+        }
+
+        Command::VoteRecovery { target, approve, fee_bid } => {
+            let kp = load_keypair(&keyfile)?;
+            let target_id = AccountId::from_b58(&target)
+                .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
+            let fee_chronos = kx_to_chronos(fee_bid);
+
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::VoteRecovery {
+                    target_account: target_id,
+                    approve,
+                    fee_bid: fee_chronos,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Vote submitted (approve={}): {}", approve, tx_id);
+            Ok(())
+        }
+
+        Command::FinalizeRecovery { target } => {
+            let kp = load_keypair(&keyfile)?;
+            let target_id = AccountId::from_b58(&target)
+                .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
+
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::FinalizeRecovery {
+                    target_account: target_id,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Recovery finalized: {}", tx_id);
             Ok(())
         }
 
