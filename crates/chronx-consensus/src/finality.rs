@@ -131,11 +131,15 @@ mod tests {
         let dir = std::env::temp_dir().join("chronx_finality_test");
         let db = StateDb::open(&dir).unwrap();
 
-        let e1 = tracker.record_confirmation(tx_id.clone(), ids[0].clone(), &vs, &db).unwrap();
+        let e1 = tracker
+            .record_confirmation(tx_id.clone(), ids[0].clone(), &vs, &db)
+            .unwrap();
         assert!(!e1.is_final);
         assert_eq!(e1.confirmation_count, 1);
 
-        let e2 = tracker.record_confirmation(tx_id.clone(), ids[1].clone(), &vs, &db).unwrap();
+        let e2 = tracker
+            .record_confirmation(tx_id.clone(), ids[1].clone(), &vs, &db)
+            .unwrap();
         assert!(e2.is_final);
         assert_eq!(e2.confirmation_count, 2);
 

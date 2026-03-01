@@ -28,7 +28,7 @@ pub type SchemaId = u64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClaimLane {
     /// Very small value; streamlined process; court/outcome certs disallowed.
-    Trivial  = 0,
+    Trivial = 0,
     /// Mid-tier value; standard certificate requirements.
     Standard = 1,
     /// High value; elevated bonds, longer windows, full certificate suite.
@@ -246,15 +246,15 @@ impl LaneThresholds {
     pub fn default_thresholds() -> Self {
         use crate::constants::CHRONOS_PER_KX;
         Self {
-            trivial_max_usd_cents:   100_000,          // $1,000
-            standard_max_usd_cents:  5_000_000,        // $50,000
-            trivial_bond_chronos:    10 * CHRONOS_PER_KX,
-            standard_bond_chronos:   100 * CHRONOS_PER_KX,
-            elevated_bond_chronos:   500 * CHRONOS_PER_KX,
-            trivial_reveal_window_secs:    7  * 24 * 3600,
-            standard_reveal_window_secs:   14 * 24 * 3600,
-            elevated_reveal_window_secs:   30 * 24 * 3600,
-            trivial_challenge_window_secs:  7  * 24 * 3600,
+            trivial_max_usd_cents: 100_000,    // $1,000
+            standard_max_usd_cents: 5_000_000, // $50,000
+            trivial_bond_chronos: 10 * CHRONOS_PER_KX,
+            standard_bond_chronos: 100 * CHRONOS_PER_KX,
+            elevated_bond_chronos: 500 * CHRONOS_PER_KX,
+            trivial_reveal_window_secs: 7 * 24 * 3600,
+            standard_reveal_window_secs: 14 * 24 * 3600,
+            elevated_reveal_window_secs: 30 * 24 * 3600,
+            trivial_challenge_window_secs: 7 * 24 * 3600,
             standard_challenge_window_secs: 14 * 24 * 3600,
             elevated_challenge_window_secs: 21 * 24 * 3600,
         }
@@ -272,25 +272,25 @@ impl LaneThresholds {
 
     pub fn min_bond(&self, lane: ClaimLane) -> Balance {
         match lane {
-            ClaimLane::Trivial   => self.trivial_bond_chronos,
-            ClaimLane::Standard  => self.standard_bond_chronos,
-            ClaimLane::Elevated  => self.elevated_bond_chronos,
+            ClaimLane::Trivial => self.trivial_bond_chronos,
+            ClaimLane::Standard => self.standard_bond_chronos,
+            ClaimLane::Elevated => self.elevated_bond_chronos,
         }
     }
 
     pub fn reveal_window(&self, lane: ClaimLane) -> i64 {
         match lane {
-            ClaimLane::Trivial   => self.trivial_reveal_window_secs,
-            ClaimLane::Standard  => self.standard_reveal_window_secs,
-            ClaimLane::Elevated  => self.elevated_reveal_window_secs,
+            ClaimLane::Trivial => self.trivial_reveal_window_secs,
+            ClaimLane::Standard => self.standard_reveal_window_secs,
+            ClaimLane::Elevated => self.elevated_reveal_window_secs,
         }
     }
 
     pub fn challenge_window(&self, lane: ClaimLane) -> i64 {
         match lane {
-            ClaimLane::Trivial   => self.trivial_challenge_window_secs,
-            ClaimLane::Standard  => self.standard_challenge_window_secs,
-            ClaimLane::Elevated  => self.elevated_challenge_window_secs,
+            ClaimLane::Trivial => self.trivial_challenge_window_secs,
+            ClaimLane::Standard => self.standard_challenge_window_secs,
+            ClaimLane::Elevated => self.elevated_challenge_window_secs,
         }
     }
 }

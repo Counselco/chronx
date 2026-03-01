@@ -5,10 +5,10 @@
 //! This crate provides query helpers, bond fee distribution, and verifier
 //! registry management utilities.
 
-pub mod query;
 pub mod fee;
+pub mod query;
 pub mod verifier;
 
-pub use query::RecoveryQuery;
 pub use fee::distribute_recovery_fees;
+pub use query::RecoveryQuery;
 pub use verifier::VerifierRegistry;

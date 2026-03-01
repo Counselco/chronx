@@ -32,8 +32,7 @@ impl KeyPair {
     /// Sign `message` using this keypair's secret key.
     pub fn sign(&self, message: &[u8]) -> chronx_core::types::DilithiumSignature {
         let sk = Zeroizing::new(self.secret_key.clone());
-        crate::dilithium::sign(&sk, message)
-            .expect("sign with valid secret key is infallible")
+        crate::dilithium::sign(&sk, message).expect("sign with valid secret key is infallible")
     }
 
     /// Return a read-only view of the secret key bytes.

@@ -1,6 +1,6 @@
 use chronx_core::types::{DilithiumPublicKey, DilithiumSignature};
 use pqcrypto_dilithium::dilithium2;
-use pqcrypto_traits::sign::{PublicKey, SecretKey, DetachedSignature};
+use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,11 +26,12 @@ pub fn verify_signature(
     message: &[u8],
     signature: &DilithiumSignature,
 ) -> Result<(), SignatureError> {
-    let pk = dilithium2::PublicKey::from_bytes(&public_key.0)
-        .map_err(|_| SignatureError::InvalidPublicKeyLength {
+    let pk = dilithium2::PublicKey::from_bytes(&public_key.0).map_err(|_| {
+        SignatureError::InvalidPublicKeyLength {
             expected: dilithium2::public_key_bytes(),
             got: public_key.0.len(),
-        })?;
+        }
+    })?;
     let sig = dilithium2::DetachedSignature::from_bytes(&signature.0)
         .map_err(|_| SignatureError::InvalidSignature)?;
     dilithium2::verify_detached_signature(&sig, message, &pk)
@@ -71,10 +72,8 @@ mod tests {
         let pk_bytes = DilithiumPublicKey(pk.as_bytes().to_vec());
         let message = b"the ledger for long-horizon human promises";
 
-        let signer = ChronxSigner::from_secret_key_bytes(
-            sk.as_bytes().to_vec(),
-            pk.as_bytes().to_vec(),
-        );
+        let signer =
+            ChronxSigner::from_secret_key_bytes(sk.as_bytes().to_vec(), pk.as_bytes().to_vec());
         let sig = signer.sign(message).unwrap();
         assert!(verify_signature(&pk_bytes, message, &sig).is_ok());
     }
@@ -83,10 +82,8 @@ mod tests {
     fn tampered_message_fails() {
         let (pk, sk) = dilithium2::keypair();
         let pk_bytes = DilithiumPublicKey(pk.as_bytes().to_vec());
-        let signer = ChronxSigner::from_secret_key_bytes(
-            sk.as_bytes().to_vec(),
-            pk.as_bytes().to_vec(),
-        );
+        let signer =
+            ChronxSigner::from_secret_key_bytes(sk.as_bytes().to_vec(), pk.as_bytes().to_vec());
         let sig = signer.sign(b"original").unwrap();
         assert!(verify_signature(&pk_bytes, b"tampered", &sig).is_err());
     }

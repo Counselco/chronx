@@ -1,5 +1,11 @@
 # ChronX Changelog
 
+This changelog follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
+Each entry documents what changed at the protocol level, which crates were affected, and which tests cover the change.
+Unreleased sections accumulate changes until a versioned release is tagged.
+
+---
+
 ## [Unreleased] — Protocol V3.1
 
 ### Summary

@@ -58,10 +58,7 @@ impl WalletRpcClient {
     /// Get account nonce.
     pub async fn get_nonce(&self, account_id: &str) -> anyhow::Result<u64> {
         let result = self
-            .call(
-                "chronx_getAccount",
-                serde_json::json!([account_id]),
-            )
+            .call("chronx_getAccount", serde_json::json!([account_id]))
             .await?;
 
         if result.is_null() {
@@ -78,10 +75,7 @@ impl WalletRpcClient {
     /// Get account balance in Chronos.
     pub async fn get_balance(&self, account_id: &str) -> anyhow::Result<u128> {
         let result = self
-            .call(
-                "chronx_getBalance",
-                serde_json::json!([account_id]),
-            )
+            .call("chronx_getBalance", serde_json::json!([account_id]))
             .await?;
 
         let bal_str = result.as_str().context("expected string balance")?;
@@ -100,9 +94,7 @@ impl WalletRpcClient {
 
         hex_list
             .iter()
-            .map(|h| {
-                TxId::from_hex(h).map_err(|e| anyhow::anyhow!("invalid tip hex: {e}"))
-            })
+            .map(|h| TxId::from_hex(h).map_err(|e| anyhow::anyhow!("invalid tip hex: {e}")))
             .collect()
     }
 

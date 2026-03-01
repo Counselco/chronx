@@ -1,16 +1,15 @@
 use chronx_core::account::{Account, AuthPolicy, TimeLockContract, TimeLockStatus};
 use chronx_core::claims::{
-    CertificateSchema, ClaimLane, ClaimState, LaneThresholds, OracleSnapshot,
-    OracleSubmission, ProviderRecord, ProviderStatus, SignatureRules, SlashReason,
+    CertificateSchema, ClaimLane, ClaimState, LaneThresholds, OracleSnapshot, OracleSubmission,
+    ProviderRecord, ProviderStatus, SignatureRules, SlashReason,
 };
 use chronx_core::constants::{
     CANCELLATION_WINDOW_MAX_SECS, MAX_EXTENSION_DATA_BYTES, MAX_LOCK_DURATION_YEARS,
     MAX_MEMO_BYTES, MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK, MAX_TAG_LENGTH,
     MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS,
-    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS,
-    ORACLE_MAX_AGE_SECS, ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS,
-    RECOVERY_CHALLENGE_WINDOW_SECS, RECOVERY_EXECUTION_DELAY_SECS,
-    RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
+    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ORACLE_MAX_AGE_SECS,
+    ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS,
+    RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
 };
 use std::sync::Arc;
 
@@ -199,12 +198,14 @@ impl StateEngine {
                 }
                 sender.balance -= amount;
 
-                let mut recipient = self
-                    .db
-                    .get_account(to)?
-                    .unwrap_or_else(|| Account::new(to.clone(), AuthPolicy::SingleSig {
-                        public_key: chronx_core::types::DilithiumPublicKey(vec![]),
-                    }));
+                let mut recipient = self.db.get_account(to)?.unwrap_or_else(|| {
+                    Account::new(
+                        to.clone(),
+                        AuthPolicy::SingleSig {
+                            public_key: chronx_core::types::DilithiumPublicKey(vec![]),
+                        },
+                    )
+                });
                 recipient.balance += amount;
                 staged.accounts.push(recipient);
                 Ok(())
@@ -212,52 +213,80 @@ impl StateEngine {
 
             // ── TimeLockCreate ────────────────────────────────────────────────
             Action::TimeLockCreate {
-                recipient, amount, unlock_at, memo,
-                cancellation_window_secs, notify_recipient, tags, private,
-                expiry_policy, split_policy, claim_attempts_max, recurring,
-                extension_data, oracle_hint, jurisdiction_hint,
-                governance_proposal_id, client_ref,
+                recipient,
+                amount,
+                unlock_at,
+                memo,
+                cancellation_window_secs,
+                notify_recipient,
+                tags,
+                private,
+                expiry_policy,
+                split_policy,
+                claim_attempts_max,
+                recurring,
+                extension_data,
+                oracle_hint,
+                jurisdiction_hint,
+                governance_proposal_id,
+                client_ref,
             } => {
                 // ── Consensus validation ──────────────────────────────────────
                 if *amount == 0 {
                     return Err(ChronxError::ZeroAmount);
                 }
                 if *amount < MIN_LOCK_AMOUNT_CHRONOS {
-                    return Err(ChronxError::LockAmountTooSmall { min: MIN_LOCK_AMOUNT_CHRONOS });
+                    return Err(ChronxError::LockAmountTooSmall {
+                        min: MIN_LOCK_AMOUNT_CHRONOS,
+                    });
                 }
                 if *unlock_at <= now {
                     return Err(ChronxError::UnlockTimestampInPast);
                 }
                 if *unlock_at < now + MIN_LOCK_DURATION_SECS {
-                    return Err(ChronxError::LockDurationTooShort { min_secs: MIN_LOCK_DURATION_SECS });
+                    return Err(ChronxError::LockDurationTooShort {
+                        min_secs: MIN_LOCK_DURATION_SECS,
+                    });
                 }
                 let max_unlock = now + (MAX_LOCK_DURATION_YEARS as i64) * 365 * 24 * 3600;
                 if *unlock_at > max_unlock {
-                    return Err(ChronxError::LockDurationTooLong { max_years: MAX_LOCK_DURATION_YEARS });
+                    return Err(ChronxError::LockDurationTooLong {
+                        max_years: MAX_LOCK_DURATION_YEARS,
+                    });
                 }
                 if let Some(m) = memo {
                     if m.len() > MAX_MEMO_BYTES {
-                        return Err(ChronxError::MemoTooLong { max: MAX_MEMO_BYTES });
+                        return Err(ChronxError::MemoTooLong {
+                            max: MAX_MEMO_BYTES,
+                        });
                     }
                 }
                 if let Some(t) = tags {
                     if t.len() > MAX_TAGS_PER_LOCK {
-                        return Err(ChronxError::TooManyTags { max: MAX_TAGS_PER_LOCK });
+                        return Err(ChronxError::TooManyTags {
+                            max: MAX_TAGS_PER_LOCK,
+                        });
                     }
                     for tag in t {
                         if tag.len() > MAX_TAG_LENGTH {
-                            return Err(ChronxError::TagTooLong { max: MAX_TAG_LENGTH });
+                            return Err(ChronxError::TagTooLong {
+                                max: MAX_TAG_LENGTH,
+                            });
                         }
                     }
                 }
                 if let Some(ed) = extension_data {
                     if ed.len() > MAX_EXTENSION_DATA_BYTES {
-                        return Err(ChronxError::ExtensionDataTooLarge { max: MAX_EXTENSION_DATA_BYTES });
+                        return Err(ChronxError::ExtensionDataTooLarge {
+                            max: MAX_EXTENSION_DATA_BYTES,
+                        });
                     }
                 }
                 if let Some(w) = cancellation_window_secs {
                     if *w > CANCELLATION_WINDOW_MAX_SECS {
-                        return Err(ChronxError::CancellationWindowTooLong { max: CANCELLATION_WINDOW_MAX_SECS });
+                        return Err(ChronxError::CancellationWindowTooLong {
+                            max: CANCELLATION_WINDOW_MAX_SECS,
+                        });
                     }
                 }
                 if let Some(sp) = split_policy {
@@ -275,7 +304,9 @@ impl StateEngine {
                         RecurringPolicy::Annual { count } => *count,
                     };
                     if count > MAX_RECURRING_COUNT {
-                        return Err(ChronxError::RecurringCountTooLarge { max: MAX_RECURRING_COUNT });
+                        return Err(ChronxError::RecurringCountTooLarge {
+                            max: MAX_RECURRING_COUNT,
+                        });
                     }
                 }
 
@@ -363,7 +394,10 @@ impl StateEngine {
             }
 
             // ── TimeLockSell ──────────────────────────────────────────────────
-            Action::TimeLockSell { lock_id: _, ask_price: _ } => {
+            Action::TimeLockSell {
+                lock_id: _,
+                ask_price: _,
+            } => {
                 warn!("TimeLockSell submitted — secondary market not active at V1");
                 Err(ChronxError::FeatureNotActive(
                     "secondary market (TimeLockSell) is not active in V1".into(),
@@ -402,9 +436,16 @@ impl StateEngine {
             }
 
             // ── StartRecovery ─────────────────────────────────────────────────
-            Action::StartRecovery { target_account, proposed_owner_key, evidence_hash, bond_amount } => {
+            Action::StartRecovery {
+                target_account,
+                proposed_owner_key,
+                evidence_hash,
+                bond_amount,
+            } => {
                 if *bond_amount < MIN_RECOVERY_BOND_CHRONOS {
-                    return Err(ChronxError::RecoveryBondTooLow { min: MIN_RECOVERY_BOND_CHRONOS });
+                    return Err(ChronxError::RecoveryBondTooLow {
+                        min: MIN_RECOVERY_BOND_CHRONOS,
+                    });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
@@ -419,7 +460,9 @@ impl StateEngine {
                     .ok_or_else(|| ChronxError::UnknownAccount(target_account.to_string()))?;
 
                 if target.recovery_state.active {
-                    return Err(ChronxError::RecoveryAlreadyActive(target_account.to_string()));
+                    return Err(ChronxError::RecoveryAlreadyActive(
+                        target_account.to_string(),
+                    ));
                 }
 
                 sender.balance -= bond_amount;
@@ -440,9 +483,15 @@ impl StateEngine {
             }
 
             // ── ChallengeRecovery ─────────────────────────────────────────────
-            Action::ChallengeRecovery { target_account, counter_evidence_hash, bond_amount } => {
+            Action::ChallengeRecovery {
+                target_account,
+                counter_evidence_hash,
+                bond_amount,
+            } => {
                 if *bond_amount < MIN_CHALLENGE_BOND_CHRONOS {
-                    return Err(ChronxError::ChallengeBondTooLow { min: MIN_CHALLENGE_BOND_CHRONOS });
+                    return Err(ChronxError::ChallengeBondTooLow {
+                        min: MIN_CHALLENGE_BOND_CHRONOS,
+                    });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
@@ -512,7 +561,9 @@ impl StateEngine {
             // ── RegisterVerifier ──────────────────────────────────────────────
             Action::RegisterVerifier { stake_amount } => {
                 if *stake_amount < MIN_VERIFIER_STAKE_CHRONOS {
-                    return Err(ChronxError::VerifierStakeTooLow { min: MIN_VERIFIER_STAKE_CHRONOS });
+                    return Err(ChronxError::VerifierStakeTooLow {
+                        min: MIN_VERIFIER_STAKE_CHRONOS,
+                    });
                 }
                 if sender.balance < *stake_amount {
                     return Err(ChronxError::InsufficientBalance {
@@ -526,9 +577,15 @@ impl StateEngine {
             }
 
             // ── VoteRecovery ──────────────────────────────────────────────────
-            Action::VoteRecovery { target_account, approve, fee_bid: _ } => {
+            Action::VoteRecovery {
+                target_account,
+                approve,
+                fee_bid: _,
+            } => {
                 if !sender.is_verifier {
-                    return Err(ChronxError::VerifierNotRegistered(sender.account_id.to_string()));
+                    return Err(ChronxError::VerifierNotRegistered(
+                        sender.account_id.to_string(),
+                    ));
                 }
 
                 let mut target = self
@@ -570,7 +627,9 @@ impl StateEngine {
                     return Err(ChronxError::InvalidClaimStateTransition);
                 }
                 if now < contract.unlock_at {
-                    return Err(ChronxError::TimeLockNotMatured { unlock_time: contract.unlock_at });
+                    return Err(ChronxError::TimeLockNotMatured {
+                        unlock_time: contract.unlock_at,
+                    });
                 }
 
                 // Snapshot oracle price to fix V_claim.
@@ -607,7 +666,11 @@ impl StateEngine {
             }
 
             // ── SubmitClaimCommit ─────────────────────────────────────────────
-            Action::SubmitClaimCommit { lock_id, commit_hash, bond_amount } => {
+            Action::SubmitClaimCommit {
+                lock_id,
+                commit_hash,
+                bond_amount,
+            } => {
                 let mut contract = self
                     .db
                     .get_timelock(&lock_id.0)?
@@ -649,7 +712,12 @@ impl StateEngine {
             }
 
             // ── RevealClaim ───────────────────────────────────────────────────
-            Action::RevealClaim { lock_id, payload, salt, certificates } => {
+            Action::RevealClaim {
+                lock_id,
+                payload,
+                salt,
+                certificates,
+            } => {
                 let mut contract = self
                     .db
                     .get_timelock(&lock_id.0)?
@@ -696,7 +764,9 @@ impl StateEngine {
                     h.update(salt);
                     *h.finalize().as_bytes()
                 };
-                let stored_hash = cs.commit_hash.ok_or(ChronxError::InvalidClaimStateTransition)?;
+                let stored_hash = cs
+                    .commit_hash
+                    .ok_or(ChronxError::InvalidClaimStateTransition)?;
                 if expected_hash != stored_hash {
                     // Slash: hash mismatch. Commit the slash as a valid state
                     // transition (Ok) so staged mutations persist.
@@ -724,7 +794,11 @@ impl StateEngine {
             }
 
             // ── ChallengeClaimReveal ──────────────────────────────────────────
-            Action::ChallengeClaimReveal { lock_id, evidence_hash, bond_amount } => {
+            Action::ChallengeClaimReveal {
+                lock_id,
+                evidence_hash,
+                bond_amount,
+            } => {
                 let mut contract = self
                     .db
                     .get_timelock(&lock_id.0)?
@@ -750,7 +824,9 @@ impl StateEngine {
 
                 // Challenger must post at least the same bond as the agent.
                 if *bond_amount < cs.commit_bond {
-                    return Err(ChronxError::ClaimBondTooLow { min: cs.commit_bond });
+                    return Err(ChronxError::ClaimBondTooLow {
+                        min: cs.commit_bond,
+                    });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
@@ -794,7 +870,8 @@ impl StateEngine {
                         }
 
                         // Agent wins: pay out lock amount + return bond.
-                        let agent_id = cs.agent_id
+                        let agent_id = cs
+                            .agent_id
                             .clone()
                             .ok_or(ChronxError::InvalidClaimStateTransition)?;
                         let payout = contract.amount + cs.commit_bond;
@@ -805,7 +882,9 @@ impl StateEngine {
                         if agent_id == sender.account_id {
                             sender.balance += payout;
                         } else {
-                            let mut agent_acc = self.db.get_account(&agent_id)?
+                            let mut agent_acc = self
+                                .db
+                                .get_account(&agent_id)?
                                 .ok_or_else(|| ChronxError::UnknownAccount(agent_id.to_string()))?;
                             agent_acc.balance += payout;
                             staged.accounts.push(agent_acc);
@@ -824,7 +903,8 @@ impl StateEngine {
                     TimeLockStatus::ClaimChallenged { .. } => {
                         // MVP: challenger wins automatically.
                         // Full implementation would evaluate evidence off-chain via oracle/committee.
-                        let challenger_id = cs.challenger
+                        let challenger_id = cs
+                            .challenger
                             .clone()
                             .ok_or(ChronxError::InvalidClaimStateTransition)?;
 
@@ -832,13 +912,17 @@ impl StateEngine {
                         // Lock funds are returned to sender (or protocol treasury in full impl).
                         let challenger_payout = cs.challenge_bond + cs.commit_bond;
 
-                        let mut challenger_acc = self.db.get_account(&challenger_id)?
-                            .ok_or_else(|| ChronxError::UnknownAccount(challenger_id.to_string()))?;
+                        let mut challenger_acc =
+                            self.db.get_account(&challenger_id)?.ok_or_else(|| {
+                                ChronxError::UnknownAccount(challenger_id.to_string())
+                            })?;
                         challenger_acc.balance += challenger_payout;
 
                         // Return lock amount to original sender.
-                        let mut lock_sender = self.db.get_account(&contract.sender)?
-                            .ok_or_else(|| ChronxError::UnknownAccount(contract.sender.to_string()))?;
+                        let mut lock_sender =
+                            self.db.get_account(&contract.sender)?.ok_or_else(|| {
+                                ChronxError::UnknownAccount(contract.sender.to_string())
+                            })?;
                         lock_sender.balance += contract.amount;
 
                         cs.commit_bond = 0;
@@ -860,9 +944,15 @@ impl StateEngine {
             }
 
             // ── RegisterProvider ──────────────────────────────────────────────
-            Action::RegisterProvider { provider_class, jurisdictions, bond_amount } => {
+            Action::RegisterProvider {
+                provider_class,
+                jurisdictions,
+                bond_amount,
+            } => {
                 if *bond_amount < PROVIDER_BOND_CHRONOS {
-                    return Err(ChronxError::ProviderBondTooLow { min: PROVIDER_BOND_CHRONOS });
+                    return Err(ChronxError::ProviderBondTooLow {
+                        min: PROVIDER_BOND_CHRONOS,
+                    });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
@@ -880,8 +970,10 @@ impl StateEngine {
                 let pubkey = match &sender.auth_policy {
                     AuthPolicy::SingleSig { public_key } => public_key.clone(),
                     AuthPolicy::RecoveryEnabled { owner_key, .. } => owner_key.clone(),
-                    AuthPolicy::MultiSig { public_keys, .. } =>
-                        public_keys.first().cloned().unwrap_or_else(|| chronx_core::types::DilithiumPublicKey(vec![])),
+                    AuthPolicy::MultiSig { public_keys, .. } => public_keys
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| chronx_core::types::DilithiumPublicKey(vec![])),
                 };
 
                 let record = ProviderRecord {
@@ -944,7 +1036,9 @@ impl StateEngine {
                 bond_amount,
             } => {
                 if *bond_amount < SCHEMA_BOND_CHRONOS {
-                    return Err(ChronxError::SchemaBondTooLow { min: SCHEMA_BOND_CHRONOS });
+                    return Err(ChronxError::SchemaBondTooLow {
+                        min: SCHEMA_BOND_CHRONOS,
+                    });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
@@ -1024,7 +1118,6 @@ impl StateEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use chronx_core::account::{AuthPolicy, TimeLockContract, TimeLockStatus};
     use chronx_core::constants::{
         CHRONOS_PER_KX, MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS,
@@ -1032,8 +1125,9 @@ mod tests {
     };
     use chronx_core::transaction::{Action, AuthScheme, Transaction};
     use chronx_core::types::{EvidenceHash, TimeLockId, TxId};
-    use chronx_crypto::{mine_pow, tx_id_from_body, KeyPair};
     use chronx_crypto::hash::account_id_from_pubkey;
+    use chronx_crypto::{mine_pow, tx_id_from_body, KeyPair};
+    use std::sync::Arc;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1068,13 +1162,22 @@ mod tests {
     fn seed_account(db: &StateDb, kp: &KeyPair, balance: u128) {
         let mut acc = Account::new(
             kp.account_id.clone(),
-            AuthPolicy::SingleSig { public_key: kp.public_key.clone() },
+            AuthPolicy::SingleSig {
+                public_key: kp.public_key.clone(),
+            },
         );
         acc.balance = balance;
         db.put_account(&acc).unwrap();
     }
 
-    fn seed_timelock(db: &StateDb, lock_id: TxId, sender: &KeyPair, recipient: &KeyPair, amount: u128, unlock_at: i64) {
+    fn seed_timelock(
+        db: &StateDb,
+        lock_id: TxId,
+        sender: &KeyPair,
+        recipient: &KeyPair,
+        amount: u128,
+        unlock_at: i64,
+    ) {
         let contract = TimeLockContract {
             id: lock_id,
             sender: sender.account_id.clone(),
@@ -1116,7 +1219,14 @@ mod tests {
     }
 
     /// Seed a V1 lock (with claim_policy set and org_identifier to avoid ambiguity).
-    fn seed_v1_timelock(db: &StateDb, lock_id: TxId, sender: &KeyPair, recipient: &KeyPair, amount: u128, unlock_at: i64) {
+    fn seed_v1_timelock(
+        db: &StateDb,
+        lock_id: TxId,
+        sender: &KeyPair,
+        recipient: &KeyPair,
+        amount: u128,
+        unlock_at: i64,
+    ) {
         let contract = TimeLockContract {
             id: lock_id.clone(),
             sender: sender.account_id.clone(),
@@ -1159,7 +1269,12 @@ mod tests {
 
     /// Seed an oracle snapshot so open_claim can read it.
     /// Build a minimal `Action::TimeLockCreate` with all new fields set to None/defaults.
-    fn tlc_action(recipient: chronx_core::types::DilithiumPublicKey, amount: u128, unlock_at: i64, memo: Option<String>) -> Action {
+    fn tlc_action(
+        recipient: chronx_core::types::DilithiumPublicKey,
+        amount: u128,
+        unlock_at: i64,
+        memo: Option<String>,
+    ) -> Action {
         Action::TimeLockCreate {
             recipient,
             amount,
@@ -1191,7 +1306,12 @@ mod tests {
         db.put_oracle_snapshot(&snap).unwrap();
     }
 
-    fn make_tx_with_parents(kp: &KeyPair, nonce: u64, parents: Vec<TxId>, actions: Vec<Action>) -> Transaction {
+    fn make_tx_with_parents(
+        kp: &KeyPair,
+        nonce: u64,
+        parents: Vec<TxId>,
+        actions: Vec<Action>,
+    ) -> Transaction {
         let mut tx = Transaction {
             tx_id: TxId::from_bytes([0u8; 32]),
             parents,
@@ -1225,14 +1345,22 @@ mod tests {
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
 
-        let tx = make_tx(&sender, 0, vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: 10 * CHRONOS_PER_KX,
-        }]);
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: 10 * CHRONOS_PER_KX,
+            }],
+        );
         engine.apply(&tx, NOW).unwrap();
 
         let s = engine.db.get_account(&sender.account_id).unwrap().unwrap();
-        let r = engine.db.get_account(&recipient.account_id).unwrap().unwrap();
+        let r = engine
+            .db
+            .get_account(&recipient.account_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(s.balance, 90 * CHRONOS_PER_KX);
         assert_eq!(r.balance, 10 * CHRONOS_PER_KX);
         assert_eq!(s.nonce, 1);
@@ -1243,11 +1371,18 @@ mod tests {
         let engine = StateEngine::new(Arc::new(temp_db("t_self")), 0);
         let kp = KeyPair::generate();
         seed_account(&engine.db, &kp, 100 * CHRONOS_PER_KX);
-        let tx = make_tx(&kp, 0, vec![Action::Transfer {
-            to: kp.account_id.clone(),
-            amount: CHRONOS_PER_KX,
-        }]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::SelfTransfer));
+        let tx = make_tx(
+            &kp,
+            0,
+            vec![Action::Transfer {
+                to: kp.account_id.clone(),
+                amount: CHRONOS_PER_KX,
+            }],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::SelfTransfer
+        ));
     }
 
     #[test]
@@ -1256,11 +1391,18 @@ mod tests {
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 5 * CHRONOS_PER_KX);
-        let tx = make_tx(&sender, 0, vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: 10 * CHRONOS_PER_KX,
-        }]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::InsufficientBalance { .. }));
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: 10 * CHRONOS_PER_KX,
+            }],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::InsufficientBalance { .. }
+        ));
     }
 
     #[test]
@@ -1269,11 +1411,18 @@ mod tests {
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
-        let tx = make_tx(&sender, 99, vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: CHRONOS_PER_KX,
-        }]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::InvalidNonce { .. }));
+        let tx = make_tx(
+            &sender,
+            99,
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: CHRONOS_PER_KX,
+            }],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::InvalidNonce { .. }
+        ));
     }
 
     // ── TimeLockCreate ────────────────────────────────────────────────────────
@@ -1286,7 +1435,16 @@ mod tests {
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
 
         let unlock_at = NOW + 86_400;
-        let tx = make_tx(&sender, 0, vec![tlc_action(recipient.public_key.clone(), 50 * CHRONOS_PER_KX, unlock_at, Some("test".into()))]);
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![tlc_action(
+                recipient.public_key.clone(),
+                50 * CHRONOS_PER_KX,
+                unlock_at,
+                Some("test".into()),
+            )],
+        );
         engine.apply(&tx, NOW).unwrap();
 
         let s = engine.db.get_account(&sender.account_id).unwrap().unwrap();
@@ -1296,7 +1454,10 @@ mod tests {
         assert_eq!(contract.amount, 50 * CHRONOS_PER_KX);
         assert_eq!(contract.unlock_at, unlock_at);
         assert_eq!(contract.status, TimeLockStatus::Pending);
-        assert_eq!(contract.lock_version, 0, "new locks from TimeLockCreate must be V0");
+        assert_eq!(
+            contract.lock_version, 0,
+            "new locks from TimeLockCreate must be V0"
+        );
     }
 
     #[test]
@@ -1305,8 +1466,20 @@ mod tests {
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
-        let tx = make_tx(&sender, 0, vec![tlc_action(recipient.public_key.clone(), CHRONOS_PER_KX, NOW - 1, None)]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::UnlockTimestampInPast));
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![tlc_action(
+                recipient.public_key.clone(),
+                CHRONOS_PER_KX,
+                NOW - 1,
+                None,
+            )],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::UnlockTimestampInPast
+        ));
     }
 
     #[test]
@@ -1315,8 +1488,20 @@ mod tests {
         let sender = KeyPair::generate();
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
-        let tx = make_tx(&sender, 0, vec![tlc_action(recipient.public_key.clone(), 0, NOW + 86_400, None)]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::ZeroAmount));
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![tlc_action(
+                recipient.public_key.clone(),
+                0,
+                NOW + 86_400,
+                None,
+            )],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::ZeroAmount
+        ));
     }
 
     // ── TimeLockClaim ─────────────────────────────────────────────────────────
@@ -1330,14 +1515,29 @@ mod tests {
         seed_account(&engine.db, &recipient, 0);
 
         let lock_id = TxId::from_bytes([42u8; 32]);
-        seed_timelock(&engine.db, lock_id.clone(), &sender, &recipient, 50 * CHRONOS_PER_KX, NOW - 1);
+        seed_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &sender,
+            &recipient,
+            50 * CHRONOS_PER_KX,
+            NOW - 1,
+        );
 
-        let tx = make_tx(&recipient, 0, vec![Action::TimeLockClaim {
-            lock_id: TimeLockId(lock_id),
-        }]);
+        let tx = make_tx(
+            &recipient,
+            0,
+            vec![Action::TimeLockClaim {
+                lock_id: TimeLockId(lock_id),
+            }],
+        );
         engine.apply(&tx, NOW).unwrap();
 
-        let r = engine.db.get_account(&recipient.account_id).unwrap().unwrap();
+        let r = engine
+            .db
+            .get_account(&recipient.account_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.balance, 50 * CHRONOS_PER_KX);
     }
 
@@ -1349,11 +1549,25 @@ mod tests {
         seed_account(&engine.db, &sender, 0);
         seed_account(&engine.db, &recipient, 0);
         let lock_id = TxId::from_bytes([43u8; 32]);
-        seed_timelock(&engine.db, lock_id.clone(), &sender, &recipient, 50 * CHRONOS_PER_KX, NOW + 86_400);
-        let tx = make_tx(&recipient, 0, vec![Action::TimeLockClaim {
-            lock_id: TimeLockId(lock_id),
-        }]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::TimeLockNotMatured { .. }));
+        seed_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &sender,
+            &recipient,
+            50 * CHRONOS_PER_KX,
+            NOW + 86_400,
+        );
+        let tx = make_tx(
+            &recipient,
+            0,
+            vec![Action::TimeLockClaim {
+                lock_id: TimeLockId(lock_id),
+            }],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::TimeLockNotMatured { .. }
+        ));
     }
 
     #[test]
@@ -1365,11 +1579,25 @@ mod tests {
         seed_account(&engine.db, &sender, 0);
         seed_account(&engine.db, &impostor, 0);
         let lock_id = TxId::from_bytes([44u8; 32]);
-        seed_timelock(&engine.db, lock_id.clone(), &sender, &recipient, 50 * CHRONOS_PER_KX, NOW - 1);
-        let tx = make_tx(&impostor, 0, vec![Action::TimeLockClaim {
-            lock_id: TimeLockId(lock_id),
-        }]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::AuthPolicyViolation));
+        seed_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &sender,
+            &recipient,
+            50 * CHRONOS_PER_KX,
+            NOW - 1,
+        );
+        let tx = make_tx(
+            &impostor,
+            0,
+            vec![Action::TimeLockClaim {
+                lock_id: TimeLockId(lock_id),
+            }],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::AuthPolicyViolation
+        ));
     }
 
     // ── Recovery ──────────────────────────────────────────────────────────────
@@ -1380,23 +1608,44 @@ mod tests {
         let requester = KeyPair::generate();
         let target_kp = KeyPair::generate();
         let new_owner = KeyPair::generate();
-        seed_account(&engine.db, &requester, MIN_RECOVERY_BOND_CHRONOS + CHRONOS_PER_KX);
-        engine.db.put_account(&Account::new(
-            target_kp.account_id.clone(),
-            AuthPolicy::SingleSig { public_key: target_kp.public_key.clone() },
-        )).unwrap();
+        seed_account(
+            &engine.db,
+            &requester,
+            MIN_RECOVERY_BOND_CHRONOS + CHRONOS_PER_KX,
+        );
+        engine
+            .db
+            .put_account(&Account::new(
+                target_kp.account_id.clone(),
+                AuthPolicy::SingleSig {
+                    public_key: target_kp.public_key.clone(),
+                },
+            ))
+            .unwrap();
 
-        let tx = make_tx(&requester, 0, vec![Action::StartRecovery {
-            target_account: target_kp.account_id.clone(),
-            proposed_owner_key: new_owner.public_key.clone(),
-            evidence_hash: EvidenceHash([0xABu8; 32]),
-            bond_amount: MIN_RECOVERY_BOND_CHRONOS,
-        }]);
+        let tx = make_tx(
+            &requester,
+            0,
+            vec![Action::StartRecovery {
+                target_account: target_kp.account_id.clone(),
+                proposed_owner_key: new_owner.public_key.clone(),
+                evidence_hash: EvidenceHash([0xABu8; 32]),
+                bond_amount: MIN_RECOVERY_BOND_CHRONOS,
+            }],
+        );
         engine.apply(&tx, NOW).unwrap();
 
-        let req = engine.db.get_account(&requester.account_id).unwrap().unwrap();
+        let req = engine
+            .db
+            .get_account(&requester.account_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(req.balance, CHRONOS_PER_KX);
-        let tgt = engine.db.get_account(&target_kp.account_id).unwrap().unwrap();
+        let tgt = engine
+            .db
+            .get_account(&target_kp.account_id)
+            .unwrap()
+            .unwrap();
         assert!(tgt.recovery_state.active);
     }
 
@@ -1407,17 +1656,29 @@ mod tests {
         let target_kp = KeyPair::generate();
         let new_owner = KeyPair::generate();
         seed_account(&engine.db, &requester, MIN_RECOVERY_BOND_CHRONOS * 2);
-        engine.db.put_account(&Account::new(
-            target_kp.account_id.clone(),
-            AuthPolicy::SingleSig { public_key: target_kp.public_key.clone() },
-        )).unwrap();
-        let tx = make_tx(&requester, 0, vec![Action::StartRecovery {
-            target_account: target_kp.account_id.clone(),
-            proposed_owner_key: new_owner.public_key.clone(),
-            evidence_hash: EvidenceHash([0u8; 32]),
-            bond_amount: MIN_RECOVERY_BOND_CHRONOS - 1,
-        }]);
-        assert!(matches!(engine.apply(&tx, NOW).unwrap_err(), ChronxError::RecoveryBondTooLow { .. }));
+        engine
+            .db
+            .put_account(&Account::new(
+                target_kp.account_id.clone(),
+                AuthPolicy::SingleSig {
+                    public_key: target_kp.public_key.clone(),
+                },
+            ))
+            .unwrap();
+        let tx = make_tx(
+            &requester,
+            0,
+            vec![Action::StartRecovery {
+                target_account: target_kp.account_id.clone(),
+                proposed_owner_key: new_owner.public_key.clone(),
+                evidence_hash: EvidenceHash([0u8; 32]),
+                bond_amount: MIN_RECOVERY_BOND_CHRONOS - 1,
+            }],
+        );
+        assert!(matches!(
+            engine.apply(&tx, NOW).unwrap_err(),
+            ChronxError::RecoveryBondTooLow { .. }
+        ));
     }
 
     #[test]
@@ -1425,9 +1686,13 @@ mod tests {
         let engine = StateEngine::new(Arc::new(temp_db("reg_verifier")), 0);
         let kp = KeyPair::generate();
         seed_account(&engine.db, &kp, MIN_VERIFIER_STAKE_CHRONOS + CHRONOS_PER_KX);
-        let tx = make_tx(&kp, 0, vec![Action::RegisterVerifier {
-            stake_amount: MIN_VERIFIER_STAKE_CHRONOS,
-        }]);
+        let tx = make_tx(
+            &kp,
+            0,
+            vec![Action::RegisterVerifier {
+                stake_amount: MIN_VERIFIER_STAKE_CHRONOS,
+            }],
+        );
         engine.apply(&tx, NOW).unwrap();
         let acc = engine.db.get_account(&kp.account_id).unwrap().unwrap();
         assert!(acc.is_verifier);
@@ -1445,44 +1710,93 @@ mod tests {
 
         let big = MIN_VERIFIER_STAKE_CHRONOS + MIN_RECOVERY_BOND_CHRONOS + 10 * CHRONOS_PER_KX;
         seed_account(&engine.db, &requester, big);
-        engine.db.put_account(&Account::new(
-            target_kp.account_id.clone(),
-            AuthPolicy::SingleSig { public_key: target_kp.public_key.clone() },
-        )).unwrap();
+        engine
+            .db
+            .put_account(&Account::new(
+                target_kp.account_id.clone(),
+                AuthPolicy::SingleSig {
+                    public_key: target_kp.public_key.clone(),
+                },
+            ))
+            .unwrap();
         for v in &verifiers {
             seed_account(&engine.db, v, MIN_VERIFIER_STAKE_CHRONOS + CHRONOS_PER_KX);
         }
 
-        engine.apply(&make_tx(&requester, 0, vec![Action::StartRecovery {
-            target_account: target_kp.account_id.clone(),
-            proposed_owner_key: new_owner.public_key.clone(),
-            evidence_hash: EvidenceHash([0x01u8; 32]),
-            bond_amount: MIN_RECOVERY_BOND_CHRONOS,
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &requester,
+                    0,
+                    vec![Action::StartRecovery {
+                        target_account: target_kp.account_id.clone(),
+                        proposed_owner_key: new_owner.public_key.clone(),
+                        evidence_hash: EvidenceHash([0x01u8; 32]),
+                        bond_amount: MIN_RECOVERY_BOND_CHRONOS,
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         for v in &verifiers {
-            engine.apply(&make_tx(v, 0, vec![Action::RegisterVerifier {
-                stake_amount: MIN_VERIFIER_STAKE_CHRONOS,
-            }]), NOW).unwrap();
+            engine
+                .apply(
+                    &make_tx(
+                        v,
+                        0,
+                        vec![Action::RegisterVerifier {
+                            stake_amount: MIN_VERIFIER_STAKE_CHRONOS,
+                        }],
+                    ),
+                    NOW,
+                )
+                .unwrap();
         }
 
         for v in &verifiers {
-            engine.apply(&make_tx(v, 1, vec![Action::VoteRecovery {
-                target_account: target_kp.account_id.clone(),
-                approve: true,
-                fee_bid: 0,
-            }]), NOW).unwrap();
+            engine
+                .apply(
+                    &make_tx(
+                        v,
+                        1,
+                        vec![Action::VoteRecovery {
+                            target_account: target_kp.account_id.clone(),
+                            approve: true,
+                            fee_bid: 0,
+                        }],
+                    ),
+                    NOW,
+                )
+                .unwrap();
         }
 
-        let mut tgt = engine.db.get_account(&target_kp.account_id).unwrap().unwrap();
+        let mut tgt = engine
+            .db
+            .get_account(&target_kp.account_id)
+            .unwrap()
+            .unwrap();
         tgt.recovery_state.recovery_execute_after = Some(NOW - 1);
         engine.db.put_account(&tgt).unwrap();
 
-        engine.apply(&make_tx(&requester, 1, vec![Action::FinalizeRecovery {
-            target_account: target_kp.account_id.clone(),
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &requester,
+                    1,
+                    vec![Action::FinalizeRecovery {
+                        target_account: target_kp.account_id.clone(),
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
-        let final_tgt = engine.db.get_account(&target_kp.account_id).unwrap().unwrap();
+        let final_tgt = engine
+            .db
+            .get_account(&target_kp.account_id)
+            .unwrap()
+            .unwrap();
         assert!(!final_tgt.recovery_state.active);
         match &final_tgt.auth_policy {
             AuthPolicy::RecoveryEnabled { owner_key, .. } => {
@@ -1501,13 +1815,20 @@ mod tests {
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
 
-        let tx = make_tx(&sender, 0, vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: CHRONOS_PER_KX,
-        }]);
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: CHRONOS_PER_KX,
+            }],
+        );
         engine.apply(&tx, NOW).unwrap();
 
-        assert!(engine.db.vertex_exists(&tx.tx_id), "vertex not persisted after apply");
+        assert!(
+            engine.db.vertex_exists(&tx.tx_id),
+            "vertex not persisted after apply"
+        );
         let v = engine.db.get_vertex(&tx.tx_id).unwrap().unwrap();
         assert_eq!(v.depth, 0);
     }
@@ -1519,16 +1840,25 @@ mod tests {
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
 
-        let tx1 = make_tx(&sender, 0, vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: CHRONOS_PER_KX,
-        }]);
+        let tx1 = make_tx(
+            &sender,
+            0,
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: CHRONOS_PER_KX,
+            }],
+        );
         engine.apply(&tx1, NOW).unwrap();
 
-        let tx2 = make_tx_with_parents(&sender, 1, vec![tx1.tx_id.clone()], vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: CHRONOS_PER_KX,
-        }]);
+        let tx2 = make_tx_with_parents(
+            &sender,
+            1,
+            vec![tx1.tx_id.clone()],
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: CHRONOS_PER_KX,
+            }],
+        );
         engine.apply(&tx2, NOW).unwrap();
 
         let v2 = engine.db.get_vertex(&tx2.tx_id).unwrap().unwrap();
@@ -1545,10 +1875,14 @@ mod tests {
         let recipient = KeyPair::generate();
         seed_account(&engine.db, &sender, 100 * CHRONOS_PER_KX);
 
-        let tx = make_tx(&sender, 0, vec![Action::Transfer {
-            to: recipient.account_id.clone(),
-            amount: CHRONOS_PER_KX,
-        }]);
+        let tx = make_tx(
+            &sender,
+            0,
+            vec![Action::Transfer {
+                to: recipient.account_id.clone(),
+                amount: CHRONOS_PER_KX,
+            }],
+        );
         engine.apply(&tx, NOW).unwrap();
         let err = engine.apply(&tx, NOW).unwrap_err();
         assert!(matches!(err, ChronxError::DuplicateVertex(_)));
@@ -1569,15 +1903,34 @@ mod tests {
 
         let lock_id = TxId::from_bytes([55u8; 32]);
         let lock_amount = 5 * CHRONOS_PER_KX;
-        seed_v1_timelock(&engine.db, lock_id.clone(), &lock_sender, &agent, lock_amount, NOW - 1);
+        seed_v1_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &lock_sender,
+            &agent,
+            lock_amount,
+            NOW - 1,
+        );
         seed_oracle(&engine.db, 100); // $1 per KX → 5 KX = $5 → trivial lane
 
         // 1. OpenClaim
-        engine.apply(&make_tx(&agent, 0, vec![Action::OpenClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    0,
+                    vec![Action::OpenClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
-        assert!(matches!(c.status, TimeLockStatus::ClaimOpen { .. }), "expected ClaimOpen after open_claim");
+        assert!(
+            matches!(c.status, TimeLockStatus::ClaimOpen { .. }),
+            "expected ClaimOpen after open_claim"
+        );
 
         // 2. SubmitClaimCommit
         let payload = b"I am the beneficiary - Alice Smith";
@@ -1588,34 +1941,68 @@ mod tests {
             h.update(&salt);
             *h.finalize().as_bytes()
         };
-        engine.apply(&make_tx(&agent, 1, vec![Action::SubmitClaimCommit {
-            lock_id: TimeLockId(lock_id.clone()),
-            commit_hash,
-            bond_amount: bond,
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    1,
+                    vec![Action::SubmitClaimCommit {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        commit_hash,
+                        bond_amount: bond,
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
-        assert!(matches!(c.status, TimeLockStatus::ClaimCommitted { .. }), "expected ClaimCommitted");
+        assert!(
+            matches!(c.status, TimeLockStatus::ClaimCommitted { .. }),
+            "expected ClaimCommitted"
+        );
 
         // 3. RevealClaim (within window)
-        engine.apply(&make_tx(&agent, 2, vec![Action::RevealClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-            payload: payload.to_vec(),
-            salt,
-            certificates: vec![],
-        }]), NOW + 1).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    2,
+                    vec![Action::RevealClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        payload: payload.to_vec(),
+                        salt,
+                        certificates: vec![],
+                    }],
+                ),
+                NOW + 1,
+            )
+            .unwrap();
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
-        assert!(matches!(c.status, TimeLockStatus::ClaimRevealed { .. }), "expected ClaimRevealed");
+        assert!(
+            matches!(c.status, TimeLockStatus::ClaimRevealed { .. }),
+            "expected ClaimRevealed"
+        );
 
         // 4. FinalizeClaim (after challenge window — trivial: 7 days)
         let after_window = NOW + 1 + 7 * 24 * 3600 + 1;
-        engine.apply(&make_tx(&agent, 3, vec![Action::FinalizeClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-        }]), after_window).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    3,
+                    vec![Action::FinalizeClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                    }],
+                ),
+                after_window,
+            )
+            .unwrap();
 
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
         assert!(
             matches!(c.status, TimeLockStatus::ClaimFinalized { .. }),
-            "expected ClaimFinalized, got {:?}", c.status
+            "expected ClaimFinalized, got {:?}",
+            c.status
         );
 
         // Agent should have received lock_amount + bond back.
@@ -1640,13 +2027,29 @@ mod tests {
         seed_account(&engine.db, &agent, bond + 5 * CHRONOS_PER_KX);
 
         let lock_id = TxId::from_bytes([77u8; 32]);
-        seed_v1_timelock(&engine.db, lock_id.clone(), &lock_sender, &agent, 5 * CHRONOS_PER_KX, NOW - 1);
+        seed_v1_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &lock_sender,
+            &agent,
+            5 * CHRONOS_PER_KX,
+            NOW - 1,
+        );
         seed_oracle(&engine.db, 100);
 
         // OpenClaim + SubmitClaimCommit with a valid commit_hash.
-        engine.apply(&make_tx(&agent, 0, vec![Action::OpenClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    0,
+                    vec![Action::OpenClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         let real_payload = b"real payload";
         let salt = [0xBBu8; 32];
@@ -1656,23 +2059,47 @@ mod tests {
             h.update(&salt);
             *h.finalize().as_bytes()
         };
-        engine.apply(&make_tx(&agent, 1, vec![Action::SubmitClaimCommit {
-            lock_id: TimeLockId(lock_id.clone()),
-            commit_hash,
-            bond_amount: bond,
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    1,
+                    vec![Action::SubmitClaimCommit {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        commit_hash,
+                        bond_amount: bond,
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         // Reveal with WRONG payload — hash mismatch → slash committed as Ok.
-        engine.apply(&make_tx(&agent, 2, vec![Action::RevealClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-            payload: b"tampered payload".to_vec(),
-            salt,
-            certificates: vec![],
-        }]), NOW + 1).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    2,
+                    vec![Action::RevealClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        payload: b"tampered payload".to_vec(),
+                        salt,
+                        certificates: vec![],
+                    }],
+                ),
+                NOW + 1,
+            )
+            .unwrap();
 
         // Status should be ClaimSlashed.
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
-        assert!(matches!(c.status, TimeLockStatus::ClaimSlashed { reason: SlashReason::RevealHashMismatch, .. }));
+        assert!(matches!(
+            c.status,
+            TimeLockStatus::ClaimSlashed {
+                reason: SlashReason::RevealHashMismatch,
+                ..
+            }
+        ));
     }
 
     // ── V2 Claims: Successful challenge ──────────────────────────────────────
@@ -1691,55 +2118,134 @@ mod tests {
         seed_account(&engine.db, &challenger, bond * 2);
 
         let lock_id = TxId::from_bytes([88u8; 32]);
-        seed_v1_timelock(&engine.db, lock_id.clone(), &lock_sender, &agent, lock_amount, NOW - 1);
+        seed_v1_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &lock_sender,
+            &agent,
+            lock_amount,
+            NOW - 1,
+        );
         seed_oracle(&engine.db, 100);
 
         // 1. OpenClaim
-        engine.apply(&make_tx(&agent, 0, vec![Action::OpenClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    0,
+                    vec![Action::OpenClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         // 2. SubmitClaimCommit
         let payload = b"agent claim";
         let salt = [0xCCu8; 32];
-        let commit_hash = { let mut h = blake3::Hasher::new(); h.update(payload); h.update(&salt); *h.finalize().as_bytes() };
-        engine.apply(&make_tx(&agent, 1, vec![Action::SubmitClaimCommit {
-            lock_id: TimeLockId(lock_id.clone()),
-            commit_hash,
-            bond_amount: bond,
-        }]), NOW).unwrap();
+        let commit_hash = {
+            let mut h = blake3::Hasher::new();
+            h.update(payload);
+            h.update(&salt);
+            *h.finalize().as_bytes()
+        };
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    1,
+                    vec![Action::SubmitClaimCommit {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        commit_hash,
+                        bond_amount: bond,
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         // 3. RevealClaim (valid hash)
-        engine.apply(&make_tx(&agent, 2, vec![Action::RevealClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-            payload: payload.to_vec(),
-            salt,
-            certificates: vec![],
-        }]), NOW + 1).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    2,
+                    vec![Action::RevealClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        payload: payload.to_vec(),
+                        salt,
+                        certificates: vec![],
+                    }],
+                ),
+                NOW + 1,
+            )
+            .unwrap();
 
         // 4. ChallengeClaimReveal (within 7-day window)
-        engine.apply(&make_tx(&challenger, 0, vec![Action::ChallengeClaimReveal {
-            lock_id: TimeLockId(lock_id.clone()),
-            evidence_hash: [0xDDu8; 32],
-            bond_amount: bond,
-        }]), NOW + 2).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &challenger,
+                    0,
+                    vec![Action::ChallengeClaimReveal {
+                        lock_id: TimeLockId(lock_id.clone()),
+                        evidence_hash: [0xDDu8; 32],
+                        bond_amount: bond,
+                    }],
+                ),
+                NOW + 2,
+            )
+            .unwrap();
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
         assert!(matches!(c.status, TimeLockStatus::ClaimChallenged { .. }));
 
         // 5. FinalizeClaim — challenger wins (MVP)
-        engine.apply(&make_tx(&agent, 3, vec![Action::FinalizeClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-        }]), NOW + 3).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    3,
+                    vec![Action::FinalizeClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                    }],
+                ),
+                NOW + 3,
+            )
+            .unwrap();
 
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
-        assert!(matches!(c.status, TimeLockStatus::ClaimSlashed { reason: SlashReason::SuccessfulChallenge, .. }));
+        assert!(matches!(
+            c.status,
+            TimeLockStatus::ClaimSlashed {
+                reason: SlashReason::SuccessfulChallenge,
+                ..
+            }
+        ));
 
         // Challenger gets back their bond + agent's bond.
-        let ch_acc = engine.db.get_account(&challenger.account_id).unwrap().unwrap();
-        assert_eq!(ch_acc.balance, bond * 2 - bond + bond + bond, "challenger: initial - bond + bond_back + agent_bond");
+        let ch_acc = engine
+            .db
+            .get_account(&challenger.account_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ch_acc.balance,
+            bond * 2 - bond + bond + bond,
+            "challenger: initial - bond + bond_back + agent_bond"
+        );
         // Sender gets lock_amount returned.
-        let s_acc = engine.db.get_account(&lock_sender.account_id).unwrap().unwrap();
-        assert_eq!(s_acc.balance, lock_amount * 2, "sender gets lock_amount back on top of seeded balance");
+        let s_acc = engine
+            .db
+            .get_account(&lock_sender.account_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            s_acc.balance,
+            lock_amount * 2,
+            "sender gets lock_amount back on top of seeded balance"
+        );
     }
 
     // ── V2 Claims: Ambiguity mode ─────────────────────────────────────────────
@@ -1766,9 +2272,9 @@ mod tests {
             status: TimeLockStatus::Pending,
             memo: None,
             lock_version: 1,
-            claim_policy: Some(1), // has a policy
+            claim_policy: Some(1),               // has a policy
             beneficiary_anchor_commitment: None, // no commitment
-            org_identifier: None,               // no org
+            org_identifier: None,                // no org
             cancellation_window_secs: None,
             notify_recipient: true,
             tags: None,
@@ -1795,13 +2301,25 @@ mod tests {
         engine.db.put_timelock(&contract).unwrap();
 
         // OpenClaim should transition to Ambiguous, not ClaimOpen.
-        engine.apply(&make_tx(&agent, 0, vec![Action::OpenClaim {
-            lock_id: TimeLockId(lock_id.clone()),
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &agent,
+                    0,
+                    vec![Action::OpenClaim {
+                        lock_id: TimeLockId(lock_id.clone()),
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         let c = engine.db.get_timelock(&lock_id).unwrap().unwrap();
-        assert!(matches!(c.status, TimeLockStatus::Ambiguous { .. }),
-            "expected Ambiguous for lock with no unique identifier, got {:?}", c.status);
+        assert!(
+            matches!(c.status, TimeLockStatus::Ambiguous { .. }),
+            "expected Ambiguous for lock with no unique identifier, got {:?}",
+            c.status
+        );
     }
 
     // ── V2 Claims: Oracle oracle manipulation attempt rejected ────────────────
@@ -1810,22 +2328,46 @@ mod tests {
     fn oracle_submission_rejected_for_non_oracle_provider() {
         let engine = StateEngine::new(Arc::new(temp_db("oracle_manip")), 0);
         let submitter = KeyPair::generate();
-        seed_account(&engine.db, &submitter, PROVIDER_BOND_CHRONOS + CHRONOS_PER_KX);
+        seed_account(
+            &engine.db,
+            &submitter,
+            PROVIDER_BOND_CHRONOS + CHRONOS_PER_KX,
+        );
 
         // Register as "kyc" provider (not "oracle").
-        engine.apply(&make_tx(&submitter, 0, vec![Action::RegisterProvider {
-            provider_class: "kyc".to_string(),
-            jurisdictions: vec!["US".to_string()],
-            bond_amount: PROVIDER_BOND_CHRONOS,
-        }]), NOW).unwrap();
+        engine
+            .apply(
+                &make_tx(
+                    &submitter,
+                    0,
+                    vec![Action::RegisterProvider {
+                        provider_class: "kyc".to_string(),
+                        jurisdictions: vec!["US".to_string()],
+                        bond_amount: PROVIDER_BOND_CHRONOS,
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap();
 
         // Attempt to submit oracle price — should fail.
-        let err = engine.apply(&make_tx(&submitter, 1, vec![Action::SubmitOraclePrice {
-            pair: "KX/USD".to_string(),
-            price_cents: 999_999_999, // malicious inflated price
-        }]), NOW).unwrap_err();
-        assert!(matches!(err, ChronxError::AuthPolicyViolation),
-            "non-oracle provider must not submit oracle prices");
+        let err = engine
+            .apply(
+                &make_tx(
+                    &submitter,
+                    1,
+                    vec![Action::SubmitOraclePrice {
+                        pair: "KX/USD".to_string(),
+                        price_cents: 999_999_999, // malicious inflated price
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, ChronxError::AuthPolicyViolation),
+            "non-oracle provider must not submit oracle prices"
+        );
     }
 
     // ── V2 Claims: Compliance certificate requirement (structural check) ───────
@@ -1840,13 +2382,31 @@ mod tests {
 
         // V1 lock with claim_policy set.
         let lock_id = TxId::from_bytes([111u8; 32]);
-        seed_v1_timelock(&engine.db, lock_id.clone(), &lock_sender, &recipient, CHRONOS_PER_KX, NOW - 1);
+        seed_v1_timelock(
+            &engine.db,
+            lock_id.clone(),
+            &lock_sender,
+            &recipient,
+            CHRONOS_PER_KX,
+            NOW - 1,
+        );
 
         // Attempting direct TimeLockClaim must fail.
-        let err = engine.apply(&make_tx(&recipient, 0, vec![Action::TimeLockClaim {
-            lock_id: TimeLockId(lock_id),
-        }]), NOW).unwrap_err();
-        assert!(matches!(err, ChronxError::LockRequiresClaimsFramework),
-            "V1 lock must not be directly claimable");
+        let err = engine
+            .apply(
+                &make_tx(
+                    &recipient,
+                    0,
+                    vec![Action::TimeLockClaim {
+                        lock_id: TimeLockId(lock_id),
+                    }],
+                ),
+                NOW,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, ChronxError::LockRequiresClaimsFramework),
+            "V1 lock must not be directly claimable"
+        );
     }
 }

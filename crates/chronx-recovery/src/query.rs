@@ -53,7 +53,11 @@ impl<'a> RecoveryQuery<'a> {
         let execute_after = rs.recovery_execute_after.unwrap_or(0);
         let days_remaining = (execute_after - now).max(0) / 86_400;
         let votes = rs.votes_approve.len();
-        let challenge = if rs.challenge_active { " [CHALLENGED]" } else { "" };
+        let challenge = if rs.challenge_active {
+            " [CHALLENGED]"
+        } else {
+            ""
+        };
 
         Ok(format!(
             "Recovery for {} — {}/{} approvals | {} days until executable{} | decision: {:?}",

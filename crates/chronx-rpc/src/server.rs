@@ -1,3 +1,15 @@
+//! JSON-RPC 2.0 server implementation for the ChronX node.
+//!
+//! This module exposes the [`RpcServer`] which binds to a TCP address and
+//! serves all `chronx_*` RPC methods defined in [`crate::api::ChronxApiServer`].
+//! CORS headers are set to permissive (`*`) so that browser-based clients
+//! (including the Tauri GUI wallet) can connect without a proxy.
+//!
+//! All methods are implemented on [`RpcServer`] via the `ChronxApiServer` trait.
+//! Errors return standard JSON-RPC error objects:
+//! - `-32602` for invalid or missing parameters
+//! - `-32603` for internal errors (DB failure, full queue, etc.)
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -68,17 +80,17 @@ impl RpcServer {
 
 fn tlc_status_str(status: &TimeLockStatus) -> String {
     match status {
-        TimeLockStatus::Pending                       => "Pending".to_string(),
-        TimeLockStatus::Claimed { .. }               => "Claimed".to_string(),
-        TimeLockStatus::ForSale { .. }               => "ForSale".to_string(),
-        TimeLockStatus::Ambiguous { .. }             => "Ambiguous".to_string(),
-        TimeLockStatus::ClaimOpen { .. }             => "ClaimOpen".to_string(),
-        TimeLockStatus::ClaimCommitted { .. }        => "ClaimCommitted".to_string(),
-        TimeLockStatus::ClaimRevealed { .. }         => "ClaimRevealed".to_string(),
-        TimeLockStatus::ClaimChallenged { .. }       => "ClaimChallenged".to_string(),
-        TimeLockStatus::ClaimFinalized { .. }        => "ClaimFinalized".to_string(),
-        TimeLockStatus::ClaimSlashed { .. }          => "ClaimSlashed".to_string(),
-        TimeLockStatus::Cancelled { .. }             => "Cancelled".to_string(),
+        TimeLockStatus::Pending => "Pending".to_string(),
+        TimeLockStatus::Claimed { .. } => "Claimed".to_string(),
+        TimeLockStatus::ForSale { .. } => "ForSale".to_string(),
+        TimeLockStatus::Ambiguous { .. } => "Ambiguous".to_string(),
+        TimeLockStatus::ClaimOpen { .. } => "ClaimOpen".to_string(),
+        TimeLockStatus::ClaimCommitted { .. } => "ClaimCommitted".to_string(),
+        TimeLockStatus::ClaimRevealed { .. } => "ClaimRevealed".to_string(),
+        TimeLockStatus::ClaimChallenged { .. } => "ClaimChallenged".to_string(),
+        TimeLockStatus::ClaimFinalized { .. } => "ClaimFinalized".to_string(),
+        TimeLockStatus::ClaimSlashed { .. } => "ClaimSlashed".to_string(),
+        TimeLockStatus::Cancelled { .. } => "Cancelled".to_string(),
     }
 }
 
@@ -104,6 +116,8 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
 
 #[async_trait]
 impl ChronxApiServer for RpcServer {
+    /// `chronx_getAccount` — return full account state including balance, spendable balance,
+    /// locked outgoing amount, verifier stake, nonce, and V3 lock counters.
     async fn get_account(&self, account_id: String) -> RpcResult<Option<RpcAccount>> {
         let id = AccountId::from_b58(&account_id)
             .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
@@ -114,7 +128,9 @@ impl ChronxApiServer for RpcServer {
             .get_account(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
-        let Some(a) = acc else { return Ok(None); };
+        let Some(a) = acc else {
+            return Ok(None);
+        };
 
         // Sum pending time-lock amounts where this account is the sender.
         let locked: u128 = self
@@ -164,6 +180,7 @@ impl ChronxApiServer for RpcServer {
         }))
     }
 
+    /// `chronx_getBalance` — return raw balance in Chronos (1 KX = 1,000,000 Chronos).
     async fn get_balance(&self, account_id: String) -> RpcResult<String> {
         let id = AccountId::from_b58(&account_id)
             .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
@@ -179,6 +196,9 @@ impl ChronxApiServer for RpcServer {
         Ok(balance.to_string())
     }
 
+    /// `chronx_sendTransaction` — submit a hex-encoded, signed, PoW-solved transaction.
+    /// Returns the transaction ID on success. The transaction is validated and applied
+    /// by the `StateEngine` in the node's main loop, then broadcast to peers via P2P.
     async fn send_transaction(&self, tx_hex: String) -> RpcResult<String> {
         let tx_bytes =
             hex::decode(&tx_hex).map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
@@ -195,15 +215,17 @@ impl ChronxApiServer for RpcServer {
                 .map_err(|_| rpc_err(-32603, "transaction queue full"))?;
         } else {
             warn!("RPC: sendTransaction called but no tx pipeline configured");
-            return Err(rpc_err(-32603, "node tx pipeline not connected").into());
+            return Err(rpc_err(-32603, "node tx pipeline not connected"));
         }
 
         Ok(tx_id)
     }
 
+    /// `chronx_getTransaction` — fetch a serialised DAG vertex by transaction ID (hex).
+    /// Returns the bincode-encoded vertex as a hex string, or null if not found.
     async fn get_transaction(&self, tx_id: String) -> RpcResult<Option<String>> {
-        let id = TxId::from_hex(&tx_id)
-            .map_err(|e| rpc_err(-32602, format!("invalid tx id: {e}")))?;
+        let id =
+            TxId::from_hex(&tx_id).map_err(|e| rpc_err(-32602, format!("invalid tx id: {e}")))?;
 
         let vertex = self
             .state
@@ -214,13 +236,14 @@ impl ChronxApiServer for RpcServer {
         match vertex {
             None => Ok(None),
             Some(v) => {
-                let bytes = bincode::serialize(&v)
-                    .map_err(|e| rpc_err(-32603, e.to_string()))?;
+                let bytes = bincode::serialize(&v).map_err(|e| rpc_err(-32603, e.to_string()))?;
                 Ok(Some(hex::encode(bytes)))
             }
         }
     }
 
+    /// `chronx_getTimeLockContracts` — all locks where the account is sender or recipient,
+    /// deduplicated and sorted newest-first.
     async fn get_timelock_contracts(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>> {
         let id = AccountId::from_b58(&account_id)
             .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
@@ -251,6 +274,8 @@ impl ChronxApiServer for RpcServer {
         Ok(all)
     }
 
+    /// `chronx_getDagTips` — current DAG tip TxIds (hex). Used to set parent pointers
+    /// when constructing a new transaction.
     async fn get_dag_tips(&self) -> RpcResult<Vec<String>> {
         let tips = self
             .state
@@ -261,10 +286,15 @@ impl ChronxApiServer for RpcServer {
         Ok(tips.into_iter().map(|t| t.to_hex()).collect())
     }
 
+    /// `chronx_getGenesisInfo` — genesis timestamp, total supply (Chronos and KX),
+    /// and initial PoW difficulty.
     async fn get_genesis_info(&self) -> RpcResult<RpcGenesisInfo> {
         Ok(RpcGenesisInfo::current(self.state.pow_difficulty))
     }
 
+    /// `chronx_getNetworkInfo` — the node's full libp2p multiaddress
+    /// (e.g. `/ip4/1.2.3.4/tcp/7777/p2p/<PeerId>`). Share with other nodes
+    /// as a `--bootstrap` peer.
     async fn get_network_info(&self) -> RpcResult<RpcNetworkInfo> {
         Ok(RpcNetworkInfo {
             peer_multiaddr: self.state.peer_multiaddr.clone().unwrap_or_default(),
@@ -274,25 +304,34 @@ impl ChronxApiServer for RpcServer {
     // ── V2 Claims queries ─────────────────────────────────────────────────────
 
     async fn get_providers(&self) -> RpcResult<Vec<RpcProvider>> {
-        let records = self.state.db.iter_providers()
+        let records = self
+            .state
+            .db
+            .iter_providers()
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
-        Ok(records.into_iter().map(|p| RpcProvider {
-            provider_id: p.provider_id.to_b58(),
-            provider_class: p.provider_class,
-            jurisdictions: p.jurisdictions,
-            status: match &p.status {
-                ProviderStatus::Active => "Active".to_string(),
-                ProviderStatus::Revoked { revoked_at } => format!("Revoked({})", revoked_at),
-            },
-            registered_at: p.registered_at,
-        }).collect())
+        Ok(records
+            .into_iter()
+            .map(|p| RpcProvider {
+                provider_id: p.provider_id.to_b58(),
+                provider_class: p.provider_class,
+                jurisdictions: p.jurisdictions,
+                status: match &p.status {
+                    ProviderStatus::Active => "Active".to_string(),
+                    ProviderStatus::Revoked { revoked_at } => format!("Revoked({})", revoked_at),
+                },
+                registered_at: p.registered_at,
+            })
+            .collect())
     }
 
     async fn get_provider(&self, provider_id: String) -> RpcResult<Option<RpcProvider>> {
         let id = AccountId::from_b58(&provider_id)
             .map_err(|e| rpc_err(-32602, format!("invalid provider id: {e}")))?;
-        let record = self.state.db.get_provider(&id)
+        let record = self
+            .state
+            .db
+            .get_provider(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         Ok(record.map(|p| RpcProvider {
             provider_id: p.provider_id.to_b58(),
@@ -307,36 +346,55 @@ impl ChronxApiServer for RpcServer {
     }
 
     async fn get_schemas(&self) -> RpcResult<Vec<RpcSchema>> {
-        let schemas = self.state.db.iter_schemas()
+        let schemas = self
+            .state
+            .db
+            .iter_schemas()
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        Ok(schemas.into_iter().map(|s| RpcSchema {
-            schema_id: s.schema_id,
-            name: s.name,
-            version: s.version,
-            active: s.active,
-            registered_at: s.registered_at,
-        }).collect())
+        Ok(schemas
+            .into_iter()
+            .map(|s| RpcSchema {
+                schema_id: s.schema_id,
+                name: s.name,
+                version: s.version,
+                active: s.active,
+                registered_at: s.registered_at,
+            })
+            .collect())
     }
 
     async fn get_claim_state(&self, lock_id: String) -> RpcResult<Option<RpcClaimState>> {
         let id = TxId::from_hex(&lock_id)
             .map_err(|e| rpc_err(-32602, format!("invalid lock id: {e}")))?;
-        let tlc = self.state.db.get_timelock(&id)
+        let tlc = self
+            .state
+            .db
+            .get_timelock(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        let cs = self.state.db.get_claim(&id)
+        let cs = self
+            .state
+            .db
+            .get_claim(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
-        let Some(cs) = cs else { return Ok(None); };
+        let Some(cs) = cs else {
+            return Ok(None);
+        };
 
-        let status = tlc.map(|t| match &t.status {
-            TimeLockStatus::ClaimOpen { .. }       => "ClaimOpen",
-            TimeLockStatus::ClaimCommitted { .. }  => "ClaimCommitted",
-            TimeLockStatus::ClaimRevealed { .. }   => "ClaimRevealed",
-            TimeLockStatus::ClaimChallenged { .. } => "ClaimChallenged",
-            TimeLockStatus::ClaimFinalized { .. }  => "ClaimFinalized",
-            TimeLockStatus::ClaimSlashed { .. }    => "ClaimSlashed",
-            _ => "Unknown",
-        }.to_string()).unwrap_or_else(|| "Unknown".to_string());
+        let status = tlc
+            .map(|t| {
+                match &t.status {
+                    TimeLockStatus::ClaimOpen { .. } => "ClaimOpen",
+                    TimeLockStatus::ClaimCommitted { .. } => "ClaimCommitted",
+                    TimeLockStatus::ClaimRevealed { .. } => "ClaimRevealed",
+                    TimeLockStatus::ClaimChallenged { .. } => "ClaimChallenged",
+                    TimeLockStatus::ClaimFinalized { .. } => "ClaimFinalized",
+                    TimeLockStatus::ClaimSlashed { .. } => "ClaimSlashed",
+                    _ => "Unknown",
+                }
+                .to_string()
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
 
         Ok(Some(RpcClaimState {
             lock_id,
@@ -349,7 +407,10 @@ impl ChronxApiServer for RpcServer {
     }
 
     async fn get_oracle_snapshot(&self, pair: String) -> RpcResult<Option<RpcOracleSnapshot>> {
-        let snap = self.state.db.get_oracle_snapshot(&pair)
+        let snap = self
+            .state
+            .db
+            .get_oracle_snapshot(&pair)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         Ok(snap.map(|s| RpcOracleSnapshot {
             pair: s.pair,
@@ -361,14 +422,20 @@ impl ChronxApiServer for RpcServer {
 
     // ── V3 New methods ────────────────────────────────────────────────────────
 
+    /// `chronx_getTimeLockById` — fetch a single time-lock by its TxId hex.
     async fn get_timelock_by_id(&self, lock_id: String) -> RpcResult<Option<RpcTimeLock>> {
         let id = TxId::from_hex(&lock_id)
             .map_err(|e| rpc_err(-32602, format!("invalid lock id: {e}")))?;
-        let tlc = self.state.db.get_timelock(&id)
+        let tlc = self
+            .state
+            .db
+            .get_timelock(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         Ok(tlc.map(tlc_to_rpc))
     }
 
+    /// `chronx_getPendingIncoming` — all `Pending` locks where the account is the recipient,
+    /// sorted by `unlock_at` ascending (soonest first).
     async fn get_pending_incoming(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>> {
         let id = AccountId::from_b58(&account_id)
             .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
@@ -387,6 +454,8 @@ impl ChronxApiServer for RpcServer {
         Ok(locks)
     }
 
+    /// `chronx_getTimeLockContractsPaged` — paginated lock list for an account
+    /// (max 200 per page). Deduplicated and sorted newest-first.
     async fn get_timelock_contracts_paged(
         &self,
         account_id: String,
@@ -401,9 +470,15 @@ impl ChronxApiServer for RpcServer {
         let mut seen = std::collections::HashSet::new();
         let mut all: Vec<RpcTimeLock> = Vec::new();
 
-        let as_recipient = self.state.db.iter_timelocks_for_recipient(&id)
+        let as_recipient = self
+            .state
+            .db
+            .iter_timelocks_for_recipient(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        let as_sender = self.state.db.iter_timelocks_for_sender(&id)
+        let as_sender = self
+            .state
+            .db
+            .iter_timelocks_for_sender(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
         for tlc in as_recipient.into_iter().chain(as_sender) {
@@ -418,12 +493,17 @@ impl ChronxApiServer for RpcServer {
         Ok(page)
     }
 
+    /// `chronx_getChainStats` — aggregate chain statistics: account count, timelock count,
+    /// vertex count, DAG tip count, max DAG depth, and total supply.
     async fn get_chain_stats(&self) -> RpcResult<RpcChainStats> {
         let total_accounts = self.state.db.count_accounts();
         let total_timelocks = self.state.db.count_timelocks();
         let total_vertices = self.state.db.count_vertices();
 
-        let tips = self.state.db.get_tips()
+        let tips = self
+            .state
+            .db
+            .get_tips()
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         let dag_tip_count = tips.len() as u64;
 
@@ -445,10 +525,15 @@ impl ChronxApiServer for RpcServer {
         })
     }
 
+    /// `chronx_getRecentTransactions` — the most recent `limit` transactions
+    /// (max 200), sorted by timestamp descending.
     async fn get_recent_transactions(&self, limit: u32) -> RpcResult<Vec<RpcRecentTx>> {
         let limit = limit.min(200) as usize;
 
-        let mut vertices = self.state.db.iter_all_vertices()
+        let mut vertices = self
+            .state
+            .db
+            .iter_all_vertices()
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
         // Sort by transaction timestamp descending (most recent first).
@@ -469,6 +554,8 @@ impl ChronxApiServer for RpcServer {
         Ok(result)
     }
 
+    /// `chronx_getLocksByUnlockDate` — all locks with `unlock_at` in `[from_unix, to_unix]`,
+    /// sorted by unlock date ascending. Useful for building unlock calendars.
     async fn get_locks_by_unlock_date(
         &self,
         from_unix: i64,
@@ -488,6 +575,8 @@ impl ChronxApiServer for RpcServer {
         Ok(locks)
     }
 
+    /// `chronx_getVersion` — node version (from `CARGO_PKG_VERSION`),
+    /// protocol version ("3"), and API version ("3").
     async fn get_version(&self) -> RpcResult<RpcVersionInfo> {
         Ok(RpcVersionInfo {
             node_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -496,6 +585,9 @@ impl ChronxApiServer for RpcServer {
         })
     }
 
+    /// `chronx_cancelLock` — submit a `CancelTimeLock` transaction (must contain exactly
+    /// one `CancelTimeLock` action). Returns the transaction ID. The cancellation is
+    /// validated by the engine (sender must match, cancellation window must not have expired).
     async fn cancel_lock(&self, tx_hex: String) -> RpcResult<String> {
         let tx_bytes =
             hex::decode(&tx_hex).map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
@@ -504,14 +596,13 @@ impl ChronxApiServer for RpcServer {
             .map_err(|e| rpc_err(-32602, format!("invalid transaction encoding: {e}")))?;
 
         // Validate: must contain exactly one CancelTimeLock action.
-        let has_cancel = tx.actions.len() == 1
-            && matches!(&tx.actions[0], Action::CancelTimeLock { .. });
+        let has_cancel =
+            tx.actions.len() == 1 && matches!(&tx.actions[0], Action::CancelTimeLock { .. });
         if !has_cancel {
             return Err(rpc_err(
                 -32602,
                 "cancelLock requires exactly one CancelTimeLock action",
-            )
-            .into());
+            ));
         }
 
         let tx_id = tx.tx_id.to_hex();
@@ -523,12 +614,14 @@ impl ChronxApiServer for RpcServer {
                 .map_err(|_| rpc_err(-32603, "transaction queue full"))?;
         } else {
             warn!("RPC: cancelLock called but no tx pipeline configured");
-            return Err(rpc_err(-32603, "node tx pipeline not connected").into());
+            return Err(rpc_err(-32603, "node tx pipeline not connected"));
         }
 
         Ok(tx_id)
     }
 
+    /// `chronx_searchLocks` — advanced lock query. Filter by account + optional status +
+    /// optional tag list (AND logic) + optional unlock date range + pagination (offset/limit, max 200).
     async fn search_locks(&self, query: RpcSearchQuery) -> RpcResult<Vec<RpcTimeLock>> {
         let id = AccountId::from_b58(&query.account_id)
             .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
@@ -540,9 +633,15 @@ impl ChronxApiServer for RpcServer {
         let mut seen = std::collections::HashSet::new();
         let mut all: Vec<RpcTimeLock> = Vec::new();
 
-        let as_recipient = self.state.db.iter_timelocks_for_recipient(&id)
+        let as_recipient = self
+            .state
+            .db
+            .iter_timelocks_for_recipient(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        let as_sender = self.state.db.iter_timelocks_for_sender(&id)
+        let as_sender = self
+            .state
+            .db
+            .iter_timelocks_for_sender(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
         for tlc in as_recipient.into_iter().chain(as_sender) {
@@ -559,10 +658,14 @@ impl ChronxApiServer for RpcServer {
 
             // unlock_at range filter
             if let Some(from) = query.unlock_from {
-                if tlc.unlock_at < from { continue; }
+                if tlc.unlock_at < from {
+                    continue;
+                }
             }
             if let Some(to) = query.unlock_to {
-                if tlc.unlock_at > to { continue; }
+                if tlc.unlock_at > to {
+                    continue;
+                }
             }
 
             // Tags filter: all requested tags must be present.

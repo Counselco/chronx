@@ -1,14 +1,30 @@
+//! Core account and time-lock types for the ChronX protocol.
+//!
+//! This module defines the fundamental on-chain data structures:
+//! - [`Account`] — the full state of a ChronX account (balance, auth policy, recovery state)
+//! - [`TimeLockContract`] — an on-chain time-locked promise between two parties
+//! - [`TimeLockStatus`] — the state machine for lock lifecycle (V0 direct-claim and V2 claims)
+//! - Supporting types: [`AuthPolicy`], [`RecoveryState`], [`ExpiryPolicy`], [`UnclaimedAction`], etc.
+//!
+//! All fields added in V2, V3, and V3.1 use `#[serde(default)]` so that records
+//! serialised by older node versions deserialise correctly without migration.
+
 use serde::{Deserialize, Serialize};
 
-use crate::types::{
-    AccountId, Balance, DilithiumPublicKey, EvidenceHash, Nonce, Timestamp, TxId,
-};
+use crate::types::{AccountId, Balance, DilithiumPublicKey, EvidenceHash, Nonce, Timestamp, TxId};
 
 // ── Serde default helpers ──────────────────────────────────────────────────────
 
-fn default_true() -> bool { true }
-fn default_account_version() -> u16 { 1 }
-fn default_lock_version_one() -> u16 { 1 }
+fn default_true() -> bool {
+    true
+}
+fn default_account_version() -> u16 {
+    1
+}
+#[allow(dead_code)]
+fn default_lock_version_one() -> u16 {
+    1
+}
 
 // ── AuthPolicy ────────────────────────────────────────────────────────────────
 
@@ -16,9 +32,7 @@ fn default_lock_version_one() -> u16 { 1 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum AuthPolicy {
     /// One Dilithium2 key, one signature required.
-    SingleSig {
-        public_key: DilithiumPublicKey,
-    },
+    SingleSig { public_key: DilithiumPublicKey },
 
     /// k-of-n Dilithium2 multisig.
     MultiSig {
@@ -53,29 +67,46 @@ impl Default for RecoveryConfig {
 
 // ── RecoveryState ─────────────────────────────────────────────────────────────
 
-/// The state of an in-flight or completed recovery for one account.
+/// The current decision status for an in-flight account recovery.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum RecoveryDecisionStatus {
+    /// Awaiting verifier votes; no majority reached yet.
     Pending,
+    /// Majority of verifiers voted to approve the recovery.
     Approved,
+    /// Majority of verifiers voted to reject the recovery.
     Rejected,
 }
 
+/// Full recovery state for an account that has `AuthPolicy::RecoveryEnabled`.
+///
+/// A recovery begins when a recovery transaction is submitted. Verifiers then
+/// vote on the evidence; the owner may challenge at any time before execution.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RecoveryState {
+    /// Whether a recovery process is currently in flight for this account.
     pub active: bool,
+    /// The public key of the proposed new owner (set when recovery is initiated).
     pub proposed_owner_key: Option<DilithiumPublicKey>,
+    /// Unix timestamp when the recovery was initiated.
     pub recovery_start_time: Option<Timestamp>,
+    /// Unix timestamp after which the recovery may be executed (delay for challenge window).
     pub recovery_execute_after: Option<Timestamp>,
+    /// Chronos bonded by the recovery initiator (slashed on bad-faith recovery).
     pub recovery_bond: Balance,
+    /// Chronos bonded by a challenger who disputes the recovery evidence.
     pub challenge_bond: Balance,
+    /// Verifier decision status for this recovery.
     pub decision_status: RecoveryDecisionStatus,
+    /// Hash of evidence submitted by the recovery initiator.
     pub evidence_hash: Option<EvidenceHash>,
+    /// Hash of counter-evidence submitted by a challenger.
     pub counter_evidence_hash: Option<EvidenceHash>,
-    /// TxIds of verifier votes received.
+    /// TxIds of verifier votes received in favour of the recovery.
     pub votes_approve: Vec<TxId>,
+    /// TxIds of verifier votes received against the recovery.
     pub votes_reject: Vec<TxId>,
-    /// Whether a challenge is active.
+    /// Whether an active challenge has been raised against this recovery.
     pub challenge_active: bool,
 }
 
@@ -160,6 +191,7 @@ pub struct Account {
 }
 
 impl Account {
+    /// Create a new account with zero balance and default (inactive) recovery state.
     pub fn new(account_id: AccountId, auth_policy: AuthPolicy) -> Self {
         Self {
             account_id,
@@ -205,9 +237,9 @@ pub enum ExpiryPolicy {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum RecurringPolicy {
     None,
-    Weekly  { count: u32 },
+    Weekly { count: u32 },
     Monthly { count: u32 },
-    Annual  { count: u32 },
+    Annual { count: u32 },
 }
 
 /// Future multi-recipient split lock (scaffold, inactive in V1).
@@ -234,7 +266,10 @@ pub enum TimeLockStatus {
     /// Claimed directly by recipient after maturity (V0 path).
     Claimed { claimed_at: Timestamp },
     /// Listed for secondary market sale (scaffold, not active in V1).
-    ForSale { ask_price: Balance, listed_at: Timestamp },
+    ForSale {
+        ask_price: Balance,
+        listed_at: Timestamp,
+    },
 
     // ── V2 Claims State Machine ───────────────────────────────────────────────
     /// Lock matured but no unique identifier found; waiting for outcome cert.
@@ -248,9 +283,15 @@ pub enum TimeLockStatus {
     /// Challenger contested the reveal; awaiting finalization.
     ClaimChallenged { challenged_at: Timestamp },
     /// Claim resolved; funds sent to beneficiary.
-    ClaimFinalized { paid_to: AccountId, finalized_at: Timestamp },
+    ClaimFinalized {
+        paid_to: AccountId,
+        finalized_at: Timestamp,
+    },
     /// Claim was slashed.
-    ClaimSlashed { reason: crate::claims::SlashReason, slashed_at: Timestamp },
+    ClaimSlashed {
+        reason: crate::claims::SlashReason,
+        slashed_at: Timestamp,
+    },
     /// Lock was cancelled by sender within the cancellation window.
     Cancelled { cancelled_at: Timestamp },
 }
@@ -261,9 +302,9 @@ impl TimeLockStatus {
         matches!(
             self,
             TimeLockStatus::Claimed { .. }
-            | TimeLockStatus::ClaimFinalized { .. }
-            | TimeLockStatus::ClaimSlashed { .. }
-            | TimeLockStatus::Cancelled { .. }
+                | TimeLockStatus::ClaimFinalized { .. }
+                | TimeLockStatus::ClaimSlashed { .. }
+                | TimeLockStatus::Cancelled { .. }
         )
     }
 }

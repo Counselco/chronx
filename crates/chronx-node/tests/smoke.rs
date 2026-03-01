@@ -89,13 +89,24 @@ async fn wait_for_rpc(client: &reqwest::Client, url: &str, timeout: Duration) ->
 }
 
 async fn get_balance(client: &reqwest::Client, url: &str, account_id: &str) -> u128 {
-    let result = rpc_call(client, url, "chronx_getBalance", serde_json::json!([account_id])).await;
+    let result = rpc_call(
+        client,
+        url,
+        "chronx_getBalance",
+        serde_json::json!([account_id]),
+    )
+    .await;
     result.as_str().unwrap().parse().expect("parse balance")
 }
 
 async fn get_nonce(client: &reqwest::Client, url: &str, account_id: &str) -> u64 {
-    let result =
-        rpc_call(client, url, "chronx_getAccount", serde_json::json!([account_id])).await;
+    let result = rpc_call(
+        client,
+        url,
+        "chronx_getAccount",
+        serde_json::json!([account_id]),
+    )
+    .await;
     if result.is_null() {
         return 0;
     }
@@ -114,8 +125,13 @@ async fn get_dag_tips(client: &reqwest::Client, url: &str) -> Vec<TxId> {
 async fn send_tx(client: &reqwest::Client, url: &str, tx: &Transaction) -> String {
     let bytes = bincode::serialize(tx).expect("serialize tx");
     let tx_hex = hex::encode(bytes);
-    let result =
-        rpc_call(client, url, "chronx_sendTransaction", serde_json::json!([tx_hex])).await;
+    let result = rpc_call(
+        client,
+        url,
+        "chronx_sendTransaction",
+        serde_json::json!([tx_hex]),
+    )
+    .await;
     result.as_str().expect("tx_id string").to_string()
 }
 
@@ -154,8 +170,7 @@ fn build_tx(kp: &KeyPair, nonce: u64, parents: Vec<TxId>, actions: Vec<Action>) 
 #[tokio::test]
 async fn smoke_transfer_and_timelock() {
     // ── 1. Prepare temp dir and genesis params ────────────────────────────────
-    let data_dir =
-        std::env::temp_dir().join(format!("chronx_e2e_{}", std::process::id()));
+    let data_dir = std::env::temp_dir().join(format!("chronx_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
     std::fs::create_dir_all(&data_dir).unwrap();
 
@@ -165,8 +180,8 @@ async fn smoke_transfer_and_timelock() {
 
     let params = GenesisParams {
         public_sale_key: public_sale_kp.public_key.clone(),
-        treasury_key:    treasury_kp.public_key.clone(),
-        humanity_key:    humanity_kp.public_key.clone(),
+        treasury_key: treasury_kp.public_key.clone(),
+        humanity_key: humanity_kp.public_key.clone(),
     };
     let params_path = data_dir.join("genesis-params.json");
     std::fs::write(&params_path, serde_json::to_string(&params).unwrap()).unwrap();
@@ -179,11 +194,16 @@ async fn smoke_transfer_and_timelock() {
     let node_bin = env!("CARGO_BIN_EXE_chronx-node");
     let child = Command::new(node_bin)
         .args([
-            "--data-dir",       data_dir.join("state").to_str().unwrap(),
-            "--rpc-addr",       &format!("127.0.0.1:{}", rpc_port),
-            "--p2p-listen",     &format!("/ip4/127.0.0.1/tcp/{}", p2p_port),
-            "--genesis-params", params_path.to_str().unwrap(),
-            "--pow-difficulty", "0",
+            "--data-dir",
+            data_dir.join("state").to_str().unwrap(),
+            "--rpc-addr",
+            &format!("127.0.0.1:{}", rpc_port),
+            "--p2p-listen",
+            &format!("/ip4/127.0.0.1/tcp/{}", p2p_port),
+            "--genesis-params",
+            params_path.to_str().unwrap(),
+            "--pow-difficulty",
+            "0",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -229,7 +249,11 @@ async fn smoke_transfer_and_timelock() {
     // ── 6. Verify alice received 1000 KX ──────────────────────────────────────
     let alice_b58 = alice.account_id.to_b58();
     let alice_bal = get_balance(&http, &rpc_url, &alice_b58).await;
-    assert_eq!(alice_bal, 1_000 * CHRONOS_PER_KX, "alice should have 1000 KX");
+    assert_eq!(
+        alice_bal,
+        1_000 * CHRONOS_PER_KX,
+        "alice should have 1000 KX"
+    );
 
     let ps_bal_after = get_balance(&http, &rpc_url, &ps_b58).await;
     assert_eq!(

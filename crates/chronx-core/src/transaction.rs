@@ -5,7 +5,9 @@ use crate::types::{
     Timestamp, TxId,
 };
 
-fn default_tx_version() -> u16 { 1 }
+fn default_tx_version() -> u16 {
+    1
+}
 
 // ── AuthScheme ────────────────────────────────────────────────────────────────
 
@@ -24,15 +26,10 @@ pub enum AuthScheme {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Action {
     // ── Transfers ────────────────────────────────────────────────────────────
-
     /// Send KX from one account to another.
-    Transfer {
-        to: AccountId,
-        amount: Balance,
-    },
+    Transfer { to: AccountId, amount: Balance },
 
     // ── Time-lock contracts ───────────────────────────────────────────────────
-
     /// Lock `amount` Chronos until `unlock_at`. Only `recipient` may claim.
     /// Regulatory note: locks protocol tokens only; no interest accrues;
     /// amount locked == amount claimable.
@@ -73,9 +70,7 @@ pub enum Action {
     },
 
     /// Claim a matured time-lock. Callable only by the registered recipient.
-    TimeLockClaim {
-        lock_id: TimeLockId,
-    },
+    TimeLockClaim { lock_id: TimeLockId },
 
     /// Mark a time-lock for sale at `ask_price` Chronos.
     /// Data structure present; execution engine INACTIVE at V1 launch.
@@ -88,12 +83,9 @@ pub enum Action {
     /// Cancel a time-lock within its `cancellation_window_secs`.
     /// Only the original sender may cancel. Returns funds to sender.
     /// Fails if the lock has no cancellation window or the window has expired.
-    CancelTimeLock {
-        lock_id: TimeLockId,
-    },
+    CancelTimeLock { lock_id: TimeLockId },
 
     // ── Account recovery ──────────────────────────────────────────────────────
-
     /// Initiate recovery of `target_account`.
     /// Requester posts a bond and commits to evidence hash.
     StartRecovery {
@@ -111,16 +103,11 @@ pub enum Action {
     },
 
     /// Finalize an approved recovery after delay + challenge window.
-    FinalizeRecovery {
-        target_account: AccountId,
-    },
+    FinalizeRecovery { target_account: AccountId },
 
     // ── Verifier registry ─────────────────────────────────────────────────────
-
     /// Register as a recovery verifier by staking collateral.
-    RegisterVerifier {
-        stake_amount: Balance,
-    },
+    RegisterVerifier { stake_amount: Balance },
 
     /// Cast a signed verifier vote on an active recovery.
     VoteRecovery {
@@ -131,12 +118,9 @@ pub enum Action {
     },
 
     // ── V2 Claims state machine ───────────────────────────────────────────────
-
     /// Open the claims process for a matured V1 lock.
     /// Snapshots V_claim from oracle and assigns the claim lane.
-    OpenClaim {
-        lock_id: TimeLockId,
-    },
+    OpenClaim { lock_id: TimeLockId },
 
     /// Commit a hash of the claim payload. Agent posts a bond.
     /// commit_hash = blake3(payload_bytes || salt_bytes).
@@ -164,12 +148,9 @@ pub enum Action {
 
     /// Finalize a claim after the challenge window has closed.
     /// Unchallenged reveal → agent wins. Challenged → challenger wins (MVP).
-    FinalizeClaim {
-        lock_id: TimeLockId,
-    },
+    FinalizeClaim { lock_id: TimeLockId },
 
     // ── Provider registry ─────────────────────────────────────────────────────
-
     /// Register the sender as a certificate provider.
     /// provider_class is a free string (e.g. "court", "kyc", "compliance").
     RegisterProvider {
@@ -179,17 +160,12 @@ pub enum Action {
     },
 
     /// Revoke a provider. Self-revoke or future governance call.
-    RevokeProvider {
-        provider_id: AccountId,
-    },
+    RevokeProvider { provider_id: AccountId },
 
     /// Rotate the active signing key for the caller's provider record.
-    RotateProviderKey {
-        new_public_key: DilithiumPublicKey,
-    },
+    RotateProviderKey { new_public_key: DilithiumPublicKey },
 
     // ── Certificate schema registry ───────────────────────────────────────────
-
     /// Register a new certificate schema on-chain.
     RegisterSchema {
         name: String,
@@ -204,12 +180,9 @@ pub enum Action {
     },
 
     /// Deactivate a schema (no new claims may reference it).
-    DeactivateSchema {
-        schema_id: crate::claims::SchemaId,
-    },
+    DeactivateSchema { schema_id: crate::claims::SchemaId },
 
     // ── Oracle ────────────────────────────────────────────────────────────────
-
     /// Submit a KX price observation. Caller must be a registered provider
     /// of class "oracle".
     SubmitOraclePrice {

@@ -19,6 +19,6 @@ pub mod types;
 pub use server::RpcServer;
 pub use server::RpcServerState;
 pub use types::{
-    RpcAccount, RpcClaimState, RpcGenesisInfo, RpcNetworkInfo, RpcOracleSnapshot,
-    RpcProvider, RpcSchema, RpcTimeLock,
+    RpcAccount, RpcClaimState, RpcGenesisInfo, RpcNetworkInfo, RpcOracleSnapshot, RpcProvider,
+    RpcSchema, RpcTimeLock,
 };

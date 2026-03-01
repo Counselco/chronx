@@ -105,14 +105,24 @@ async fn get_peer_multiaddr(client: &reqwest::Client, url: &str) -> String {
 }
 
 async fn get_balance(client: &reqwest::Client, url: &str, account_id: &str) -> u128 {
-    let result =
-        rpc_call_unwrap(client, url, "chronx_getBalance", serde_json::json!([account_id])).await;
+    let result = rpc_call_unwrap(
+        client,
+        url,
+        "chronx_getBalance",
+        serde_json::json!([account_id]),
+    )
+    .await;
     result.as_str().unwrap().parse().unwrap()
 }
 
 async fn get_nonce(client: &reqwest::Client, url: &str, account_id: &str) -> u64 {
-    let result =
-        rpc_call_unwrap(client, url, "chronx_getAccount", serde_json::json!([account_id])).await;
+    let result = rpc_call_unwrap(
+        client,
+        url,
+        "chronx_getAccount",
+        serde_json::json!([account_id]),
+    )
+    .await;
     if result.is_null() {
         return 0;
     }
@@ -120,27 +130,29 @@ async fn get_nonce(client: &reqwest::Client, url: &str, account_id: &str) -> u64
 }
 
 async fn get_dag_tips(client: &reqwest::Client, url: &str) -> Vec<TxId> {
-    let result =
-        rpc_call_unwrap(client, url, "chronx_getDagTips", serde_json::json!([])).await;
+    let result = rpc_call_unwrap(client, url, "chronx_getDagTips", serde_json::json!([])).await;
     let hex_list: Vec<String> = serde_json::from_value(result).unwrap();
-    hex_list.iter().map(|h| TxId::from_hex(h).unwrap()).collect()
+    hex_list
+        .iter()
+        .map(|h| TxId::from_hex(h).unwrap())
+        .collect()
 }
 
 async fn send_tx(client: &reqwest::Client, url: &str, tx: &Transaction) -> String {
     let bytes = bincode::serialize(tx).unwrap();
     let tx_hex = hex::encode(bytes);
-    let result =
-        rpc_call_unwrap(client, url, "chronx_sendTransaction", serde_json::json!([tx_hex])).await;
+    let result = rpc_call_unwrap(
+        client,
+        url,
+        "chronx_sendTransaction",
+        serde_json::json!([tx_hex]),
+    )
+    .await;
     result.as_str().unwrap().to_string()
 }
 
 /// Poll until a tx is visible via `chronx_getTransaction` on the given node.
-async fn wait_for_tx(
-    client: &reqwest::Client,
-    url: &str,
-    tx_id: &str,
-    timeout: Duration,
-) -> bool {
+async fn wait_for_tx(client: &reqwest::Client, url: &str, tx_id: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         let result = rpc_call(
@@ -197,8 +209,8 @@ fn genesis_params_for(dir: &PathBuf) -> (KeyPair, PathBuf) {
     let humanity_kp = KeyPair::generate();
     let params = GenesisParams {
         public_sale_key: public_sale_kp.public_key.clone(),
-        treasury_key:    treasury_kp.public_key.clone(),
-        humanity_key:    humanity_kp.public_key.clone(),
+        treasury_key: treasury_kp.public_key.clone(),
+        humanity_key: humanity_kp.public_key.clone(),
     };
     let params_path = dir.join("genesis-params.json");
     std::fs::write(&params_path, serde_json::to_string(&params).unwrap()).unwrap();
@@ -215,11 +227,16 @@ fn spawn_node(
     let node_bin = env!("CARGO_BIN_EXE_chronx-node");
     let mut cmd = Command::new(node_bin);
     cmd.args([
-        "--data-dir",       data_dir.join("state").to_str().unwrap(),
-        "--rpc-addr",       &format!("127.0.0.1:{}", rpc_port),
-        "--p2p-listen",     &format!("/ip4/127.0.0.1/tcp/{}", p2p_port),
-        "--genesis-params", params_path.to_str().unwrap(),
-        "--pow-difficulty", "0",
+        "--data-dir",
+        data_dir.join("state").to_str().unwrap(),
+        "--rpc-addr",
+        &format!("127.0.0.1:{}", rpc_port),
+        "--p2p-listen",
+        &format!("/ip4/127.0.0.1/tcp/{}", p2p_port),
+        "--genesis-params",
+        params_path.to_str().unwrap(),
+        "--pow-difficulty",
+        "0",
     ]);
     if let Some(bs) = bootstrap {
         cmd.args(["--bootstrap", bs]);
@@ -257,7 +274,10 @@ async fn p2p_gossip_propagation() {
     let url_a = format!("http://127.0.0.1:{}", rpc_a);
 
     let child_a = spawn_node(&dir_a, rpc_a, p2p_a, &params_path_a, None);
-    let _guard_a = NodeGuard { child: child_a, data_dir: dir_a };
+    let _guard_a = NodeGuard {
+        child: child_a,
+        data_dir: dir_a,
+    };
 
     assert!(
         wait_for_rpc(&http, &url_a, Duration::from_secs(20)).await,
@@ -276,8 +296,17 @@ async fn p2p_gossip_propagation() {
     let p2p_b = free_port();
     let url_b = format!("http://127.0.0.1:{}", rpc_b);
 
-    let child_b = spawn_node(&dir_b, rpc_b, p2p_b, &params_path_b, Some(&peer_multiaddr_a));
-    let _guard_b = NodeGuard { child: child_b, data_dir: base_dir };
+    let child_b = spawn_node(
+        &dir_b,
+        rpc_b,
+        p2p_b,
+        &params_path_b,
+        Some(&peer_multiaddr_a),
+    );
+    let _guard_b = NodeGuard {
+        child: child_b,
+        data_dir: base_dir,
+    };
 
     assert!(
         wait_for_rpc(&http, &url_b, Duration::from_secs(20)).await,

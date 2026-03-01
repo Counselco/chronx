@@ -1,10 +1,10 @@
-/// ─── ChronX Protocol Constants ──────────────────────────────────────────────
-///
-/// "The ledger for long-horizon human promises."
-///
-/// Total supply: 8,270,000,000 KX  (≈ human population at genesis design)
-/// Base unit:    Chrono  (1 KX = 1,000,000 Chronos)
-/// Ticker:       KX
+//! ─── ChronX Protocol Constants ──────────────────────────────────────────────
+//!
+//! "The ledger for long-horizon human promises."
+//!
+//! Total supply: 8,270,000,000 KX  (≈ human population at genesis design)
+//! Base unit:    Chrono  (1 KX = 1,000,000 Chronos)
+//! Ticker:       KX
 
 // ── Supply ───────────────────────────────────────────────────────────────────
 

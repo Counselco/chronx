@@ -55,8 +55,8 @@ impl ValidatorSet {
     /// Finality threshold: ceil(2/3 * active_count).
     pub fn finality_threshold(&self) -> u32 {
         let active = self.active_count() as u32;
-        // ceil(2n/3) = (2n + 2) / 3
-        (2 * active + 2) / 3
+        // ceil(2n/3)
+        (2 * active).div_ceil(3)
     }
 
     /// Mark a validator as online/offline.

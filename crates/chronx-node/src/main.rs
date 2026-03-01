@@ -8,7 +8,7 @@
 //!   5. Run the main loop: validate inbound txs → apply → broadcast
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -99,12 +99,15 @@ async fn main() -> anyhow::Result<()> {
         protocol_version: "/chronx/1.0.0".into(),
         vertex_topic: "chronx-vertices".into(),
     };
-    let (p2p_network, mut p2p_handle) = P2pNetwork::new(&p2p_config)
-        .map_err(|e| anyhow::anyhow!("building P2P network: {e}"))?;
+    let (p2p_network, mut p2p_handle) =
+        P2pNetwork::new(&p2p_config).map_err(|e| anyhow::anyhow!("building P2P network: {e}"))?;
     info!(peer_id = %p2p_handle.local_peer_id, "P2P identity");
 
     // Full multiaddr for peer discovery (used by chronx_getNetworkInfo).
-    let peer_multiaddr = format!("{}/p2p/{}", p2p_config.listen_addr, p2p_handle.local_peer_id);
+    let peer_multiaddr = format!(
+        "{}/p2p/{}",
+        p2p_config.listen_addr, p2p_handle.local_peer_id
+    );
 
     let outbound_tx = p2p_handle.outbound_tx.clone();
 
@@ -114,7 +117,9 @@ async fn main() -> anyhow::Result<()> {
         while let Some(msg) = p2p_handle.inbound_rx.recv().await {
             if let P2pMessage::NewVertex { payload } = msg {
                 match bincode::deserialize(&payload) {
-                    Ok(tx) => { let _ = tx_sender_for_p2p.send(tx).await; }
+                    Ok(tx) => {
+                        let _ = tx_sender_for_p2p.send(tx).await;
+                    }
                     Err(e) => warn!(error = %e, "failed to decode inbound vertex"),
                 }
             }
@@ -157,7 +162,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_or_generate_genesis_params(path: Option<&std::path::Path>) -> anyhow::Result<GenesisParams> {
+/// Load genesis parameters from a JSON file, or generate ephemeral keypairs if no path is given.
+///
+/// # Warning
+/// Ephemeral keys are **not reproducible**. A node started without `--genesis-params`
+/// will produce a genesis that cannot be shared with other nodes. Only use this for
+/// local development and testing.
+fn load_or_generate_genesis_params(
+    path: Option<&std::path::Path>,
+) -> anyhow::Result<GenesisParams> {
     if let Some(p) = path {
         let json = std::fs::read_to_string(p)
             .with_context(|| format!("reading genesis params from {}", p.display()))?;
@@ -174,11 +187,12 @@ fn load_or_generate_genesis_params(path: Option<&std::path::Path>) -> anyhow::Re
     })
 }
 
-fn expand_tilde(path: &PathBuf) -> PathBuf {
+/// Expand a leading `~` to the user's home directory (`HOME` or `USERPROFILE`).
+fn expand_tilde(path: &Path) -> PathBuf {
     if let Ok(stripped) = path.strip_prefix("~") {
         if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
             return PathBuf::from(home).join(stripped);
         }
     }
-    path.clone()
+    path.to_path_buf()
 }

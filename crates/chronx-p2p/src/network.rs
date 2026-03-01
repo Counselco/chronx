@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, noise, ping, tcp, yamux,
-    swarm::SwarmEvent,
-    Multiaddr, PeerId, Swarm,
+    gossipsub, identify, kad, noise, ping, swarm::SwarmEvent, tcp, yamux, Multiaddr, PeerId, Swarm,
 };
 use libp2p_swarm::NetworkBehaviour;
 use tokio::sync::mpsc;
@@ -71,13 +69,13 @@ impl P2pNetwork {
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .message_id_fn(message_id_fn)
                     .build()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(std::io::Error::other)?;
 
                 let gossipsub = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossipsub_config,
                 )
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
 
                 let store = kad::store::MemoryStore::new(key.public().to_peer_id());
                 let kademlia = kad::Behaviour::new(key.public().to_peer_id(), store);
@@ -89,7 +87,12 @@ impl P2pNetwork {
 
                 let ping = ping::Behaviour::default();
 
-                Ok(ChronxBehaviour { gossipsub, kademlia, identify, ping })
+                Ok(ChronxBehaviour {
+                    gossipsub,
+                    kademlia,
+                    identify,
+                    ping,
+                })
             })?
             .build();
 
@@ -101,7 +104,10 @@ impl P2pNetwork {
         for addr_str in &config.bootstrap_peers {
             if let Ok(addr) = addr_str.parse::<Multiaddr>() {
                 if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = addr.iter().last() {
-                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
                     // Also dial immediately so the TCP connection is established
                     // as soon as the swarm event loop starts.
                     let _ = swarm.dial(addr.clone());
@@ -114,8 +120,17 @@ impl P2pNetwork {
         let (outbound_tx, outbound_rx) = mpsc::channel(256);
         let (inbound_tx, inbound_rx) = mpsc::channel(256);
 
-        let network = P2pNetwork { swarm, topic, outbound_rx, inbound_tx };
-        let handle = P2pHandle { outbound_tx, inbound_rx, local_peer_id };
+        let network = P2pNetwork {
+            swarm,
+            topic,
+            outbound_rx,
+            inbound_tx,
+        };
+        let handle = P2pHandle {
+            outbound_tx,
+            inbound_rx,
+            local_peer_id,
+        };
 
         Ok((network, handle))
     }

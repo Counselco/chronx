@@ -39,7 +39,10 @@ pub struct TreasuryRelease {
 ///
 /// Uses integer arithmetic throughout; rounding dust is added to k=1.
 pub fn treasury_release_amount(k: u32) -> Balance {
-    assert!(k >= 1 && k <= TREASURY_RELEASE_COUNT, "k must be 1..=100");
+    assert!(
+        (1..=TREASURY_RELEASE_COUNT).contains(&k),
+        "k must be 1..=100"
+    );
     // amount_chronos = (TREASURY_KX * 1_000_000) * H100_SCALE / (H100_SCALED * k)
     let numerator = TREASURY_KX * 1_000_000 * H100_SCALE;
     numerator / (H100_SCALED * k as u128)
@@ -60,7 +63,7 @@ pub fn treasury_release_schedule() -> Vec<TreasuryRelease> {
         // Add any rounding dust to the first release so the sum is exact.
         if k == 1 {
             let rest: Balance = (2..=TREASURY_RELEASE_COUNT)
-                .map(|i| treasury_release_amount(i))
+                .map(treasury_release_amount)
                 .sum();
             amount = total_target - rest;
         }
@@ -112,13 +115,19 @@ mod tests {
         let schedule = treasury_release_schedule();
         let first = schedule[0].amount_chronos;
         let second = schedule[1].amount_chronos;
-        assert!(first > second, "first release must be largest (logarithmic)");
+        assert!(
+            first > second,
+            "first release must be largest (logarithmic)"
+        );
     }
 
     #[test]
     fn release_99_year_is_2127() {
         let schedule = treasury_release_schedule();
-        assert_eq!(schedule[98].year, 2127, "release #99 must be year 2127 — aligns with humanity stake");
+        assert_eq!(
+            schedule[98].year, 2127,
+            "release #99 must be year 2127 — aligns with humanity stake"
+        );
     }
 
     #[test]

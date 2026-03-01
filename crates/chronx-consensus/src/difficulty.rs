@@ -72,12 +72,9 @@ pub fn adjust_difficulty(config: &DifficultyConfig) -> u8 {
 
     // Scale difficulty proportionally: if solves are too fast, increase; too slow, decrease.
     // Use integer arithmetic: new = current * target / actual, clamped.
-    let scaled = (config.current as u64)
-        .saturating_mul(config.target_solve_ms)
-        / avg_gap_ms;
+    let scaled = (config.current as u64).saturating_mul(config.target_solve_ms) / avg_gap_ms;
 
-    let new_diff = scaled.clamp(POW_MIN_DIFFICULTY as u64, POW_MAX_DIFFICULTY as u64) as u8;
-    new_diff
+    scaled.clamp(POW_MIN_DIFFICULTY as u64, POW_MAX_DIFFICULTY as u64) as u8
 }
 
 #[cfg(test)]
@@ -93,7 +90,10 @@ mod tests {
         cfg.record_solve(1_000);
         cfg.record_solve(2_000);
         let new_diff = cfg.record_solve(3_000).unwrap();
-        assert!(new_diff > 20, "difficulty should increase when solving too fast");
+        assert!(
+            new_diff > 20,
+            "difficulty should increase when solving too fast"
+        );
         assert!(new_diff <= POW_MAX_DIFFICULTY);
     }
 
@@ -105,7 +105,10 @@ mod tests {
         cfg.record_solve(60_000);
         cfg.record_solve(120_000);
         let new_diff = cfg.record_solve(180_000).unwrap();
-        assert!(new_diff < 20, "difficulty should decrease when solving too slow");
+        assert!(
+            new_diff < 20,
+            "difficulty should decrease when solving too slow"
+        );
         assert!(new_diff >= POW_MIN_DIFFICULTY);
     }
 }

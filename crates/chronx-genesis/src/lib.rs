@@ -5,9 +5,14 @@
 //! transactions have no parents and no PoW — they are the founding document).
 //!
 //! Genesis allocations (all at GENESIS_TIMESTAMP = 2026-12-31 23:59:59 UTC):
-//!   1. Public sale address  — 7,269,000,000 KX  (spendable immediately)
-//!   2. Treasury             — 1,000,000,000 KX  (100 annual time-locks, log-declining)
-//!   3. Humanity stake       — 1,000,000 KX       (single lock until 2127-01-01)
+//!
+//! 1. Public sale address  — 7,268,000,000 KX  (spendable immediately)
+//! 2. Treasury             — 1,000,000,000 KX  (100 annual time-locks, log-declining)
+//! 3. Humanity stake       —     1,000,000 KX  (single lock until 2127-01-01)
+//! 4. Milestone 2076       —       500,000 KX  (unlocks 2076-01-01)
+//! 5. Protocol reserve     —       500,000 KX  (unlocks 2036-01-01)
+//!
+//! Total supply: 8,270,000,000 KX
 
 pub mod params;
 
@@ -16,9 +21,8 @@ pub use params::GenesisParams;
 use chronx_core::account::{Account, AuthPolicy, TimeLockContract, TimeLockStatus};
 use chronx_core::constants::{
     CHRONOS_PER_KX, GENESIS_TIMESTAMP, HUMANITY_STAKE_KX, HUMANITY_UNLOCK_TIMESTAMP,
-    MILESTONE_2076_KX, MILESTONE_2076_UNLOCK_TIMESTAMP,
-    PROTOCOL_RESERVE_KX, PROTOCOL_RESERVE_UNLOCK_TIMESTAMP,
-    PUBLIC_SALE_KX, TREASURY_KX,
+    MILESTONE_2076_KX, MILESTONE_2076_UNLOCK_TIMESTAMP, PROTOCOL_RESERVE_KX,
+    PROTOCOL_RESERVE_UNLOCK_TIMESTAMP, PUBLIC_SALE_KX, TREASURY_KX,
 };
 use chronx_core::error::ChronxError;
 use chronx_core::types::{AccountId, TxId};
@@ -88,7 +92,10 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
             accounts.treasury.clone(),
             release.amount_chronos,
             release.unlock_at,
-            Some(format!("Treasury release #{} — year {}", release.index, release.year)),
+            Some(format!(
+                "Treasury release #{} — year {}",
+                release.index, release.year
+            )),
         );
         db.put_timelock(&contract)?;
     }
@@ -114,8 +121,11 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         accounts.humanity.clone(),
         HUMANITY_STAKE_KX * CHRONOS_PER_KX,
         HUMANITY_UNLOCK_TIMESTAMP,
-        Some("The humanity stake — 1,000,000 KX — locked until Jan 1 2127 00:00:00 UTC. \
-              The largest single promise in the ledger.".to_string()),
+        Some(
+            "The humanity stake — 1,000,000 KX — locked until Jan 1 2127 00:00:00 UTC. \
+              The largest single promise in the ledger."
+                .to_string(),
+        ),
     );
     db.put_timelock(&humanity_lock)?;
     info!(
@@ -132,8 +142,11 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         accounts.humanity.clone(),
         MILESTONE_2076_KX * CHRONOS_PER_KX,
         MILESTONE_2076_UNLOCK_TIMESTAMP,
-        Some("ChronX 50-year milestone stake — locked at genesis, January 1 2026. \
-              Unlocks at the halfway point to the Humanity Stake.".to_string()),
+        Some(
+            "ChronX 50-year milestone stake — locked at genesis, January 1 2026. \
+              Unlocks at the halfway point to the Humanity Stake."
+                .to_string(),
+        ),
     );
     db.put_timelock(&milestone_lock)?;
     info!(
@@ -150,8 +163,11 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         accounts.treasury.clone(),
         PROTOCOL_RESERVE_KX * CHRONOS_PER_KX,
         PROTOCOL_RESERVE_UNLOCK_TIMESTAMP,
-        Some("ChronX protocol reserve — 10-year development fund. \
-              Locked at genesis January 1 2026.".to_string()),
+        Some(
+            "ChronX protocol reserve — 10-year development fund. \
+              Locked at genesis January 1 2026."
+                .to_string(),
+        ),
     );
     db.put_timelock(&reserve_lock)?;
     info!(
@@ -174,7 +190,9 @@ fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), Chr
     use chronx_core::constants::TOTAL_SUPPLY_CHRONOS;
 
     let public_sale_bal = db
-        .get_account(&chronx_crypto::hash::account_id_from_pubkey(&params.public_sale_key.0))?
+        .get_account(&chronx_crypto::hash::account_id_from_pubkey(
+            &params.public_sale_key.0,
+        ))?
         .map(|a| a.balance)
         .unwrap_or(0);
 
@@ -187,7 +205,8 @@ fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), Chr
     let milestone_amount = MILESTONE_2076_KX * CHRONOS_PER_KX;
     let reserve_amount = PROTOCOL_RESERVE_KX * CHRONOS_PER_KX;
 
-    let total = public_sale_bal + treasury_locks + humanity_amount + milestone_amount + reserve_amount;
+    let total =
+        public_sale_bal + treasury_locks + humanity_amount + milestone_amount + reserve_amount;
 
     if total != TOTAL_SUPPLY_CHRONOS {
         return Err(ChronxError::GenesisSupplyMismatch {
@@ -200,6 +219,7 @@ fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), Chr
     Ok(())
 }
 
+/// Derive the three genesis `AccountId`s from the public keys in `params`.
 fn build_accounts(params: &GenesisParams) -> GenesisAccounts {
     use chronx_crypto::hash::account_id_from_pubkey;
     GenesisAccounts {

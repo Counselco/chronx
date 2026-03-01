@@ -85,7 +85,10 @@ pub fn validate_signatures(
 
         // ── MultiSig ─────────────────────────────────────────────────────────
         (
-            AuthPolicy::MultiSig { threshold, public_keys },
+            AuthPolicy::MultiSig {
+                threshold,
+                public_keys,
+            },
             AuthScheme::MultiSig { k, .. },
         ) => {
             if tx.signatures.len() < *threshold as usize {
@@ -123,8 +126,7 @@ pub fn validate_signatures(
         // ── RecoveryEnabled (uses owner key like SingleSig) ───────────────────
         (AuthPolicy::RecoveryEnabled { owner_key, .. }, AuthScheme::SingleSig) => {
             let sig = tx.signatures.first().ok_or(ChronxError::InvalidSignature)?;
-            verify_signature(owner_key, &body_bytes, sig)
-                .map_err(|_| ChronxError::InvalidSignature)
+            verify_signature(owner_key, &body_bytes, sig).map_err(|_| ChronxError::InvalidSignature)
         }
 
         _ => Err(ChronxError::AuthPolicyViolation),

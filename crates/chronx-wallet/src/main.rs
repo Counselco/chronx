@@ -11,7 +11,7 @@
 //!   chronx-wallet balance   --account <b58> [--rpc <url>]
 //!   chronx-wallet info      [--rpc <url>]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
@@ -189,12 +189,15 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Transfer { to, amount } => {
             let kp = load_keypair(&keyfile)?;
-            let to_id = AccountId::from_b58(&to)
-                .map_err(|e| anyhow::anyhow!("invalid account: {e}"))?;
+            let to_id =
+                AccountId::from_b58(&to).map_err(|e| anyhow::anyhow!("invalid account: {e}"))?;
             let chronos = kx_to_chronos(amount);
             let tx = build_and_sign(
                 &kp,
-                vec![Action::Transfer { to: to_id, amount: chronos }],
+                vec![Action::Transfer {
+                    to: to_id,
+                    amount: chronos,
+                }],
                 &client,
             )
             .await?;
@@ -203,10 +206,14 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::Timelock { to_pubkey, amount, unlock, memo } => {
+        Command::Timelock {
+            to_pubkey,
+            amount,
+            unlock,
+            memo,
+        } => {
             let kp = load_keypair(&keyfile)?;
-            let pk_bytes =
-                hex::decode(&to_pubkey).context("decoding recipient public key hex")?;
+            let pk_bytes = hex::decode(&to_pubkey).context("decoding recipient public key hex")?;
             let chronos = kx_to_chronos(amount);
             let tx = build_and_sign(
                 &kp,
@@ -254,12 +261,16 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::Recover { target, new_key, evidence, bond } => {
+        Command::Recover {
+            target,
+            new_key,
+            evidence,
+            bond,
+        } => {
             let kp = load_keypair(&keyfile)?;
             let target_id = AccountId::from_b58(&target)
                 .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
-            let new_pk_bytes =
-                hex::decode(&new_key).context("decoding proposed owner key hex")?;
+            let new_pk_bytes = hex::decode(&new_key).context("decoding proposed owner key hex")?;
             let ev_bytes = hex::decode(&evidence).context("decoding evidence hash hex")?;
             if ev_bytes.len() != 32 {
                 bail!("evidence hash must be 32 bytes (64 hex chars)");
@@ -284,12 +295,16 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::ChallengeRecovery { target, counter_evidence, bond } => {
+        Command::ChallengeRecovery {
+            target,
+            counter_evidence,
+            bond,
+        } => {
             let kp = load_keypair(&keyfile)?;
             let target_id = AccountId::from_b58(&target)
                 .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
-            let ev_bytes = hex::decode(&counter_evidence)
-                .context("decoding counter-evidence hash hex")?;
+            let ev_bytes =
+                hex::decode(&counter_evidence).context("decoding counter-evidence hash hex")?;
             if ev_bytes.len() != 32 {
                 bail!("counter-evidence hash must be 32 bytes (64 hex chars)");
             }
@@ -312,7 +327,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::VoteRecovery { target, approve, fee_bid } => {
+        Command::VoteRecovery {
+            target,
+            approve,
+            fee_bid,
+        } => {
             let kp = load_keypair(&keyfile)?;
             let target_id = AccountId::from_b58(&target)
                 .map_err(|e| anyhow::anyhow!("invalid target account: {e}"))?;
@@ -405,8 +424,8 @@ fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
 
     // Generate all three keypairs.
     let public_sale_kp = KeyPair::generate();
-    let treasury_kp    = KeyPair::generate();
-    let humanity_kp    = KeyPair::generate();
+    let treasury_kp = KeyPair::generate();
+    let humanity_kp = KeyPair::generate();
 
     // Write each private keyfile.
     let ps_path = out_dir.join("public_sale.json");
@@ -423,8 +442,8 @@ fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
     // Build GenesisParams (public keys only) and write genesis-params.json.
     let params = GenesisParams {
         public_sale_key: public_sale_kp.public_key.clone(),
-        treasury_key:    treasury_kp.public_key.clone(),
-        humanity_key:    humanity_kp.public_key.clone(),
+        treasury_key: treasury_kp.public_key.clone(),
+        humanity_key: humanity_kp.public_key.clone(),
     };
     let params_path = out_dir.join("genesis-params.json");
     std::fs::write(&params_path, serde_json::to_string_pretty(&params)?)
@@ -517,11 +536,11 @@ fn kx_to_chronos(kx: f64) -> u128 {
     (kx * CHRONOS_PER_KX as f64) as u128
 }
 
-fn expand_tilde(path: &PathBuf) -> PathBuf {
+fn expand_tilde(path: &Path) -> PathBuf {
     if let Ok(stripped) = path.strip_prefix("~") {
         if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
             return PathBuf::from(home).join(stripped);
         }
     }
-    path.clone()
+    path.to_path_buf()
 }
