@@ -228,5 +228,5 @@ MIT — see [LICENSE](LICENSE).
 ## Links
 
 - **Website:** [chronx.io](https://chronx.io)
-- **Whitepaper:** [github.com/Counselco/chronx-docs](https://github.com/Counselco/chronx-docs)
+- **Whitepaper:** [ChronX_Whitepaper_v2.0.docx](https://github.com/Counselco/chronx-docs/blob/main/whitepaper/ChronX_Whitepaper_v2.0.docx)
 - **GUI Wallet:** [github.com/Counselco/wallet-gui](https://github.com/Counselco/wallet-gui)
