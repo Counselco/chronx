@@ -161,6 +161,7 @@ mod tests {
             client_ref: None,
             fee_chronos: 0,
             expires_at: None,
+            sender_public_key: Some(kp.public_key.clone()),
         };
         // body_bytes are stable (don't include pow_nonce)
         let body_bytes = tx.body_bytes();

@@ -70,10 +70,30 @@ impl StateEngine {
         }
 
         // ── Resolve sender account ────────────────────────────────────────────
-        let sender = self
+        let mut sender = self
             .db
             .get_account(&tx.from)?
             .ok_or_else(|| ChronxError::UnknownAccount(tx.from.to_string()))?;
+
+        // ── Key registration (P2PKH first-spend) ─────────────────────────────
+        // Accounts created by receiving a Transfer have an empty auth_policy key
+        // (the protocol can't know the recipient's public key at Transfer time).
+        // When such an account first spends, it MUST include sender_public_key so
+        // the engine can verify ownership (hash → account_id) and register the key.
+        if let chronx_core::account::AuthPolicy::SingleSig { public_key } = &sender.auth_policy {
+            if public_key.0.is_empty() {
+                if let Some(provided_key) = &tx.sender_public_key {
+                    let derived = account_id_from_pubkey(&provided_key.0);
+                    if derived == tx.from {
+                        sender.auth_policy = chronx_core::account::AuthPolicy::SingleSig {
+                            public_key: provided_key.clone(),
+                        };
+                    }
+                    // If derived != tx.from, proceed with empty key → signature
+                    // validation will fail below, rejecting the tx.
+                }
+            }
+        }
 
         // ── Nonce check ───────────────────────────────────────────────────────
         if tx.nonce != sender.nonce {
@@ -1161,6 +1181,7 @@ mod tests {
             client_ref: None,
             fee_chronos: 0,
             expires_at: None,
+            sender_public_key: Some(kp.public_key.clone()),
         };
         let body_bytes = tx.body_bytes();
         tx.tx_id = tx_id_from_body(&body_bytes);
@@ -1353,6 +1374,7 @@ mod tests {
             client_ref: None,
             fee_chronos: 0,
             expires_at: None,
+            sender_public_key: Some(kp.public_key.clone()),
         };
         let body_bytes = tx.body_bytes();
         tx.pow_nonce = mine_pow(&body_bytes, 0);
@@ -1450,6 +1472,79 @@ mod tests {
             engine.apply(&tx, NOW).unwrap_err(),
             ChronxError::InvalidNonce { .. }
         ));
+    }
+
+    // ── Key registration (P2PKH first-spend) ─────────────────────────────────
+
+    /// An account created by receiving a Transfer has an empty public key.
+    /// Its first outgoing transaction MUST include `sender_public_key`.
+    /// The engine registers the key, then validates the signature normally.
+    #[test]
+    fn transfer_recipient_can_spend_after_key_registration() {
+        use chronx_core::account::AuthPolicy;
+
+        let engine = StateEngine::new(Arc::new(temp_db("key_reg")), 0);
+        let funder = KeyPair::generate();
+        let new_user = KeyPair::generate();
+        seed_account(&engine.db, &funder, 200 * CHRONOS_PER_KX);
+
+        // Step 1: funder transfers 100 KX to new_user — creates account with empty key
+        let fund_tx = make_tx(
+            &funder,
+            0,
+            vec![Action::Transfer {
+                to: new_user.account_id.clone(),
+                amount: 100 * CHRONOS_PER_KX,
+            }],
+        );
+        engine.apply(&fund_tx, NOW).unwrap();
+
+        // Verify new_user's account has empty auth_policy key
+        let acc = engine.db.get_account(&new_user.account_id).unwrap().unwrap();
+        assert_eq!(acc.balance, 100 * CHRONOS_PER_KX);
+        if let AuthPolicy::SingleSig { public_key } = &acc.auth_policy {
+            assert!(public_key.0.is_empty(), "new account should have empty key");
+        }
+
+        // Step 2: new_user sends a tx WITH sender_public_key — key gets registered
+        let third = KeyPair::generate();
+        let spend_tx = make_tx(
+            &new_user,
+            0,
+            vec![Action::Transfer {
+                to: third.account_id.clone(),
+                amount: 10 * CHRONOS_PER_KX,
+            }],
+        );
+        engine.apply(&spend_tx, NOW).unwrap();
+
+        // Verify new_user's key is now registered, balance reduced, nonce incremented
+        let acc2 = engine.db.get_account(&new_user.account_id).unwrap().unwrap();
+        assert_eq!(acc2.balance, 90 * CHRONOS_PER_KX);
+        assert_eq!(acc2.nonce, 1);
+        if let AuthPolicy::SingleSig { public_key } = &acc2.auth_policy {
+            assert!(!public_key.0.is_empty(), "key should now be registered");
+            assert_eq!(public_key.0, new_user.public_key.0);
+        }
+
+        // Step 3: new_user sends another tx — no sender_public_key needed now
+        let mut tx3 = make_tx(
+            &new_user,
+            1,
+            vec![Action::Transfer {
+                to: third.account_id.clone(),
+                amount: 5 * CHRONOS_PER_KX,
+            }],
+        );
+        tx3.sender_public_key = None; // omit — key already registered
+        let body = tx3.body_bytes();
+        tx3.tx_id = chronx_crypto::hash::tx_id_from_body(&body);
+        tx3.signatures = vec![new_user.sign(&body)];
+        engine.apply(&tx3, NOW).unwrap();
+
+        let acc3 = engine.db.get_account(&new_user.account_id).unwrap().unwrap();
+        assert_eq!(acc3.balance, 85 * CHRONOS_PER_KX);
+        assert_eq!(acc3.nonce, 2);
     }
 
     // ── TimeLockCreate ────────────────────────────────────────────────────────

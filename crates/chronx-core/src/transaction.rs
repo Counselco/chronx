@@ -243,6 +243,17 @@ pub struct Transaction {
     /// the mempool. None = no expiry.
     #[serde(default)]
     pub expires_at: Option<i64>,
+
+    // ── V3.3 Key registration (P2PKH first-spend pattern) ────────────────────
+    /// The sender's Dilithium2 public key, required on the first transaction
+    /// from any account that was created via Transfer (and thus has no stored
+    /// public key). The engine checks `account_id_from_pubkey(key) == from`
+    /// and, on success, updates the account's auth_policy permanently so all
+    /// future transactions can be verified without this field.
+    /// Wallets SHOULD always include this field — it is silently ignored for
+    /// accounts whose public key is already registered.
+    #[serde(default)]
+    pub sender_public_key: Option<crate::types::DilithiumPublicKey>,
 }
 
 /// The body bytes that are hashed to produce tx_id and covered by signatures.

@@ -157,6 +157,7 @@ fn build_tx(kp: &KeyPair, nonce: u64, parents: Vec<TxId>, actions: Vec<Action>) 
         client_ref: None,
         fee_chronos: 0,
         expires_at: None,
+        sender_public_key: Some(kp.public_key.clone()),
     };
     let body_bytes = tx.body_bytes();
     tx.pow_nonce = mine_pow(&body_bytes, 0); // difficulty 0 — instant

@@ -575,12 +575,11 @@ impl ChronxApiServer for RpcServer {
         Ok(locks)
     }
 
-    /// `chronx_getVersion` — node version (from `CARGO_PKG_VERSION`),
-    /// protocol version ("3"), and API version ("3").
+    /// `chronx_getVersion` — node version, protocol version ("3.3"), and API version.
     async fn get_version(&self) -> RpcResult<RpcVersionInfo> {
         Ok(RpcVersionInfo {
-            node_version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: "3".to_string(),
+            node_version: "1.3.2".to_string(),
+            protocol_version: "3.3".to_string(),
             api_version: "3".to_string(),
         })
     }

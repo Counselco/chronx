@@ -519,6 +519,7 @@ async fn build_and_sign(
         client_ref: None,
         fee_chronos: 0,
         expires_at: None,
+        sender_public_key: Some(kp.public_key.clone()),
     })
 }
 
