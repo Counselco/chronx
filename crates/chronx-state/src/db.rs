@@ -107,6 +107,40 @@ impl StateDb {
         Ok(())
     }
 
+    /// Return all time-lock contracts where `recipient_id` is the registered recipient.
+    pub fn iter_timelocks_for_recipient(
+        &self,
+        recipient_id: &AccountId,
+    ) -> Result<Vec<TimeLockContract>, ChronxError> {
+        let mut result = Vec::new();
+        for item in self.timelocks.iter() {
+            let (_, bytes) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let tlc: TimeLockContract = bincode::deserialize(&bytes)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if tlc.recipient_account_id == *recipient_id {
+                result.push(tlc);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Return all time-lock contracts where `sender_id` is the originating sender.
+    pub fn iter_timelocks_for_sender(
+        &self,
+        sender_id: &AccountId,
+    ) -> Result<Vec<TimeLockContract>, ChronxError> {
+        let mut result = Vec::new();
+        for item in self.timelocks.iter() {
+            let (_, bytes) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let tlc: TimeLockContract = bincode::deserialize(&bytes)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if tlc.sender == *sender_id {
+                result.push(tlc);
+            }
+        }
+        Ok(result)
+    }
+
     // ── DAG tips ──────────────────────────────────────────────────────────────
 
     pub fn add_tip(&self, tx_id: &TxId) -> Result<(), ChronxError> {

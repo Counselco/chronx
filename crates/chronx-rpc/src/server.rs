@@ -6,6 +6,7 @@ use jsonrpsee::server::{Server, ServerHandle};
 use jsonrpsee::types::ErrorObject;
 use tracing::{info, warn};
 
+use chronx_core::account::TimeLockStatus;
 use chronx_core::constants::CHRONOS_PER_KX;
 use chronx_core::transaction::Transaction;
 use chronx_core::types::{AccountId, TxId};
@@ -61,13 +62,46 @@ impl ChronxApiServer for RpcServer {
             .get_account(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
 
-        Ok(acc.map(|a| RpcAccount {
+        let Some(a) = acc else { return Ok(None); };
+
+        // Sum pending time-lock amounts where this account is the sender.
+        let locked: u128 = self
+            .state
+            .db
+            .iter_timelocks_for_sender(&id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|tlc| tlc.status == TimeLockStatus::Pending)
+            .map(|tlc| tlc.amount)
+            .sum();
+
+        // Approximate tip depth as chain height.
+        let tip_height = self
+            .state
+            .db
+            .get_tips()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| self.state.db.get_vertex(&t).ok().flatten())
+            .map(|v| v.depth)
+            .max()
+            .unwrap_or(0);
+
+        let spendable = a.spendable_balance();
+
+        Ok(Some(RpcAccount {
             account_id: a.account_id.to_b58(),
             balance_chronos: a.balance.to_string(),
             balance_kx: (a.balance / CHRONOS_PER_KX).to_string(),
+            spendable_chronos: spendable.to_string(),
+            spendable_kx: (spendable / CHRONOS_PER_KX).to_string(),
+            locked_chronos: locked.to_string(),
+            locked_kx: (locked / CHRONOS_PER_KX).to_string(),
+            verifier_stake_chronos: a.verifier_stake.to_string(),
             nonce: a.nonce,
             is_verifier: a.is_verifier,
             recovery_active: a.recovery_state.active,
+            tip_height,
         }))
     }
 
@@ -128,12 +162,52 @@ impl ChronxApiServer for RpcServer {
         }
     }
 
-    async fn get_timelock_contracts(&self, _account_id: String) -> RpcResult<Vec<RpcTimeLock>> {
-        // Scanning all time-locks is O(n) over the timelocks tree.
-        // In production this would be indexed; here we iterate the sled tree.
-        // For now, return an empty list — full scan requires a DB iterator API.
-        // TODO: add StateDb::iter_timelocks() when needed.
-        Ok(Vec::new())
+    async fn get_timelock_contracts(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>> {
+        let id = AccountId::from_b58(&account_id)
+            .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
+
+        // Collect contracts where this account is recipient OR sender, deduplicated by lock_id.
+        let mut seen = std::collections::HashSet::new();
+        let mut all: Vec<RpcTimeLock> = Vec::new();
+
+        let as_recipient = self
+            .state
+            .db
+            .iter_timelocks_for_recipient(&id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let as_sender = self
+            .state
+            .db
+            .iter_timelocks_for_sender(&id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        for tlc in as_recipient.into_iter().chain(as_sender) {
+            let lock_id_hex = tlc.id.to_hex();
+            if !seen.insert(lock_id_hex.clone()) {
+                continue; // self-lock appears in both lists; deduplicate
+            }
+            let status = match &tlc.status {
+                chronx_core::account::TimeLockStatus::Pending => "Pending".to_string(),
+                chronx_core::account::TimeLockStatus::Claimed { .. } => "Claimed".to_string(),
+                chronx_core::account::TimeLockStatus::ForSale { .. } => "ForSale".to_string(),
+            };
+            all.push(RpcTimeLock {
+                lock_id: lock_id_hex,
+                sender: tlc.sender.to_b58(),
+                recipient_account_id: tlc.recipient_account_id.to_b58(),
+                amount_chronos: tlc.amount.to_string(),
+                amount_kx: (tlc.amount / CHRONOS_PER_KX).to_string(),
+                unlock_at: tlc.unlock_at,
+                created_at: tlc.created_at,
+                status,
+                memo: tlc.memo,
+            });
+        }
+
+        // Sort newest first.
+        all.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(all)
     }
 
     async fn get_dag_tips(&self) -> RpcResult<Vec<String>> {

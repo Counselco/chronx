@@ -13,11 +13,22 @@ pub struct RpcNetworkInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcAccount {
     pub account_id: String,
-    pub balance_chronos: String, // u128 as string to avoid JSON precision loss
+    /// Total balance including verifier stake (u128 as string).
+    pub balance_chronos: String,
     pub balance_kx: String,
+    /// Spendable = balance - verifier_stake (u128 as string).
+    pub spendable_chronos: String,
+    pub spendable_kx: String,
+    /// Sum of sender's Pending time-lock amounts (u128 as string).
+    pub locked_chronos: String,
+    pub locked_kx: String,
+    /// Amount staked as verifier collateral (u128 as string).
+    pub verifier_stake_chronos: String,
     pub nonce: u64,
     pub is_verifier: bool,
     pub recovery_active: bool,
+    /// Approximate DAG tip depth (chain height proxy).
+    pub tip_height: u64,
 }
 
 /// JSON-serializable time-lock summary.
