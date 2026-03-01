@@ -321,6 +321,53 @@ pub enum UnclaimedAction {
     ForwardTo(AccountId),
 }
 
+// ── V3.2 Conditional Payment enums ───────────────────────────────────────────
+
+/// Who is authorized to verify a conditional payment.
+/// Dormant in V3.2 — no consensus logic yet.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum OraclePolicy {
+    /// Any registered bonded claim agent may attest.
+    AnyBondedAgent,
+    /// Only this specific agent may attest.
+    SpecificAgent(AccountId),
+    /// M-of-N agents must all attest.
+    MultiSig {
+        agents: Vec<AccountId>,
+        threshold: u8,
+    },
+    /// Registered external data feed (automatable conditions).
+    ExternalFeed { feed_id: [u8; 32] },
+}
+
+/// How precisely the condition must be interpreted by the oracle.
+/// Dormant in V3.2 — no consensus logic yet.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ConditionPrecision {
+    /// Exact verifiable criteria — no interpretation permitted.
+    Exact,
+    /// Reasonable judgment permitted — standard dispute window applies.
+    Interpretive,
+    /// Expert attestation required — higher bond, extended dispute window.
+    Expert,
+}
+
+/// Current verification status of a conditional payment.
+/// Dormant in V3.2 — no consensus logic yet.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ConditionStatus {
+    /// Awaiting verification.
+    Pending,
+    /// Condition verified — funds releasing after dispute window.
+    Verified { attestation_id: TxId },
+    /// Attestation is being challenged.
+    Disputed { challenger: AccountId },
+    /// Deadline passed without verification — reverting to sender.
+    Expired,
+    /// Funds returned to sender.
+    Reverted,
+}
+
 /// A time-lock contract stored in the state DB.
 ///
 /// V0 compatibility: all V2 fields use `#[serde(default)]` so that
@@ -435,4 +482,32 @@ pub struct TimeLockContract {
     /// dispatched yet? Does not affect consensus.
     #[serde(default)]
     pub notification_sent: bool,
+
+    // ── V3.2 Conditional Payment fields (dormant — no consensus logic yet) ────
+    /// Plain English description of the condition required for payment (max 1024 bytes).
+    /// If set, `condition_expiry` MUST also be set.
+    #[serde(default)]
+    pub condition_description: Option<String>,
+    /// UTC Unix timestamp — condition must be verified before this date
+    /// or funds automatically revert to sender. Mandatory if `condition_description` is set.
+    #[serde(default)]
+    pub condition_expiry: Option<u64>,
+    /// Who is authorized to verify this condition.
+    #[serde(default)]
+    pub condition_oracle: Option<OraclePolicy>,
+    /// How precisely the condition must be interpreted.
+    #[serde(default)]
+    pub condition_precision: Option<ConditionPrecision>,
+    /// Current status of condition verification.
+    #[serde(default)]
+    pub condition_status: Option<ConditionStatus>,
+    /// Transaction ID of the attestation that verified this condition.
+    #[serde(default)]
+    pub condition_attestation_id: Option<TxId>,
+    /// Whether a dispute has been raised against the condition attestation.
+    #[serde(default)]
+    pub condition_disputed: bool,
+    /// Seconds after attestation before funds release (dispute window).
+    #[serde(default)]
+    pub condition_dispute_window_secs: Option<u64>,
 }

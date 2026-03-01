@@ -275,6 +275,15 @@ fn genesis_lock(
         claim_window_secs: None,
         unclaimed_action: None,
         notification_sent: false,
+        // ── V3.2 Conditional Payment fields ──────────────────────────────
+        condition_description: None,
+        condition_expiry: None,
+        condition_oracle: None,
+        condition_precision: None,
+        condition_status: None,
+        condition_attestation_id: None,
+        condition_disputed: false,
+        condition_dispute_window_secs: None,
     }
 }
 

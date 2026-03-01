@@ -6,6 +6,45 @@ Unreleased sections accumulate changes until a versioned release is tagged.
 
 ---
 
+## [Unreleased] — Protocol V3.2
+
+### Summary
+Protocol V3.2 adds eight dormant, forward-compatible fields and three new enums
+to `TimeLockContract` for conditional payment support. No consensus logic is
+attached — these fields are scaffolding for the oracle-verified payment feature
+planned in a future protocol version. All fields use `#[serde(default)]` for
+full backward compatibility with V0/V2/V3/V3.1 stored locks.
+
+### New Enums
+- `OraclePolicy` — `AnyBondedAgent | SpecificAgent(AccountId) | MultiSig { agents, threshold } | ExternalFeed { feed_id }`
+  — specifies who is authorised to verify a conditional payment.
+- `ConditionPrecision` — `Exact | Interpretive | Expert`
+  — how strictly the oracle must interpret the condition text.
+- `ConditionStatus` — `Pending | Verified { attestation_id } | Disputed { challenger } | Expired | Reverted`
+  — lifecycle state of condition verification.
+
+### New TimeLockContract Fields — Conditional Payments (dormant)
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `condition_description` | `Option<String>` | `None` | Plain-English condition (max 1 024 bytes); if set, `condition_expiry` must also be set |
+| `condition_expiry` | `Option<u64>` | `None` | UTC Unix timestamp — condition must verify before this date or funds revert |
+| `condition_oracle` | `Option<OraclePolicy>` | `None` | Who is authorised to attest the condition |
+| `condition_precision` | `Option<ConditionPrecision>` | `None` | Interpretation strictness |
+| `condition_status` | `Option<ConditionStatus>` | `None` | Current verification lifecycle state |
+| `condition_attestation_id` | `Option<TxId>` | `None` | TxId of the attestation vertex once verified |
+| `condition_disputed` | `bool` | `false` | Whether a dispute has been raised against the attestation |
+| `condition_dispute_window_secs` | `Option<u64>` | `None` | Seconds after attestation before funds release (dispute window) |
+
+### Affected Crates
+- `chronx-core` — new enums + fields in `account.rs`
+- `chronx-state` — 4 `TimeLockContract` initializers in `engine.rs` updated
+- `chronx-genesis` — `genesis_lock()` initializer in `lib.rs` updated
+
+### Tests
+All 45 existing lib tests pass unmodified. No new consensus tests (fields are dormant).
+
+---
+
 ## [Unreleased] — Protocol V3.1
 
 ### Summary
