@@ -150,7 +150,7 @@ ChronX is structured as a Rust workspace with 12 focused crates:
 
 The ChronX genesis state is deterministic and verified on every node startup.
 
-**Genesis Timestamp:** 2026-12-31 23:59:59 UTC
+**Genesis Timestamp:** 2026-01-01 00:00:00 UTC
 
 | Allocation | Amount (KX) | Unlock |
 |---|---|---|

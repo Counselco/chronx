@@ -26,8 +26,8 @@ pub const HUMANITY_STAKE_KX: u128 = 1_000_000;
 
 // ── Genesis timestamps (Unix seconds UTC) ────────────────────────────────────
 
-/// Public sale close / genesis reference point: 2026-12-31 23:59:59 UTC
-pub const GENESIS_TIMESTAMP: i64 = 1_798_761_599;
+/// Genesis timestamp: 2026-01-01 00:00:00 UTC
+pub const GENESIS_TIMESTAMP: i64 = 1_735_689_600;
 
 /// Treasury release begins: 2029-01-01 00:00:00 UTC
 pub const TREASURY_START_TIMESTAMP: i64 = 1_861_920_000;

@@ -4,7 +4,7 @@
 //! `StateDb` without going through the normal transaction engine (genesis
 //! transactions have no parents and no PoW — they are the founding document).
 //!
-//! Genesis allocations (all at GENESIS_TIMESTAMP = 2026-12-31 23:59:59 UTC):
+//! Genesis allocations (all at GENESIS_TIMESTAMP = 2026-01-01 00:00:00 UTC):
 //!
 //! 1. Public sale address  — 7,268,000,000 KX  (spendable immediately)
 //! 2. Treasury             — 1,000,000,000 KX  (100 annual time-locks, log-declining)
