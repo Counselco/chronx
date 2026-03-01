@@ -268,6 +268,18 @@ impl TimeLockStatus {
     }
 }
 
+/// What happens to the locked funds if a time-lock goes unclaimed past its
+/// `claim_window_secs`.  Dormant in V3.1 — no consensus logic yet.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum UnclaimedAction {
+    /// Return funds to the original sender.
+    RevertToSender,
+    /// Permanently destroy the locked funds (send to a zero sink).
+    Burn,
+    /// Forward the funds to a specified fallback account.
+    ForwardTo(AccountId),
+}
+
 /// A time-lock contract stored in the state DB.
 ///
 /// V0 compatibility: all V2 fields use `#[serde(default)]` so that
@@ -344,4 +356,42 @@ pub struct TimeLockContract {
     /// Client-side reference ID for deduplication (16 bytes, opaque).
     #[serde(default)]
     pub client_ref: Option<[u8; 16]>,
+
+    // ── V3.1 Transferability fields (dormant — no consensus logic yet) ────────
+    /// Whether the claim right on this lock can be assigned to another party.
+    /// Set by the sender at creation time. Defaults to false (irrevocable claim).
+    #[serde(default)]
+    pub transferable: bool,
+    /// Which governance-updatable secondary market rules apply if transferable.
+    #[serde(default)]
+    pub transfer_policy: Option<crate::claims::PolicyId>,
+    /// Tracks the current holder of the claim right if it has been transferred
+    /// away from the original recipient. None = still held by original recipient.
+    #[serde(default)]
+    pub current_beneficiary: Option<AccountId>,
+    /// Append-only audit trail of claim right transfer transactions.
+    #[serde(default)]
+    pub transfer_history: Vec<TxId>,
+    /// UTC Unix timestamp before which the lock cannot be transferred even if
+    /// `transferable: true`. Allows deferred transferability (e.g. "not until age 25").
+    #[serde(default)]
+    pub earliest_transfer_date: Option<u64>,
+
+    // ── V3.1 Email-lock fields (dormant — no consensus logic yet) ─────────────
+    /// BLAKE3 hash of the recipient's email address. Never store plaintext.
+    /// Used for email-based locks where the recipient does not yet have a wallet.
+    #[serde(default)]
+    pub recipient_email_hash: Option<[u8; 32]>,
+    /// Seconds from creation that the recipient has to claim an email-based lock
+    /// before `unclaimed_action` triggers.
+    #[serde(default)]
+    pub claim_window_secs: Option<u64>,
+    /// What happens to the locked funds if the claim window expires without a
+    /// successful claim.
+    #[serde(default)]
+    pub unclaimed_action: Option<UnclaimedAction>,
+    /// Off-chain infrastructure flag: has the claim-notification email been
+    /// dispatched yet? Does not affect consensus.
+    #[serde(default)]
+    pub notification_sent: bool,
 }

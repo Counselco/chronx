@@ -246,6 +246,15 @@ fn genesis_lock(
         jurisdiction_hint: None,
         governance_proposal_id: None,
         client_ref: None,
+        transferable: false,
+        transfer_policy: None,
+        current_beneficiary: None,
+        transfer_history: Vec::new(),
+        earliest_transfer_date: None,
+        recipient_email_hash: None,
+        claim_window_secs: None,
+        unclaimed_action: None,
+        notification_sent: false,
     }
 }
 

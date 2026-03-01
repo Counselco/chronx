@@ -315,6 +315,16 @@ impl StateEngine {
                     jurisdiction_hint: jurisdiction_hint.clone(),
                     governance_proposal_id: governance_proposal_id.clone(),
                     client_ref: *client_ref,
+                    // ── V3.1 fields — defaults at creation time ───────────────
+                    transferable: false,
+                    transfer_policy: None,
+                    current_beneficiary: None,
+                    transfer_history: Vec::new(),
+                    earliest_transfer_date: None,
+                    recipient_email_hash: None,
+                    claim_window_secs: None,
+                    unclaimed_action: None,
+                    notification_sent: false,
                 };
                 staged.timelocks.push(contract);
                 Ok(())
@@ -1092,6 +1102,15 @@ mod tests {
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
+            transferable: false,
+            transfer_policy: None,
+            current_beneficiary: None,
+            transfer_history: Vec::new(),
+            earliest_transfer_date: None,
+            recipient_email_hash: None,
+            claim_window_secs: None,
+            unclaimed_action: None,
+            notification_sent: false,
         };
         db.put_timelock(&contract).unwrap();
     }
@@ -1125,6 +1144,15 @@ mod tests {
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
+            transferable: false,
+            transfer_policy: None,
+            current_beneficiary: None,
+            transfer_history: Vec::new(),
+            earliest_transfer_date: None,
+            recipient_email_hash: None,
+            claim_window_secs: None,
+            unclaimed_action: None,
+            notification_sent: false,
         };
         db.put_timelock(&contract).unwrap();
     }
@@ -1754,6 +1782,15 @@ mod tests {
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
+            transferable: false,
+            transfer_policy: None,
+            current_beneficiary: None,
+            transfer_history: Vec::new(),
+            earliest_transfer_date: None,
+            recipient_email_hash: None,
+            claim_window_secs: None,
+            unclaimed_action: None,
+            notification_sent: false,
         };
         engine.db.put_timelock(&contract).unwrap();
 

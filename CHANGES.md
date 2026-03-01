@@ -1,5 +1,37 @@
 # ChronX Changelog
 
+## [Unreleased] — Protocol V3.1
+
+### Summary
+Protocol V3.1 adds two groups of dormant, forward-compatible fields to
+`TimeLockContract`. No consensus logic is attached to these fields — they are
+scaffolding for features planned in future protocol versions. All fields use
+`#[serde(default)]` so existing stored data (V0/V2/V3 locks) deserialises
+correctly without any migration.
+
+### New Enum
+- `UnclaimedAction` — `RevertToSender | Burn | ForwardTo(AccountId)` — governs
+  what happens to email-lock funds when the claim window expires unclaimed.
+
+### New TimeLockContract Fields — Transferability (dormant)
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `transferable` | `bool` | `false` | Sender-set flag: claim right may be assigned |
+| `transfer_policy` | `Option<PolicyId>` | `None` | Governance rule-set for secondary market |
+| `current_beneficiary` | `Option<AccountId>` | `None` | Current holder of claim right (None = original recipient) |
+| `transfer_history` | `Vec<TxId>` | `[]` | Append-only audit trail of transfers |
+| `earliest_transfer_date` | `Option<u64>` | `None` | Deferred transferability timestamp |
+
+### New TimeLockContract Fields — Email-lock (dormant)
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `recipient_email_hash` | `Option<[u8; 32]>` | `None` | BLAKE3 of recipient email — never plaintext |
+| `claim_window_secs` | `Option<u64>` | `None` | Seconds to claim before `unclaimed_action` fires |
+| `unclaimed_action` | `Option<UnclaimedAction>` | `None` | Action on claim-window expiry |
+| `notification_sent` | `bool` | `false` | Off-chain flag: claim email dispatched |
+
+---
+
 ## [Unreleased] — Protocol V3
 
 ### Summary
