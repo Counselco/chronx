@@ -49,6 +49,30 @@ impl<'a> TimeLockQuery<'a> {
             TimeLockStatus::ForSale { ask_price, .. } => {
                 format!("For sale — ask {} Chronos (secondary market inactive at V1)", ask_price)
             }
+            TimeLockStatus::Ambiguous { flagged_at } => {
+                format!("Ambiguous — flagged at {} (outcome certificate required)", flagged_at)
+            }
+            TimeLockStatus::ClaimOpen { opened_at } => {
+                format!("Claim open since {} — awaiting commit", opened_at)
+            }
+            TimeLockStatus::ClaimCommitted { committed_at } => {
+                format!("Claim committed at {} — awaiting reveal", committed_at)
+            }
+            TimeLockStatus::ClaimRevealed { revealed_at } => {
+                format!("Claim revealed at {} — in challenge window", revealed_at)
+            }
+            TimeLockStatus::ClaimChallenged { challenged_at } => {
+                format!("Claim challenged at {} — awaiting finalization", challenged_at)
+            }
+            TimeLockStatus::ClaimFinalized { paid_to, finalized_at } => {
+                format!("Claim finalized at {} — paid to {}", finalized_at, paid_to)
+            }
+            TimeLockStatus::ClaimSlashed { reason, slashed_at } => {
+                format!("Claim slashed at {} — reason: {:?}", slashed_at, reason)
+            }
+            TimeLockStatus::Cancelled { cancelled_at } => {
+                format!("Cancelled at Unix timestamp {}", cancelled_at)
+            }
         };
 
         Ok(format!(

@@ -177,6 +177,10 @@ fn build_tx(kp: &KeyPair, nonce: u64, parents: Vec<TxId>, actions: Vec<Action>) 
         pow_nonce: 0,
         signatures: vec![],
         auth_scheme: AuthScheme::SingleSig,
+        tx_version: 1,
+        client_ref: None,
+        fee_chronos: 0,
+        expires_at: None,
     };
     let body_bytes = tx.body_bytes();
     tx.pow_nonce = mine_pow(&body_bytes, 0);

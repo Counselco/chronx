@@ -155,6 +155,10 @@ mod tests {
             pow_nonce: 0,
             signatures: vec![],
             auth_scheme: auth_scheme.clone(),
+            tx_version: 1,
+            client_ref: None,
+            fee_chronos: 0,
+            expires_at: None,
         };
         // body_bytes are stable (don't include pow_nonce)
         let body_bytes = tx.body_bytes();

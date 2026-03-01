@@ -15,8 +15,10 @@ pub use params::GenesisParams;
 
 use chronx_core::account::{Account, AuthPolicy, TimeLockContract, TimeLockStatus};
 use chronx_core::constants::{
-    GENESIS_TIMESTAMP, HUMANITY_STAKE_KX, HUMANITY_UNLOCK_TIMESTAMP, PUBLIC_SALE_KX,
-    TREASURY_KX, CHRONOS_PER_KX,
+    CHRONOS_PER_KX, GENESIS_TIMESTAMP, HUMANITY_STAKE_KX, HUMANITY_UNLOCK_TIMESTAMP,
+    MILESTONE_2076_KX, MILESTONE_2076_UNLOCK_TIMESTAMP,
+    PROTOCOL_RESERVE_KX, PROTOCOL_RESERVE_UNLOCK_TIMESTAMP,
+    PUBLIC_SALE_KX, TREASURY_KX,
 };
 use chronx_core::error::ChronxError;
 use chronx_core::types::{AccountId, TxId};
@@ -79,20 +81,15 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         // deterministic ID: BLAKE3(b"treasury" || k as u32 LE bytes).
         let lock_id = treasury_lock_id(release.index);
 
-        let contract = TimeLockContract {
-            id: lock_id.clone(),
-            sender: accounts.treasury.clone(),
-            recipient_key: params.treasury_key.clone(),
-            recipient_account_id: accounts.treasury.clone(),
-            amount: release.amount_chronos,
-            unlock_at: release.unlock_at,
-            created_at: GENESIS_TIMESTAMP,
-            status: TimeLockStatus::Pending,
-            memo: Some(format!(
-                "Treasury release #{} — year {}",
-                release.index, release.year
-            )),
-        };
+        let contract = genesis_lock(
+            lock_id.clone(),
+            accounts.treasury.clone(),
+            params.treasury_key.clone(),
+            accounts.treasury.clone(),
+            release.amount_chronos,
+            release.unlock_at,
+            Some(format!("Treasury release #{} — year {}", release.index, release.year)),
+        );
         db.put_timelock(&contract)?;
     }
     info!(
@@ -110,26 +107,57 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
     );
     db.put_account(&humanity_account)?;
 
-    let humanity_lock = TimeLockContract {
-        id: humanity_lock_id(),
-        sender: accounts.humanity.clone(),
-        recipient_key: params.humanity_key.clone(),
-        recipient_account_id: accounts.humanity.clone(),
-        amount: HUMANITY_STAKE_KX * CHRONOS_PER_KX,
-        unlock_at: HUMANITY_UNLOCK_TIMESTAMP,
-        created_at: GENESIS_TIMESTAMP,
-        status: TimeLockStatus::Pending,
-        memo: Some(
-            "The humanity stake — 1,000,000 KX — locked until Jan 1 2127 00:00:00 UTC. \
-             The largest single promise in the ledger."
-                .to_string(),
-        ),
-    };
+    let humanity_lock = genesis_lock(
+        humanity_lock_id(),
+        accounts.humanity.clone(),
+        params.humanity_key.clone(),
+        accounts.humanity.clone(),
+        HUMANITY_STAKE_KX * CHRONOS_PER_KX,
+        HUMANITY_UNLOCK_TIMESTAMP,
+        Some("The humanity stake — 1,000,000 KX — locked until Jan 1 2127 00:00:00 UTC. \
+              The largest single promise in the ledger.".to_string()),
+    );
     db.put_timelock(&humanity_lock)?;
     info!(
         unlock_year = 2127,
         kx = HUMANITY_STAKE_KX,
         "genesis: humanity stake time-lock created"
+    );
+
+    // ── 4. Milestone 2076 lock ───────────────────────────────────────────────
+    let milestone_lock = genesis_lock(
+        milestone_2076_lock_id(),
+        accounts.humanity.clone(),
+        params.humanity_key.clone(),
+        accounts.humanity.clone(),
+        MILESTONE_2076_KX * CHRONOS_PER_KX,
+        MILESTONE_2076_UNLOCK_TIMESTAMP,
+        Some("ChronX 50-year milestone stake — locked at genesis, January 1 2026. \
+              Unlocks at the halfway point to the Humanity Stake.".to_string()),
+    );
+    db.put_timelock(&milestone_lock)?;
+    info!(
+        unlock_year = 2076,
+        kx = MILESTONE_2076_KX,
+        "genesis: milestone 2076 time-lock created"
+    );
+
+    // ── 5. Protocol reserve lock ─────────────────────────────────────────────
+    let reserve_lock = genesis_lock(
+        protocol_reserve_lock_id(),
+        accounts.treasury.clone(),
+        params.treasury_key.clone(),
+        accounts.treasury.clone(),
+        PROTOCOL_RESERVE_KX * CHRONOS_PER_KX,
+        PROTOCOL_RESERVE_UNLOCK_TIMESTAMP,
+        Some("ChronX protocol reserve — 10-year development fund. \
+              Locked at genesis January 1 2026.".to_string()),
+    );
+    db.put_timelock(&reserve_lock)?;
+    info!(
+        unlock_year = 2036,
+        kx = PROTOCOL_RESERVE_KX,
+        "genesis: protocol reserve time-lock created"
     );
 
     // ── Verify supply ────────────────────────────────────────────────────────
@@ -156,8 +184,10 @@ fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), Chr
         .sum();
 
     let humanity_amount = HUMANITY_STAKE_KX * CHRONOS_PER_KX;
+    let milestone_amount = MILESTONE_2076_KX * CHRONOS_PER_KX;
+    let reserve_amount = PROTOCOL_RESERVE_KX * CHRONOS_PER_KX;
 
-    let total = public_sale_bal + treasury_locks + humanity_amount;
+    let total = public_sale_bal + treasury_locks + humanity_amount + milestone_amount + reserve_amount;
 
     if total != TOTAL_SUPPLY_CHRONOS {
         return Err(ChronxError::GenesisSupplyMismatch {
@@ -179,6 +209,46 @@ fn build_accounts(params: &GenesisParams) -> GenesisAccounts {
     }
 }
 
+/// Build a genesis-time `TimeLockContract` with V3 fields set to safe defaults.
+fn genesis_lock(
+    id: TxId,
+    sender: AccountId,
+    recipient_key: chronx_core::types::DilithiumPublicKey,
+    recipient_account_id: AccountId,
+    amount: u128,
+    unlock_at: i64,
+    memo: Option<String>,
+) -> TimeLockContract {
+    TimeLockContract {
+        id,
+        sender,
+        recipient_key,
+        recipient_account_id,
+        amount,
+        unlock_at,
+        created_at: GENESIS_TIMESTAMP,
+        status: TimeLockStatus::Pending,
+        memo,
+        lock_version: 0,
+        claim_policy: None,
+        beneficiary_anchor_commitment: None,
+        org_identifier: None,
+        cancellation_window_secs: None,
+        notify_recipient: true,
+        tags: None,
+        private: false,
+        expiry_policy: None,
+        split_policy: None,
+        claim_attempts_max: None,
+        recurring: None,
+        extension_data: None,
+        oracle_hint: None,
+        jurisdiction_hint: None,
+        governance_proposal_id: None,
+        client_ref: None,
+    }
+}
+
 /// Deterministic TxId for treasury release `k`: BLAKE3("treasury_release" || k LE u32).
 pub fn treasury_lock_id(k: u32) -> TxId {
     let mut input = b"treasury_release".to_vec();
@@ -193,6 +263,18 @@ pub fn humanity_lock_id() -> TxId {
     TxId::from_bytes(*hash.as_bytes())
 }
 
+/// Deterministic TxId for the milestone 2076 lock.
+pub fn milestone_2076_lock_id() -> TxId {
+    let hash = blake3::hash(b"milestone_stake_2076");
+    TxId::from_bytes(*hash.as_bytes())
+}
+
+/// Deterministic TxId for the protocol reserve lock.
+pub fn protocol_reserve_lock_id() -> TxId {
+    let hash = blake3::hash(b"protocol_reserve_2036");
+    TxId::from_bytes(*hash.as_bytes())
+}
+
 /// Returns a dummy genesis `AccountId` (32 zero bytes) used as the
 /// "null address" from which genesis tokens logically originate.
 pub fn null_address() -> AccountId {
@@ -202,7 +284,7 @@ pub fn null_address() -> AccountId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chronx_core::constants::TOTAL_SUPPLY_CHRONOS;
+    use chronx_core::constants::{MILESTONE_2076_KX, PROTOCOL_RESERVE_KX, TOTAL_SUPPLY_CHRONOS};
     use chronx_crypto::KeyPair;
 
     fn test_params() -> GenesisParams {
@@ -235,9 +317,11 @@ mod tests {
             .map(|r| r.amount_chronos)
             .sum();
         let humanity = HUMANITY_STAKE_KX * CHRONOS_PER_KX;
+        let milestone = MILESTONE_2076_KX * CHRONOS_PER_KX;
+        let reserve = PROTOCOL_RESERVE_KX * CHRONOS_PER_KX;
 
         assert_eq!(
-            ps_bal + treasury_total + humanity,
+            ps_bal + treasury_total + humanity + milestone + reserve,
             TOTAL_SUPPLY_CHRONOS,
             "genesis total must equal TOTAL_SUPPLY_CHRONOS"
         );

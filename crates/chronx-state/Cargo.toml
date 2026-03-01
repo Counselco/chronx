@@ -14,3 +14,4 @@ bincode       = { workspace = true }
 thiserror     = { workspace = true }
 sled          = { workspace = true }
 tracing       = { workspace = true }
+blake3        = { workspace = true }

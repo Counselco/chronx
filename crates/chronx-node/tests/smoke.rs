@@ -137,6 +137,10 @@ fn build_tx(kp: &KeyPair, nonce: u64, parents: Vec<TxId>, actions: Vec<Action>) 
         pow_nonce: 0,
         signatures: vec![],
         auth_scheme: AuthScheme::SingleSig,
+        tx_version: 1,
+        client_ref: None,
+        fee_chronos: 0,
+        expires_at: None,
     };
     let body_bytes = tx.body_bytes();
     tx.pow_nonce = mine_pow(&body_bytes, 0); // difficulty 0 — instant
@@ -200,8 +204,8 @@ async fn smoke_transfer_and_timelock() {
     let genesis_bal = get_balance(&http, &rpc_url, &ps_b58).await;
     assert_eq!(
         genesis_bal,
-        7_269_000_000u128 * CHRONOS_PER_KX,
-        "public_sale genesis balance should be 7,269,000,000 KX"
+        7_268_000_000u128 * CHRONOS_PER_KX,
+        "public_sale genesis balance should be 7,268,000,000 KX"
     );
 
     // ── 5. Transfer 1000 KX public_sale → alice ───────────────────────────────
@@ -230,7 +234,7 @@ async fn smoke_transfer_and_timelock() {
     let ps_bal_after = get_balance(&http, &rpc_url, &ps_b58).await;
     assert_eq!(
         ps_bal_after,
-        (7_269_000_000u128 - 1_000) * CHRONOS_PER_KX,
+        (7_268_000_000u128 - 1_000) * CHRONOS_PER_KX,
         "public_sale should be reduced by 1000 KX"
     );
 
@@ -257,6 +261,19 @@ async fn smoke_transfer_and_timelock() {
             amount: 200 * CHRONOS_PER_KX,
             unlock_at,
             memo: Some("smoke test timelock".into()),
+            cancellation_window_secs: None,
+            notify_recipient: None,
+            tags: None,
+            private: None,
+            expiry_policy: None,
+            split_policy: None,
+            claim_attempts_max: None,
+            recurring: None,
+            extension_data: None,
+            oracle_hint: None,
+            jurisdiction_hint: None,
+            governance_proposal_id: None,
+            client_ref: None,
         }],
     );
     send_tx(&http, &rpc_url, &tx2).await;
@@ -266,7 +283,7 @@ async fn smoke_transfer_and_timelock() {
     let ps_bal_final = get_balance(&http, &rpc_url, &ps_b58).await;
     assert_eq!(
         ps_bal_final,
-        (7_269_000_000u128 - 1_000 - 200) * CHRONOS_PER_KX,
+        (7_268_000_000u128 - 1_000 - 200) * CHRONOS_PER_KX,
         "public_sale should be reduced by 1000 + 200 KX"
     );
 }

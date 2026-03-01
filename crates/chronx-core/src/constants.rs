@@ -14,8 +14,9 @@ pub const TOTAL_SUPPLY_CHRONOS: u128 = 8_270_000_000_000_000;
 /// 1 KX expressed in Chronos.
 pub const CHRONOS_PER_KX: u128 = 1_000_000;
 
-/// Public sale allocation (KX). Distributed by Dec 31 2026 midnight GMT.
-pub const PUBLIC_SALE_KX: u128 = 7_269_000_000;
+/// Public sale allocation (KX). 7,268,000,000 after 1,000,000 KX redirected to
+/// milestone 2076 lock and protocol reserve lock (see genesis).
+pub const PUBLIC_SALE_KX: u128 = 7_268_000_000;
 
 /// Treasury allocation (KX). Released logarithmically over 100 years.
 pub const TREASURY_KX: u128 = 1_000_000_000;
@@ -96,6 +97,74 @@ pub const GOVERNANCE_VOTING_WINDOW_SECS: i64 = 14 * 24 * 3600;
 
 /// Governance quorum: 60% of circulating supply must vote.
 pub const GOVERNANCE_QUORUM_PERCENT: u64 = 60;
+
+// ── V2 Claims framework ───────────────────────────────────────────────────────
+
+/// Minimum bond to register as a certificate provider (Chronos).
+pub const PROVIDER_BOND_CHRONOS: u128 = 10_000_000_000; // 10,000 KX
+
+/// Minimum bond to register a certificate schema (Chronos).
+pub const SCHEMA_BOND_CHRONOS: u128 = 1_000_000_000; // 1,000 KX
+
+/// Age threshold for oracle submissions to be included in a snapshot (seconds).
+pub const ORACLE_MAX_AGE_SECS: i64 = 3_600; // 1 hour
+
+/// Minimum oracle submissions needed before a snapshot is valid.
+pub const ORACLE_MIN_SUBMISSIONS: usize = 3;
+
+/// Duration after a lock matures before the claim state machine can be opened
+/// (the "grace window" where a direct claim is still allowed via TimeLockClaim).
+/// After this window, V0 locks can still be claimed directly; V1 locks must use OpenClaim.
+pub const UNLOCK_GRACE_SECS: i64 = 7 * 24 * 3600; // 7 days
+
+// ── V3 Lock / Transaction validation ─────────────────────────────────────────
+
+/// Minimum lock amount (1 KX).
+pub const MIN_LOCK_AMOUNT_CHRONOS: u128 = 1_000_000;
+
+/// Maximum memo size in bytes (enforced at consensus level).
+pub const MAX_MEMO_BYTES: usize = 256;
+
+/// Maximum number of tags per lock.
+pub const MAX_TAGS_PER_LOCK: usize = 5;
+
+/// Maximum length of each individual tag (characters).
+pub const MAX_TAG_LENGTH: usize = 32;
+
+/// Maximum locks returned in a single RPC query (pagination cap).
+pub const MAX_LOCKS_PER_QUERY: usize = 100;
+
+/// Default cancellation window — irrevocable by default.
+pub const DEFAULT_CANCELLATION_WINDOW_SECS: u32 = 0;
+
+/// Maximum years a lock may be held (~2226 from genesis).
+pub const MAX_LOCK_DURATION_YEARS: u32 = 200;
+
+/// Minimum lock duration — at least 1 hour.
+pub const MIN_LOCK_DURATION_SECS: i64 = 3_600;
+
+/// Maximum bytes for `extension_data` fields.
+pub const MAX_EXTENSION_DATA_BYTES: usize = 1_024;
+
+/// Maximum recurring payment count (100 years of monthly payments).
+pub const MAX_RECURRING_COUNT: u32 = 1_200;
+
+/// Maximum cancellation window — 24 hours.
+pub const CANCELLATION_WINDOW_MAX_SECS: u32 = 86_400;
+
+// ── Genesis timestamps for new locks ─────────────────────────────────────────
+
+/// Milestone 2076 lock unlock: 2076-01-01 00:00:00 UTC
+pub const MILESTONE_2076_UNLOCK_TIMESTAMP: i64 = 3_345_062_400;
+
+/// Protocol reserve lock unlock: 2036-01-01 00:00:00 UTC
+pub const PROTOCOL_RESERVE_UNLOCK_TIMESTAMP: i64 = 2_082_844_800;
+
+/// Milestone 2076 stake (KX).
+pub const MILESTONE_2076_KX: u128 = 500_000;
+
+/// Protocol reserve stake (KX).
+pub const PROTOCOL_RESERVE_KX: u128 = 500_000;
 
 // ── Harmonic series constant H_100 (used for treasury schedule) ───────────────
 /// H_100 = sum(1/k, k=1..100) ≈ 5.187377517639621

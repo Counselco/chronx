@@ -53,6 +53,45 @@ pub enum ChronxError {
     #[error("unlock timestamp must be in the future")]
     UnlockTimestampInPast,
 
+    #[error("lock amount below minimum ({min} Chronos required)")]
+    LockAmountTooSmall { min: u128 },
+
+    #[error("lock duration too short: minimum {min_secs} seconds")]
+    LockDurationTooShort { min_secs: i64 },
+
+    #[error("lock duration too long: maximum {max_years} years")]
+    LockDurationTooLong { max_years: u32 },
+
+    #[error("memo exceeds maximum length of {max} bytes")]
+    MemoTooLong { max: usize },
+
+    #[error("too many tags: maximum {max} per lock")]
+    TooManyTags { max: usize },
+
+    #[error("tag too long: maximum {max} characters")]
+    TagTooLong { max: usize },
+
+    #[error("extension_data exceeds maximum size of {max} bytes")]
+    ExtensionDataTooLarge { max: usize },
+
+    #[error("cancellation window exceeds maximum of {max} seconds")]
+    CancellationWindowTooLong { max: u32 },
+
+    #[error("split policy basis points must sum to 10000; got {got}")]
+    SplitPolicyBasisPointsMismatch { got: u32 },
+
+    #[error("recurring count exceeds maximum of {max}")]
+    RecurringCountTooLarge { max: u32 },
+
+    #[error("cancellation window has expired")]
+    CancellationWindowExpired,
+
+    #[error("only the original sender may cancel a time-lock")]
+    CancelNotBySender,
+
+    #[error("transaction has expired (expires_at is in the past)")]
+    TransactionExpired,
+
     // ── Recovery errors ──────────────────────────────────────────────────────
     #[error("recovery already active for account {0}")]
     RecoveryAlreadyActive(String),
@@ -111,6 +150,67 @@ pub enum ChronxError {
 
     #[error("feature not active: {0}")]
     FeatureNotActive(String),
+
+    // ── Claims errors ─────────────────────────────────────────────────────────
+    #[error("this lock uses the V2 claims framework; use open_claim instead of timelock_claim")]
+    LockRequiresClaimsFramework,
+
+    #[error("claim not found for lock: {0}")]
+    ClaimNotFound(String),
+
+    #[error("invalid claim state transition")]
+    InvalidClaimStateTransition,
+
+    #[error("reveal hash does not match committed hash")]
+    ClaimRevealHashMismatch,
+
+    #[error("reveal window has expired")]
+    ClaimRevealWindowExpired,
+
+    #[error("challenge window has expired")]
+    ClaimChallengeWindowExpired,
+
+    #[error("challenge window has not yet closed")]
+    ClaimChallengeWindowOpen,
+
+    #[error("claim bond below minimum ({min} Chronos required for this lane)")]
+    ClaimBondTooLow { min: u128 },
+
+    #[error("provider not found: {0}")]
+    ProviderNotFound(String),
+
+    #[error("provider already registered")]
+    ProviderAlreadyRegistered,
+
+    #[error("provider is revoked")]
+    ProviderRevoked,
+
+    #[error("schema not found: {0}")]
+    SchemaNotFound(u64),
+
+    #[error("schema is not active")]
+    SchemaNotActive,
+
+    #[error("oracle snapshot not available for pair: {0}")]
+    OracleSnapshotUnavailable(String),
+
+    #[error("certificate schema {0} not allowed in this policy/lane")]
+    CertificateSchemaNotAllowed(u64),
+
+    #[error("compliance certificate required but not present")]
+    ComplianceCertRequired,
+
+    #[error("lock must have claim_policy set to use the claims framework")]
+    NoPolicyOnLock,
+
+    #[error("lock is in ambiguous state; an outcome certificate is required")]
+    LockAmbiguous,
+
+    #[error("provider registration bond below minimum ({min} Chronos required)")]
+    ProviderBondTooLow { min: u128 },
+
+    #[error("schema registration bond below minimum ({min} Chronos required)")]
+    SchemaBondTooLow { min: u128 },
 
     #[error("{0}")]
     Other(String),

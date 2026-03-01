@@ -18,3 +18,5 @@ jsonrpsee      = { workspace = true }
 anyhow         = { workspace = true }
 bincode        = { workspace = true }
 hex            = { workspace = true }
+tower          = { workspace = true }
+tower-http     = { workspace = true }

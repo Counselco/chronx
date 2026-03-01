@@ -215,6 +215,19 @@ async fn main() -> anyhow::Result<()> {
                     amount: chronos,
                     unlock_at: unlock,
                     memo,
+                    cancellation_window_secs: None,
+                    notify_recipient: None,
+                    tags: None,
+                    private: None,
+                    expiry_policy: None,
+                    split_policy: None,
+                    claim_attempts_max: None,
+                    recurring: None,
+                    extension_data: None,
+                    oracle_hint: None,
+                    jurisdiction_hint: None,
+                    governance_proposal_id: None,
+                    client_ref: None,
                 }],
                 &client,
             )
@@ -483,6 +496,10 @@ async fn build_and_sign(
         pow_nonce,
         signatures: vec![signature],
         auth_scheme: AuthScheme::SingleSig,
+        tx_version: 1,
+        client_ref: None,
+        fee_chronos: 0,
+        expires_at: None,
     })
 }
 
