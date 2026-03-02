@@ -28,8 +28,9 @@ use chronx_state::StateDb;
 
 use crate::api::ChronxApiServer;
 use crate::types::{
-    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcNetworkInfo, RpcOracleSnapshot,
-    RpcProvider, RpcRecentTx, RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVersionInfo,
+    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats, RpcNetworkInfo,
+    RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema, RpcSearchQuery, RpcTimeLock,
+    RpcVersionInfo,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -713,5 +714,34 @@ impl ChronxApiServer for RpcServer {
 
         locks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(locks)
+    }
+
+    /// `chronx_getGlobalLockStats` — aggregate stats across all Pending timelocks.
+    /// Designed for the public website stats bar: single cheap call, no pagination.
+    async fn get_global_lock_stats(&self) -> RpcResult<RpcGlobalLockStats> {
+        let all = self
+            .state
+            .db
+            .iter_all_timelocks()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let mut active_lock_count: u64 = 0;
+        let mut total_locked_chronos: u128 = 0;
+
+        for tlc in &all {
+            if matches!(tlc.status, TimeLockStatus::Pending) {
+                active_lock_count += 1;
+                total_locked_chronos += tlc.amount;
+            }
+        }
+
+        const CHRONOS_PER_KX: u128 = 1_000_000;
+        let total_locked_kx = total_locked_chronos / CHRONOS_PER_KX;
+
+        Ok(RpcGlobalLockStats {
+            active_lock_count,
+            total_locked_chronos: total_locked_chronos.to_string(),
+            total_locked_kx: total_locked_kx.to_string(),
+        })
     }
 }

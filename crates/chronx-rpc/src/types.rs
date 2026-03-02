@@ -145,6 +145,19 @@ pub struct RpcChainStats {
     pub total_supply_kx: String,
 }
 
+/// Lightweight global lock statistics returned by `chronx_getGlobalLockStats`.
+/// Used by the website stats bar to show active promise count and total KX locked
+/// without fetching every timelock contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcGlobalLockStats {
+    /// Number of timelocks currently in Pending (active) state.
+    pub active_lock_count: u64,
+    /// Sum of `amount_chronos` across all Pending timelocks (as a decimal string).
+    pub total_locked_chronos: String,
+    /// Same amount expressed in whole KX (as a decimal string).
+    pub total_locked_kx: String,
+}
+
 /// Node / protocol version information returned by `chronx_getVersion`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcVersionInfo {

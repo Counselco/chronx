@@ -2,8 +2,9 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
 use crate::types::{
-    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcNetworkInfo, RpcOracleSnapshot,
-    RpcProvider, RpcRecentTx, RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVersionInfo,
+    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats, RpcNetworkInfo,
+    RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema, RpcSearchQuery, RpcTimeLock,
+    RpcVersionInfo,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -119,6 +120,11 @@ pub trait ChronxApi {
     /// Search time-lock contracts for `account_id` with optional filters.
     #[method(name = "searchLocks")]
     async fn search_locks(&self, query: RpcSearchQuery) -> RpcResult<Vec<RpcTimeLock>>;
+
+    /// Return aggregate statistics across all active (Pending) timelocks.
+    /// Lightweight alternative to fetching all contracts — designed for the public stats bar.
+    #[method(name = "getGlobalLockStats")]
+    async fn get_global_lock_stats(&self) -> RpcResult<RpcGlobalLockStats>;
 
     /// Return all time-lock contracts whose `recipient_email_hash` matches `email_hash_hex`.
     /// `email_hash_hex` is the 64-character hex encoding of the 32-byte BLAKE3 hash of the
