@@ -119,4 +119,11 @@ pub trait ChronxApi {
     /// Search time-lock contracts for `account_id` with optional filters.
     #[method(name = "searchLocks")]
     async fn search_locks(&self, query: RpcSearchQuery) -> RpcResult<Vec<RpcTimeLock>>;
+
+    /// Return all time-lock contracts whose `recipient_email_hash` matches `email_hash_hex`.
+    /// `email_hash_hex` is the 64-character hex encoding of the 32-byte BLAKE3 hash of the
+    /// recipient's email address (lowercase, trimmed, no trailing newline).
+    /// Returns only Pending locks sorted newest-first.
+    #[method(name = "getEmailLocks")]
+    async fn get_email_locks(&self, email_hash_hex: String) -> RpcResult<Vec<RpcTimeLock>>;
 }

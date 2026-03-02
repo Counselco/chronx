@@ -682,4 +682,33 @@ impl ChronxApiServer for RpcServer {
         let page: Vec<_> = all.into_iter().skip(offset).take(limit).collect();
         Ok(page)
     }
+
+    /// `chronx_getEmailLocks` — all **Pending** time-lock contracts whose
+    /// `recipient_email_hash` matches the provided 64-char hex (BLAKE3 of lowercase email).
+    /// Sorted newest-first. Used by wallets to detect incoming email-addressed locks.
+    async fn get_email_locks(&self, email_hash_hex: String) -> RpcResult<Vec<RpcTimeLock>> {
+        let bytes = hex::decode(&email_hash_hex)
+            .map_err(|e| rpc_err(-32602, format!("invalid email hash hex: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(rpc_err(-32602, "email hash must be exactly 32 bytes (64 hex chars)"));
+        }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bytes);
+
+        let mut locks: Vec<RpcTimeLock> = self
+            .state
+            .db
+            .iter_all_timelocks()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?
+            .into_iter()
+            .filter(|tlc| {
+                tlc.recipient_email_hash == Some(hash)
+                    && matches!(tlc.status, TimeLockStatus::Pending)
+            })
+            .map(tlc_to_rpc)
+            .collect();
+
+        locks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(locks)
+    }
 }
