@@ -23,6 +23,9 @@ pub enum AuthScheme {
 // ── Action ────────────────────────────────────────────────────────────────────
 
 /// Every state-changing operation in the ChronX DAG is one of these variants.
+// TimeLockCreate carries a full DilithiumPublicKey (1312 bytes for Dilithium2). Boxing it
+// would push derefs into every match arm across the entire codebase. The size is intentional.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Action {
     // ── Transfers ────────────────────────────────────────────────────────────
