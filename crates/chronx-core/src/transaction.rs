@@ -67,6 +67,16 @@ pub enum Action {
         governance_proposal_id: Option<String>,
         /// Client-side deduplication reference (16 bytes, opaque).
         client_ref: Option<[u8; 16]>,
+        // ── V3.1 email lock fields ─────────────────────────────────────────────
+        /// BLAKE3 hash of recipient's email. Never store plaintext.
+        #[serde(default)]
+        recipient_email_hash: Option<[u8; 32]>,
+        /// Seconds from creation the recipient has to claim before unclaimed_action.
+        #[serde(default)]
+        claim_window_secs: Option<u64>,
+        /// What happens if the claim window expires without a claim.
+        #[serde(default)]
+        unclaimed_action: Option<crate::account::UnclaimedAction>,
     },
 
     /// Claim a matured time-lock. Callable only by the registered recipient.

@@ -4,12 +4,14 @@ use chronx_core::claims::{
     ProviderRecord, ProviderStatus, SignatureRules, SlashReason,
 };
 use chronx_core::constants::{
-    CANCELLATION_WINDOW_MAX_SECS, MAX_EXTENSION_DATA_BYTES, MAX_LOCK_DURATION_YEARS,
-    MAX_MEMO_BYTES, MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK, MAX_TAG_LENGTH,
+    AUTO_CANCELLATION_WINDOW_SECS, CANCELLATION_WINDOW_MAX_SECS,
+    MAX_EXTENSION_DATA_BYTES, MAX_LOCK_DURATION_YEARS, MAX_MEMO_BYTES,
+    MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK, MAX_TAG_LENGTH,
     MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS,
-    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ORACLE_MAX_AGE_SECS,
-    ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS,
-    RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
+    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ONE_YEAR_SECS,
+    ORACLE_MAX_AGE_SECS, ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS,
+    RECOVERY_CHALLENGE_WINDOW_SECS, RECOVERY_EXECUTION_DELAY_SECS,
+    RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
 };
 use std::sync::Arc;
 
@@ -250,6 +252,9 @@ impl StateEngine {
                 jurisdiction_hint,
                 governance_proposal_id,
                 client_ref,
+                recipient_email_hash,
+                claim_window_secs,
+                unclaimed_action,
             } => {
                 // ── Consensus validation ──────────────────────────────────────
                 if *amount == 0 {
@@ -353,7 +358,14 @@ impl StateEngine {
                     claim_policy: None,
                     beneficiary_anchor_commitment: None,
                     org_identifier: None,
-                    cancellation_window_secs: *cancellation_window_secs,
+                    cancellation_window_secs: cancellation_window_secs.or_else(|| {
+                        // Auto-set 24-hour cancellation window for locks >= 1 year
+                        if *unlock_at - now >= ONE_YEAR_SECS {
+                            Some(AUTO_CANCELLATION_WINDOW_SECS)
+                        } else {
+                            None
+                        }
+                    }),
                     notify_recipient: notify_recipient.unwrap_or(true),
                     tags: tags.clone(),
                     private: private.unwrap_or(false),
@@ -372,9 +384,9 @@ impl StateEngine {
                     current_beneficiary: None,
                     transfer_history: Vec::new(),
                     earliest_transfer_date: None,
-                    recipient_email_hash: None,
-                    claim_window_secs: None,
-                    unclaimed_action: None,
+                    recipient_email_hash: *recipient_email_hash,
+                    claim_window_secs: *claim_window_secs,
+                    unclaimed_action: unclaimed_action.clone(),
                     notification_sent: false,
                     // ── V3.2 Conditional Payment fields ──────────────────────
                     condition_description: None,
@@ -1341,6 +1353,9 @@ mod tests {
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
+            recipient_email_hash: None,
+            claim_window_secs: None,
+            unclaimed_action: None,
         }
     }
 

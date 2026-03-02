@@ -299,6 +299,9 @@ async fn smoke_transfer_and_timelock() {
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
+            recipient_email_hash: None,
+            claim_window_secs: None,
+            unclaimed_action: None,
         }],
     );
     send_tx(&http, &rpc_url, &tx2).await;

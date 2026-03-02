@@ -149,8 +149,14 @@ pub const MAX_EXTENSION_DATA_BYTES: usize = 1_024;
 /// Maximum recurring payment count (100 years of monthly payments).
 pub const MAX_RECURRING_COUNT: u32 = 1_200;
 
-/// Maximum cancellation window — 24 hours.
-pub const CANCELLATION_WINDOW_MAX_SECS: u32 = 86_400;
+/// Maximum cancellation window — 72 hours (supports email lock reversion).
+pub const CANCELLATION_WINDOW_MAX_SECS: u32 = 259_200;
+
+/// Auto-set cancellation window for locks >= 1 year — 24 hours.
+pub const AUTO_CANCELLATION_WINDOW_SECS: u32 = 86_400;
+
+/// One year in seconds — threshold for automatic cancellation window.
+pub const ONE_YEAR_SECS: i64 = 365 * 24 * 3600; // 31_536_000
 
 // ── Genesis timestamps for new locks ─────────────────────────────────────────
 

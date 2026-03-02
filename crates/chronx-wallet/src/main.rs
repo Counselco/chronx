@@ -235,6 +235,9 @@ async fn main() -> anyhow::Result<()> {
                     jurisdiction_hint: None,
                     governance_proposal_id: None,
                     client_ref: None,
+                    recipient_email_hash: None,
+                    claim_window_secs: None,
+                    unclaimed_action: None,
                 }],
                 &client,
             )
