@@ -690,7 +690,10 @@ impl ChronxApiServer for RpcServer {
         let bytes = hex::decode(&email_hash_hex)
             .map_err(|e| rpc_err(-32602, format!("invalid email hash hex: {e}")))?;
         if bytes.len() != 32 {
-            return Err(rpc_err(-32602, "email hash must be exactly 32 bytes (64 hex chars)"));
+            return Err(rpc_err(
+                -32602,
+                "email hash must be exactly 32 bytes (64 hex chars)",
+            ));
         }
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&bytes);

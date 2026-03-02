@@ -4,14 +4,12 @@ use chronx_core::claims::{
     ProviderRecord, ProviderStatus, SignatureRules, SlashReason,
 };
 use chronx_core::constants::{
-    AUTO_CANCELLATION_WINDOW_SECS, CANCELLATION_WINDOW_MAX_SECS,
-    MAX_EXTENSION_DATA_BYTES, MAX_LOCK_DURATION_YEARS, MAX_MEMO_BYTES,
-    MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK, MAX_TAG_LENGTH,
-    MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS,
-    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ONE_YEAR_SECS,
-    ORACLE_MAX_AGE_SECS, ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS,
-    RECOVERY_CHALLENGE_WINDOW_SECS, RECOVERY_EXECUTION_DELAY_SECS,
-    RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
+    AUTO_CANCELLATION_WINDOW_SECS, CANCELLATION_WINDOW_MAX_SECS, MAX_EXTENSION_DATA_BYTES,
+    MAX_LOCK_DURATION_YEARS, MAX_MEMO_BYTES, MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK,
+    MAX_TAG_LENGTH, MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS,
+    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ONE_YEAR_SECS, ORACLE_MAX_AGE_SECS,
+    ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS,
+    RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
 };
 use std::sync::Arc;
 
@@ -1515,7 +1513,11 @@ mod tests {
         engine.apply(&fund_tx, NOW).unwrap();
 
         // Verify new_user's account has empty auth_policy key
-        let acc = engine.db.get_account(&new_user.account_id).unwrap().unwrap();
+        let acc = engine
+            .db
+            .get_account(&new_user.account_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(acc.balance, 100 * CHRONOS_PER_KX);
         if let AuthPolicy::SingleSig { public_key } = &acc.auth_policy {
             assert!(public_key.0.is_empty(), "new account should have empty key");
@@ -1534,7 +1536,11 @@ mod tests {
         engine.apply(&spend_tx, NOW).unwrap();
 
         // Verify new_user's key is now registered, balance reduced, nonce incremented
-        let acc2 = engine.db.get_account(&new_user.account_id).unwrap().unwrap();
+        let acc2 = engine
+            .db
+            .get_account(&new_user.account_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(acc2.balance, 90 * CHRONOS_PER_KX);
         assert_eq!(acc2.nonce, 1);
         if let AuthPolicy::SingleSig { public_key } = &acc2.auth_policy {
@@ -1557,7 +1563,11 @@ mod tests {
         tx3.signatures = vec![new_user.sign(&body)];
         engine.apply(&tx3, NOW).unwrap();
 
-        let acc3 = engine.db.get_account(&new_user.account_id).unwrap().unwrap();
+        let acc3 = engine
+            .db
+            .get_account(&new_user.account_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(acc3.balance, 85 * CHRONOS_PER_KX);
         assert_eq!(acc3.nonce, 2);
     }
