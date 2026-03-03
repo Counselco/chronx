@@ -2,3 +2,25 @@
 **/*.rs.bk
 .env
 *.pdb
+
+# Local scripts with embedded credentials — never commit
+deploy_website.py
+notify-api-new-index.js
+
+# Local working copy of wallet repo (wallet-gui is the real submodule)
+wallet-gui-temp/
+
+# Blockchain state data — large, changes constantly, not source code
+chronx-data/
+
+# Claude Code internal tooling
+.claude/
+
+# Claude Code session notes — contains operational details (keep local only)
+CLAUDE.md
+
+# Miscellaneous local files
+chronx-node.log
+favicon_preview*.png
+new-genesis/
+website/
