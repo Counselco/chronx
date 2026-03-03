@@ -140,8 +140,8 @@ pub const DEFAULT_CANCELLATION_WINDOW_SECS: u32 = 0;
 /// Maximum years a lock may be held (~2226 from genesis).
 pub const MAX_LOCK_DURATION_YEARS: u32 = 200;
 
-/// Minimum lock duration — at least 1 hour.
-pub const MIN_LOCK_DURATION_SECS: i64 = 3_600;
+/// Minimum lock duration — 1 second (wallet enforces user-facing minimums).
+pub const MIN_LOCK_DURATION_SECS: i64 = 1;
 
 /// Maximum bytes for `extension_data` fields.
 pub const MAX_EXTENSION_DATA_BYTES: usize = 1_024;
