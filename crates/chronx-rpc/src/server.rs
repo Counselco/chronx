@@ -28,9 +28,9 @@ use chronx_state::StateDb;
 
 use crate::api::ChronxApiServer;
 use crate::types::{
-    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats, RpcNetworkInfo,
-    RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema, RpcSearchQuery, RpcTimeLock,
-    RpcVersionInfo,
+    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats,
+    RpcIncomingTransfer, RpcNetworkInfo, RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema,
+    RpcSearchQuery, RpcTimeLock, RpcVersionInfo,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -97,6 +97,21 @@ fn tlc_status_str(status: &TimeLockStatus) -> String {
 
 fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
     let status = tlc_status_str(&tlc.status);
+
+    // If extension_data starts with 0xC5 marker and is 33 bytes,
+    // the remaining 32 bytes are BLAKE3(claim_code). Locks sharing the
+    // same hash belong to the same Promise Series.
+    let claim_secret_hash = tlc.extension_data.as_ref().and_then(|d| {
+        if d.len() == 33 && d[0] == 0xC5 {
+            Some(hex::encode(&d[1..]))
+        } else {
+            None
+        }
+    });
+
+    let recipient_email_hash = tlc.recipient_email_hash.map(|h| hex::encode(h));
+    let cancellation_window_secs = tlc.cancellation_window_secs;
+
     RpcTimeLock {
         lock_id: tlc.id.to_hex(),
         sender: tlc.sender.to_b58(),
@@ -110,6 +125,9 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
         tags: tlc.tags,
         private: tlc.private,
         lock_version: tlc.lock_version,
+        claim_secret_hash,
+        cancellation_window_secs,
+        recipient_email_hash,
     }
 }
 
@@ -714,6 +732,68 @@ impl ChronxApiServer for RpcServer {
 
         locks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(locks)
+    }
+
+    /// `chronx_getIncomingTransfers` — all incoming transactions for an account:
+    /// direct transfers received, claimed email locks, and claimed timelocks.
+    /// Sorted newest-first, max 500 results.
+    async fn get_incoming_transfers(&self, account_id: String) -> RpcResult<Vec<RpcIncomingTransfer>> {
+        let id = AccountId::from_b58(&account_id)
+            .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
+
+        let mut results: Vec<RpcIncomingTransfer> = Vec::new();
+
+        // 1. Scan all DAG vertices for Transfer actions where to == account_id
+        let vertices = self.state.db.iter_all_vertices()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        for v in &vertices {
+            let tx = &v.transaction;
+            for action in &tx.actions {
+                if let Action::Transfer { to, amount } = action {
+                    if *to == id && tx.from != id {
+                        results.push(RpcIncomingTransfer {
+                            tx_id: tx.tx_id.to_hex(),
+                            from: tx.from.to_b58(),
+                            amount_chronos: amount.to_string(),
+                            amount_kx: format!("{}.{:06}", amount / CHRONOS_PER_KX, amount % CHRONOS_PER_KX),
+                            timestamp: tx.timestamp,
+                            tx_type: "transfer".to_string(),
+                            memo: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Find claimed timelocks where this account is the recipient
+        let incoming_locks = self.state.db.iter_timelocks_for_recipient(&id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        for tlc in incoming_locks {
+            if tlc.sender == id { continue; }
+            match &tlc.status {
+                TimeLockStatus::Claimed { .. } => {
+                    let tx_type = if tlc.recipient_email_hash.is_some() {
+                        "email_claim"
+                    } else {
+                        "timelock_claim"
+                    };
+                    results.push(RpcIncomingTransfer {
+                        tx_id: tlc.id.to_hex(),
+                        from: tlc.sender.to_b58(),
+                        amount_chronos: tlc.amount.to_string(),
+                        amount_kx: format!("{}.{:06}", tlc.amount / CHRONOS_PER_KX, tlc.amount % CHRONOS_PER_KX),
+                        timestamp: tlc.created_at,
+                        tx_type: tx_type.to_string(),
+                        memo: tlc.memo.clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        results.truncate(500);
+        Ok(results)
     }
 
     /// `chronx_getGlobalLockStats` — aggregate stats across all Pending timelocks.

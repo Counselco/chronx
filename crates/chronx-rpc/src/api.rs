@@ -2,9 +2,9 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
 use crate::types::{
-    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats, RpcNetworkInfo,
-    RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema, RpcSearchQuery, RpcTimeLock,
-    RpcVersionInfo,
+    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats,
+    RpcIncomingTransfer, RpcNetworkInfo, RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema,
+    RpcSearchQuery, RpcTimeLock, RpcVersionInfo,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -132,4 +132,10 @@ pub trait ChronxApi {
     /// Returns only Pending locks sorted newest-first.
     #[method(name = "getEmailLocks")]
     async fn get_email_locks(&self, email_hash_hex: String) -> RpcResult<Vec<RpcTimeLock>>;
+
+    /// Return all incoming transactions for an account: direct transfers received,
+    /// claimed email locks, and claimed timelocks. Sorted newest-first.
+    /// Max 500 results.
+    #[method(name = "getIncomingTransfers")]
+    async fn get_incoming_transfers(&self, account_id: String) -> RpcResult<Vec<RpcIncomingTransfer>>;
 }

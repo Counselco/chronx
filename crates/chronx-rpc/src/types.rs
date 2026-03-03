@@ -56,6 +56,14 @@ pub struct RpcTimeLock {
     pub tags: Option<Vec<String>>,
     pub private: bool,
     pub lock_version: u16,
+    // ── V4 email-lock & series fields ────────────────────────────────────
+    /// Hex of BLAKE3(claim_code) extracted from extension_data (0xC5 marker).
+    /// Locks sharing the same hash belong to the same Promise Series.
+    pub claim_secret_hash: Option<String>,
+    /// Cancellation window in seconds (72 h for email locks, 24 h for ≥1-year locks).
+    pub cancellation_window_secs: Option<u32>,
+    /// Hex of BLAKE3(recipient_email) — used for email-lock discovery.
+    pub recipient_email_hash: Option<String>,
 }
 
 /// Protocol constants returned by `chronx_getGenesisInfo`.
@@ -193,4 +201,23 @@ pub struct RpcSearchQuery {
     pub offset: Option<u32>,
     /// Maximum results to return (default 50, max 200).
     pub limit: Option<u32>,
+}
+
+/// A single incoming transaction for an account, returned by `chronx_getIncomingTransfers`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcIncomingTransfer {
+    /// The transaction ID (hex) that carried this transfer.
+    pub tx_id: String,
+    /// Base-58 account ID of the sender.
+    pub from: String,
+    /// Amount received in Chronos (u128 as string).
+    pub amount_chronos: String,
+    /// Amount received in KX (whole units as string).
+    pub amount_kx: String,
+    /// Unix timestamp of the transaction.
+    pub timestamp: i64,
+    /// One of: "transfer", "email_claim", "timelock_claim"
+    pub tx_type: String,
+    /// Optional memo (from timelocks).
+    pub memo: Option<String>,
 }
