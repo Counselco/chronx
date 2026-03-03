@@ -26,3 +26,5 @@ anyhow        = { workspace = true }
 hex           = { workspace = true }
 chrono        = { workspace = true }
 reqwest       = { workspace = true }
+blake3        = { workspace = true }
+rand          = { workspace = true }

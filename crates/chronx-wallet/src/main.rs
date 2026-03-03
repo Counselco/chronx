@@ -143,6 +143,22 @@ enum Command {
         target: String,
     },
 
+    /// Create an email time-lock (uses sender's own pubkey; claimable via code).
+    EmailTimelock {
+        /// Recipient email address.
+        #[arg(long)]
+        email: String,
+        /// Amount in KX.
+        #[arg(long)]
+        amount: f64,
+        /// Unlock Unix timestamp (UTC seconds).
+        #[arg(long)]
+        unlock: i64,
+        /// Optional memo (max 256 chars).
+        #[arg(long)]
+        memo: Option<String>,
+    },
+
     /// Print genesis/protocol info from the node.
     Info,
 
@@ -244,6 +260,76 @@ async fn main() -> anyhow::Result<()> {
             .await?;
             let tx_id = client.send_transaction(&tx).await?;
             println!("TimeLock created: {}", tx_id);
+            Ok(())
+        }
+
+        Command::EmailTimelock {
+            email,
+            amount,
+            unlock,
+            memo,
+        } => {
+            use chronx_core::UnclaimedAction;
+            use rand::Rng;
+
+            let kp = load_keypair(&keyfile)?;
+            let chronos = kx_to_chronos(amount);
+
+            // Generate claim code: KX-XXXX-XXXX-XXXX-XXXX
+            let mut rng = rand::thread_rng();
+            let segments: Vec<String> = (0..4)
+                .map(|_| {
+                    let n: u32 = rng.gen_range(0..36u32.pow(4));
+                    let chars: Vec<char> = (0..4)
+                        .map(|i| {
+                            let d = ((n / 36u32.pow(i)) % 36) as u8;
+                            if d < 10 { (b'0' + d) as char } else { (b'A' + d - 10) as char }
+                        })
+                        .collect();
+                    chars.into_iter().collect()
+                })
+                .collect();
+            let claim_code = format!("KX-{}-{}-{}-{}", segments[0], segments[1], segments[2], segments[3]);
+
+            // BLAKE3(claim_code) → extension_data (0xC5 marker + 32 bytes)
+            let code_hash = blake3::hash(claim_code.as_bytes());
+            let mut ext = vec![0xC5u8];
+            ext.extend_from_slice(code_hash.as_bytes());
+
+            // BLAKE3(lowercase email) → recipient_email_hash
+            let email_hash = blake3::hash(email.trim().to_lowercase().as_bytes());
+            let email_hash_bytes: [u8; 32] = *email_hash.as_bytes();
+
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::TimeLockCreate {
+                    recipient: kp.public_key.clone(),
+                    amount: chronos,
+                    unlock_at: unlock,
+                    memo,
+                    cancellation_window_secs: Some(259_200),
+                    notify_recipient: None,
+                    tags: None,
+                    private: None,
+                    expiry_policy: None,
+                    split_policy: None,
+                    claim_attempts_max: None,
+                    recurring: None,
+                    extension_data: Some(ext),
+                    oracle_hint: None,
+                    jurisdiction_hint: None,
+                    governance_proposal_id: None,
+                    client_ref: None,
+                    recipient_email_hash: Some(email_hash_bytes),
+                    claim_window_secs: Some(259_200),
+                    unclaimed_action: Some(UnclaimedAction::RevertToSender),
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Submitted: {}", tx_id);
+            println!("ClaimCode: {}", claim_code);
             Ok(())
         }
 
