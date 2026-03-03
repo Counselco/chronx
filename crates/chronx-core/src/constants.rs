@@ -119,8 +119,8 @@ pub const UNLOCK_GRACE_SECS: i64 = 7 * 24 * 3600; // 7 days
 
 // ── V3 Lock / Transaction validation ─────────────────────────────────────────
 
-/// Minimum lock amount (1 KX).
-pub const MIN_LOCK_AMOUNT_CHRONOS: u128 = 1_000_000;
+/// Minimum lock amount (1 grain).
+pub const MIN_LOCK_AMOUNT_CHRONOS: u128 = 1;
 
 /// Maximum memo size in bytes (enforced at consensus level).
 pub const MAX_MEMO_BYTES: usize = 256;
