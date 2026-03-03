@@ -31,6 +31,9 @@ pub struct StateDb {
     claims: sled::Tree,
     oracle_snapshots: sled::Tree,
     oracle_submissions: sled::Tree,
+    /// V3.3 Secure email claims: maps TxId (lock_id) → BLAKE3 hash of claim secret.
+    /// Separate tree so that TimeLockContract serialisation format is unchanged.
+    email_claim_hashes: sled::Tree,
 }
 
 impl StateDb {
@@ -67,6 +70,9 @@ impl StateDb {
         let oracle_submissions = db
             .open_tree("oracle_submissions")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let email_claim_hashes = db
+            .open_tree("email_claim_hashes")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(Self {
             _db: db,
             accounts,
@@ -79,6 +85,7 @@ impl StateDb {
             claims,
             oracle_snapshots,
             oracle_submissions,
+            email_claim_hashes,
         })
     }
 
@@ -436,6 +443,35 @@ impl StateDb {
             .insert(key, b)
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    // ── V3.3 Secure email claim hashes ────────────────────────────────────────
+
+    /// Store the BLAKE3 hash of the claim secret for an email lock.
+    /// Key = TxId bytes of the lock, value = raw 32-byte hash.
+    pub fn put_email_claim_hash(&self, lock_id: &TxId, hash: [u8; 32]) -> Result<(), ChronxError> {
+        self.email_claim_hashes
+            .insert(lock_id.as_bytes(), hash.to_vec())
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve the BLAKE3 claim-secret hash for an email lock.
+    /// Returns None if this lock has no claim secret (i.e. it is not an email lock).
+    pub fn get_email_claim_hash(&self, lock_id: &TxId) -> Result<Option<[u8; 32]>, ChronxError> {
+        match self
+            .email_claim_hashes
+            .get(lock_id.as_bytes())
+            .map_err(|e| ChronxError::Storage(e.to_string()))?
+        {
+            Some(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(arr))
+            }
+            Some(_) => Err(ChronxError::Storage("corrupt email_claim_hash entry".into())),
+            None => Ok(None),
+        }
     }
 
     /// Retrieve all oracle submissions for a given pair (across all submitters).

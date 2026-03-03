@@ -204,6 +204,25 @@ pub enum Action {
         /// Price in USD cents (fixed-point with 2 decimal places).
         price_cents: u64,
     },
+
+    // ── Secure email claims ───────────────────────────────────────────────────
+    /// Claim an email-based time-lock using a plaintext claim secret.
+    ///
+    /// The node verifies BLAKE3(claim_secret) against the hash stored during
+    /// lock creation (in the `email_claim_hashes` DB tree). If they match and
+    /// the claim window has not expired, KX is transferred to the claimer's
+    /// account regardless of their public key.
+    ///
+    /// Added as a NEW variant (discriminant 21) rather than modifying the
+    /// existing `TimeLockClaim` variant, to preserve backward compatibility
+    /// with all existing serialised vertices in the DAG.
+    TimeLockClaimWithSecret {
+        lock_id: TimeLockId,
+        /// The plaintext claim secret (e.g. "KX-7F3A-9B2C-E1D4-5H6K").
+        /// The node computes BLAKE3(claim_secret.as_bytes()) and compares
+        /// against the stored hash.
+        claim_secret: String,
+    },
 }
 
 // ── Transaction ───────────────────────────────────────────────────────────────

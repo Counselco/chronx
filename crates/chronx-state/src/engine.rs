@@ -34,6 +34,8 @@ struct StagedMutations {
     schemas: Vec<CertificateSchema>,
     claims: Vec<ClaimState>,
     oracle_submissions: Vec<OracleSubmission>,
+    /// V3.3 email claim hashes to persist: (lock_id, blake3_hash_of_secret).
+    email_hashes: Vec<(chronx_core::types::TxId, [u8; 32])>,
 }
 
 // ── StateEngine ───────────────────────────────────────────────────────────────
@@ -138,6 +140,10 @@ impl StateEngine {
         for sub in &staged.oracle_submissions {
             self.db.put_oracle_submission(sub)?;
             self.recompute_oracle_snapshot(&sub.pair, now)?;
+        }
+        // V3.3 email claim hashes (written when an email lock is created).
+        for (lock_id, hash) in &staged.email_hashes {
+            self.db.put_email_claim_hash(lock_id, *hash)?;
         }
 
         // Update DAG tips.
@@ -396,6 +402,18 @@ impl StateEngine {
                     condition_disputed: false,
                     condition_dispute_window_secs: None,
                 };
+                // V3.3 — detect email claim secret hash embedded in extension_data.
+                // Convention: extension_data = [0xC5, <32 bytes of BLAKE3(claim_code)>].
+                // The marker byte 0xC5 is chosen to avoid collision with future
+                // general-purpose extension data. The wallet sets this on email locks.
+                if let Some(ref ext) = contract.extension_data {
+                    if ext.len() == 33 && ext[0] == 0xC5 {
+                        let mut hash = [0u8; 32];
+                        hash.copy_from_slice(&ext[1..33]);
+                        staged.email_hashes.push((tx_id.clone(), hash));
+                    }
+                }
+
                 staged.timelocks.push(contract);
                 Ok(())
             }
@@ -1146,6 +1164,61 @@ impl StateEngine {
                     submitted_at: now,
                 };
                 staged.oracle_submissions.push(sub);
+                Ok(())
+            }
+
+            // ── TimeLockClaimWithSecret ───────────────────────────────────────
+            // PATH B — Email lock claim using a plaintext claim secret.
+            // Any account that knows the secret can claim, regardless of pubkey.
+            // The original sender can STILL cancel/reclaim via CancelTimeLock or
+            // the normal TimeLockClaim (their pubkey == recipient_key).
+            Action::TimeLockClaimWithSecret { lock_id, claim_secret } => {
+                let mut contract = self
+                    .db
+                    .get_timelock(&lock_id.0)?
+                    .ok_or_else(|| ChronxError::TimeLockNotFound(lock_id.to_string()))?;
+
+                // V1 locks with a claim_policy must use the claims state machine.
+                if contract.lock_version >= 1 && contract.claim_policy.is_some() {
+                    return Err(ChronxError::LockRequiresClaimsFramework);
+                }
+
+                if contract.status != TimeLockStatus::Pending {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
+                if now < contract.unlock_at {
+                    return Err(ChronxError::TimeLockNotMatured {
+                        unlock_time: contract.unlock_at,
+                    });
+                }
+
+                // Look up the stored claim-secret hash for this lock.
+                // Returns AuthPolicyViolation if this lock was not created with a
+                // claim secret (i.e. it is not an email lock).
+                let stored_hash = self
+                    .db
+                    .get_email_claim_hash(&lock_id.0)?
+                    .ok_or(ChronxError::AuthPolicyViolation)?;
+
+                // Check the claim window (72-hour default for email locks).
+                if let Some(window_secs) = contract.claim_window_secs {
+                    if now > contract.created_at + window_secs as i64 {
+                        return Err(ChronxError::ClaimWindowExpired);
+                    }
+                }
+
+                // Validate the claim secret: BLAKE3(claim_secret.as_bytes()) must
+                // match the hash stored at lock creation time.
+                let provided_hash = chronx_crypto::hash::blake3_hash(claim_secret.as_bytes());
+                if provided_hash != stored_hash {
+                    return Err(ChronxError::InvalidClaimSecret);
+                }
+
+                // Secret matches — transfer KX to whoever signed this transaction
+                // (the recipient, Bob) regardless of pubkey.
+                sender.balance += contract.amount;
+                contract.status = TimeLockStatus::Claimed { claimed_at: now };
+                staged.timelocks.push(contract);
                 Ok(())
             }
         }

@@ -86,6 +86,12 @@ pub enum ChronxError {
     #[error("cancellation window has expired")]
     CancellationWindowExpired,
 
+    #[error("invalid claim secret — the code entered does not match")]
+    InvalidClaimSecret,
+
+    #[error("claim window has expired — the 72-hour window to claim this KX has passed")]
+    ClaimWindowExpired,
+
     #[error("only the original sender may cancel a time-lock")]
     CancelNotBySender,
 
