@@ -72,10 +72,34 @@ impl StateEngine {
         }
 
         // ── Resolve sender account ────────────────────────────────────────────
-        let mut sender = self
-            .db
-            .get_account(&tx.from)?
-            .ok_or_else(|| ChronxError::UnknownAccount(tx.from.to_string()))?;
+        // For TimeLockClaimWithSecret, auto-create the sender's account if it
+        // doesn't exist yet.  This lets first-time users (who received an
+        // email/cascade lock) claim without needing a prior inbound transfer.
+        let is_claim_with_secret = tx.actions.iter().any(|a| {
+            matches!(a, Action::TimeLockClaimWithSecret { .. })
+        });
+
+        let mut sender = match self.db.get_account(&tx.from)? {
+            Some(acc) => acc,
+            None if is_claim_with_secret => {
+                // Require sender_public_key so we can verify ownership.
+                let pk = tx.sender_public_key.as_ref().ok_or_else(|| {
+                    ChronxError::AuthPolicyViolation
+                })?;
+                let derived = account_id_from_pubkey(&pk.0);
+                if derived != tx.from {
+                    return Err(ChronxError::AuthPolicyViolation);
+                }
+                info!(account = %tx.from, "auto-creating account for email claim");
+                Account::new(
+                    tx.from.clone(),
+                    AuthPolicy::SingleSig { public_key: pk.clone() },
+                )
+            }
+            None => {
+                return Err(ChronxError::UnknownAccount(tx.from.to_string()));
+            }
+        };
 
         // ── Key registration (P2PKH first-spend) ─────────────────────────────
         // Accounts created by receiving a Transfer have an empty auth_policy key
@@ -112,8 +136,8 @@ impl StateEngine {
         let mut staged = StagedMutations::default();
         let mut staged_sender = sender.clone();
 
-        for action in &tx.actions {
-            self.apply_action(action, &mut staged_sender, &mut staged, now, &tx.tx_id)?;
+        for (action_idx, action) in tx.actions.iter().enumerate() {
+            self.apply_action(action, &mut staged_sender, &mut staged, now, &tx.tx_id, action_idx)?;
         }
 
         // Increment nonce after all actions succeed.
@@ -206,6 +230,7 @@ impl StateEngine {
         staged: &mut StagedMutations,
         now: Timestamp,
         tx_id: &chronx_core::types::TxId,
+        action_idx: usize,
     ) -> Result<(), ChronxError> {
         match action {
             // ── Transfer ─────────────────────────────────────────────────────
@@ -269,13 +294,22 @@ impl StateEngine {
                         min: MIN_LOCK_AMOUNT_CHRONOS,
                     });
                 }
-                if *unlock_at <= now {
-                    return Err(ChronxError::UnlockTimestampInPast);
-                }
-                if *unlock_at < now + MIN_LOCK_DURATION_SECS {
-                    return Err(ChronxError::LockDurationTooShort {
-                        min_secs: MIN_LOCK_DURATION_SECS,
-                    });
+                // Email locks (0xC5 marker) may have unlock_at <= now for
+                // "Send Now" — immediately claimable with a claim code.
+                // Only enforce future-unlock for non-email locks.
+                let is_email_lock = extension_data
+                    .as_ref()
+                    .map(|d| d.len() == 33 && d[0] == 0xC5)
+                    .unwrap_or(false);
+                if !is_email_lock {
+                    if *unlock_at <= now {
+                        return Err(ChronxError::UnlockTimestampInPast);
+                    }
+                    if *unlock_at < now + MIN_LOCK_DURATION_SECS {
+                        return Err(ChronxError::LockDurationTooShort {
+                            min_secs: MIN_LOCK_DURATION_SECS,
+                        });
+                    }
                 }
                 let max_unlock = now + (MAX_LOCK_DURATION_YEARS as i64) * 365 * 24 * 3600;
                 if *unlock_at > max_unlock {
@@ -348,8 +382,20 @@ impl StateEngine {
                 sender.balance -= amount;
 
                 let recipient_account_id = account_id_from_pubkey(&recipient.0);
+                // Derive a unique lock ID per action in multi-action transactions.
+                // action_idx 0 → tx_id (backward compatible with single-action txs).
+                // action_idx N>0 → BLAKE3(tx_id || N) truncated to TxId.
+                let lock_id = if action_idx == 0 {
+                    tx_id.clone()
+                } else {
+                    let mut hasher = blake3::Hasher::new();
+                    hasher.update(&tx_id.0);
+                    hasher.update(&(action_idx as u32).to_le_bytes());
+                    let h = hasher.finalize();
+                    chronx_core::types::TxId(*h.as_bytes())
+                };
                 let contract = TimeLockContract {
-                    id: tx_id.clone(),
+                    id: lock_id.clone(),
                     sender: sender.account_id.clone(),
                     recipient_key: recipient.clone(),
                     recipient_account_id,
@@ -410,7 +456,7 @@ impl StateEngine {
                     if ext.len() == 33 && ext[0] == 0xC5 {
                         let mut hash = [0u8; 32];
                         hash.copy_from_slice(&ext[1..33]);
-                        staged.email_hashes.push((tx_id.clone(), hash));
+                        staged.email_hashes.push((lock_id.clone(), hash));
                     }
                 }
 
@@ -1172,8 +1218,12 @@ impl StateEngine {
             // Any account that knows the secret can claim, regardless of pubkey.
             // The original sender can STILL cancel/reclaim via CancelTimeLock or
             // the normal TimeLockClaim (their pubkey == recipient_key).
+            //
+            // CASCADE BEHAVIOUR: If multiple locks share the same claim_secret_hash
+            // (a "cascade"), claiming any one of them with the correct secret claims
+            // ALL matured, pending locks in the cascade.
             Action::TimeLockClaimWithSecret { lock_id, claim_secret } => {
-                let mut contract = self
+                let contract = self
                     .db
                     .get_timelock(&lock_id.0)?
                     .ok_or_else(|| ChronxError::TimeLockNotFound(lock_id.to_string()))?;
@@ -1186,26 +1236,12 @@ impl StateEngine {
                 if contract.status != TimeLockStatus::Pending {
                     return Err(ChronxError::TimeLockAlreadyClaimed);
                 }
-                if now < contract.unlock_at {
-                    return Err(ChronxError::TimeLockNotMatured {
-                        unlock_time: contract.unlock_at,
-                    });
-                }
 
                 // Look up the stored claim-secret hash for this lock.
-                // Returns AuthPolicyViolation if this lock was not created with a
-                // claim secret (i.e. it is not an email lock).
                 let stored_hash = self
                     .db
                     .get_email_claim_hash(&lock_id.0)?
                     .ok_or(ChronxError::AuthPolicyViolation)?;
-
-                // Check the claim window (72-hour default for email locks).
-                if let Some(window_secs) = contract.claim_window_secs {
-                    if now > contract.created_at + window_secs as i64 {
-                        return Err(ChronxError::ClaimWindowExpired);
-                    }
-                }
 
                 // Validate the claim secret: BLAKE3(claim_secret.as_bytes()) must
                 // match the hash stored at lock creation time.
@@ -1214,11 +1250,46 @@ impl StateEngine {
                     return Err(ChronxError::InvalidClaimSecret);
                 }
 
-                // Secret matches — transfer KX to whoever signed this transaction
-                // (the recipient, Bob) regardless of pubkey.
-                sender.balance += contract.amount;
-                contract.status = TimeLockStatus::Claimed { claimed_at: now };
-                staged.timelocks.push(contract);
+                // Secret matches. Find ALL locks sharing this claim_secret_hash
+                // (cascade) and claim every matured, pending one.
+                let cascade_lock_ids = self.db.get_locks_by_claim_hash(&stored_hash)?;
+
+                let mut claimed_any = false;
+                for cascade_id in &cascade_lock_ids {
+                    let mut c = match self.db.get_timelock(cascade_id)? {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    if c.status != TimeLockStatus::Pending {
+                        continue;
+                    }
+                    // Skip locks not yet matured.
+                    if now < c.unlock_at {
+                        continue;
+                    }
+                    // Check the claim window (72-hour default for email locks).
+                    if let Some(window_secs) = c.claim_window_secs {
+                        if now > c.created_at + window_secs as i64 {
+                            continue;
+                        }
+                    }
+                    sender.balance += c.amount;
+                    c.status = TimeLockStatus::Claimed { claimed_at: now };
+                    staged.timelocks.push(c);
+                    claimed_any = true;
+                }
+
+                if !claimed_any {
+                    // The primary lock wasn't claimable (possibly not matured
+                    // or claim window expired).
+                    if now < contract.unlock_at {
+                        return Err(ChronxError::TimeLockNotMatured {
+                            unlock_time: contract.unlock_at,
+                        });
+                    }
+                    return Err(ChronxError::ClaimWindowExpired);
+                }
+
                 Ok(())
             }
         }
