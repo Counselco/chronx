@@ -230,6 +230,63 @@ pub enum ChronxError {
     #[error("schema registration bond below minimum ({min} Chronos required)")]
     SchemaBondTooLow { min: u128 },
 
-    #[error("{0}")]
+    // Genesis 7 — Verified Delivery Protocol errors
+    #[error("only the governance wallet may register verifiers")]
+    GovernanceOnly,
+
+    #[error("verifier bond below minimum ({min} KX required)")]
+    VerifierBondTooLow { min: u64 },
+
+    #[error("invalid verifier role: must be VerifasVault or BondedFinder")]
+    InvalidVerifierRole,
+
+    #[error("a VerifasVault is already registered — revoke it before registering a new one")]
+    VerifasVaultAlreadyRegistered,
+
+
+    // Genesis 8 — AI Agent Architecture errors
+    #[error("agent-managed timelock requires axiom consent hash")]
+    AxiomConsentRequired,
+
+    #[error("axiom consent hash does not match current genesis axioms")]
+    AxiomConsentMismatch,
+
+    #[error("recipient wallet is not a registered ChronX-approved AI agent")]
+    AgentNotRegistered,
+
+    #[error("agent is not currently Active in the registry")]
+    AgentNotActive,
+
+    #[error("agent already registered in the registry")]
+    AgentAlreadyRegistered,
+
+    #[error("invalid investable fraction: must be between 0.0 and {max}")]
+    InvalidInvestableFraction { max: f64 },
+
+    #[error("lock is not agent-managed")]
+    LockNotAgentManaged,
+
+    #[error("proposed return date is too soon — minimum {min_days} day investment window")]
+    ReturnDateTooSoon { min_days: u64 },
+
+    #[error("return date must be before promise maturity")]
+    ReturnDateAfterMaturity,
+
+    #[error("requested fraction does not match grantor's specified investable fraction")]
+    FractionMismatch,
+
+    #[error("grantor intent exceeds maximum of {max} characters")]
+    GrantorIntentTooLong { max: usize },
+
+    #[error("only the operator wallet may update agent code")]
+    AgentCodeUpdateNotByOperator,
+
+    #[error("invalid Kyber1024 public key length")]
+    InvalidKyberKeyLength,
+
+    #[error("package encryption failed: {0}")]
+    EncryptionFailed(String),
+
+        #[error("{0}")]
     Other(String),
 }

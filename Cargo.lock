@@ -561,10 +561,16 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
+ "chacha20poly1305",
  "chronx-core",
  "chronx-crypto",
  "chronx-dag",
+ "hex",
+ "pqcrypto-kyber",
+ "pqcrypto-traits",
+ "rand 0.8.5",
  "serde",
+ "serde_json",
  "sled",
  "thiserror 2.0.18",
  "tracing",
@@ -3092,6 +3098,18 @@ dependencies = [
  "dunce",
  "getrandom 0.3.4",
  "libc",
+]
+
+[[package]]
+name = "pqcrypto-kyber"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "169cf9d01ff00ac12fdd29f3b81c3a1daf50e7ca0db772ba6545b457258a8fb8"
+dependencies = [
+ "cc",
+ "glob",
+ "libc",
+ "pqcrypto-traits",
 ]
 
 [[package]]
