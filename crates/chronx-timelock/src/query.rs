@@ -85,6 +85,9 @@ impl<'a> TimeLockQuery<'a> {
             TimeLockStatus::Cancelled { cancelled_at } => {
                 format!("Cancelled at Unix timestamp {}", cancelled_at)
             }
+            TimeLockStatus::Reverted { reverted_at } => {
+                format!("Reverted at Unix timestamp {}", reverted_at)
+            }
         };
 
         Ok(format!(

@@ -122,4 +122,9 @@ impl WalletRpcClient {
             serde_json::from_value(result).context("parsing genesis info")?;
         Ok(info)
     }
+
+    /// Look up locks by claim_secret_hash via chronx_getCascadeDetails.
+    pub async fn get_cascade_details(&self, claim_hash_hex: &str) -> anyhow::Result<serde_json::Value> {
+        self.call("chronx_getCascadeDetails", serde_json::json!([claim_hash_hex])).await
+    }
 }

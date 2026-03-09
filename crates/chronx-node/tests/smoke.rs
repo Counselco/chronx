@@ -178,11 +178,20 @@ async fn smoke_transfer_and_timelock() {
     let public_sale_kp = KeyPair::generate();
     let treasury_kp = KeyPair::generate();
     let humanity_kp = KeyPair::generate();
+    let nr_kp = KeyPair::generate();
+    let fo_kp = KeyPair::generate();
+    let mi_kp = KeyPair::generate();
+    let ve_kp = KeyPair::generate();
 
     let params = GenesisParams {
         public_sale_key: public_sale_kp.public_key.clone(),
         treasury_key: treasury_kp.public_key.clone(),
         humanity_key: humanity_kp.public_key.clone(),
+        node_rewards_key: nr_kp.public_key.clone(),
+        founder_key: fo_kp.public_key.clone(),
+        misai_key: mi_kp.public_key.clone(),
+        verifas_key: ve_kp.public_key.clone(),
+        axioms: None,
     };
     let params_path = data_dir.join("genesis-params.json");
     std::fs::write(&params_path, serde_json::to_string(&params).unwrap()).unwrap();

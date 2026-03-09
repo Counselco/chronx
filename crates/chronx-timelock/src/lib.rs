@@ -9,4 +9,7 @@ pub mod query;
 pub mod schedule;
 
 pub use query::TimeLockQuery;
-pub use schedule::{treasury_release_amount, treasury_release_schedule, TreasuryRelease};
+pub use schedule::{
+    node_rewards_release_schedule, treasury_release_amount, treasury_release_schedule,
+    TreasuryRelease,
+};

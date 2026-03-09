@@ -294,6 +294,8 @@ pub enum TimeLockStatus {
     },
     /// Lock was cancelled by sender within the cancellation window.
     Cancelled { cancelled_at: Timestamp },
+    /// Lock expired unclaimed; funds reverted to sender by background sweep or manual reclaim.
+    Reverted { reverted_at: Timestamp },
 }
 
 impl TimeLockStatus {
@@ -305,12 +307,13 @@ impl TimeLockStatus {
                 | TimeLockStatus::ClaimFinalized { .. }
                 | TimeLockStatus::ClaimSlashed { .. }
                 | TimeLockStatus::Cancelled { .. }
+                | TimeLockStatus::Reverted { .. }
         )
     }
 }
 
 /// What happens to the locked funds if a time-lock goes unclaimed past its
-/// `claim_window_secs`.  Dormant in V3.1 — no consensus logic yet.
+/// `claim_window_secs`.  Active since V3.4 — background sweep reverts expired email locks.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum UnclaimedAction {
     /// Return funds to the original sender.
@@ -510,4 +513,12 @@ pub struct TimeLockContract {
     /// Seconds after attestation before funds release (dispute window).
     #[serde(default)]
     pub condition_dispute_window_secs: Option<u64>,
+
+    // ── V6 lock classification fields ─────────────────────────────────────
+    /// Lock type tag (e.g. "S" = standard, "M" = AI-managed). Open string field.
+    #[serde(default)]
+    pub lock_type: Option<String>,
+    /// Arbitrary JSON metadata associated with this lock.
+    #[serde(default)]
+    pub lock_metadata: Option<String>,
 }

@@ -54,6 +54,12 @@ struct Args {
     /// PoW difficulty override.
     #[arg(long, default_value_t = POW_INITIAL_DIFFICULTY)]
     pow_difficulty: u8,
+
+    /// Path to a persistent P2P identity key file (protobuf-encoded Ed25519).
+    /// If the file does not exist, a new identity is generated and saved.
+    /// If omitted, a random identity is used each run.
+    #[arg(long)]
+    identity_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -98,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         bootstrap_peers: args.bootstrap.clone(),
         protocol_version: "/chronx/1.0.0".into(),
         vertex_topic: "chronx-vertices".into(),
+        identity_file: args.identity_file.clone(),
     };
     let (p2p_network, mut p2p_handle) =
         P2pNetwork::new(&p2p_config).map_err(|e| anyhow::anyhow!("building P2P network: {e}"))?;
@@ -140,6 +147,42 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("starting RPC server")?;
 
+    // ── Background sweep: revert expired email locks every 5 minutes ──────────
+    {
+        let sweep_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                match sweep_engine.sweep_expired_email_locks(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {} // nothing to revert — silent
+                    Ok(n) => info!(count = n, "sweep: reverted expired email locks"),
+                    Err(e) => warn!(error = %e, "sweep: failed to process expired locks"),
+                }
+
+                // ── Genesis 7: Day 91 trigger sweep ──────────────────────────
+                match sweep_engine.sweep_genesis7_triggers(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {}
+                    Ok(n) => info!(count = n, "sweep: Genesis 7 triggers fired"),
+                    Err(e) => warn!(error = %e, "sweep: Genesis 7 trigger sweep failed"),
+                }
+
+                // ── Genesis 7: 100-year expiry sweep ─────────────────────────
+                // Read the Humanity Stake Pool address from genesis metadata.
+                if let Ok(Some(pool_bytes)) = sweep_engine.db.get_meta("genesis_7_humanity_stake_pool") {
+                    let pool_address = String::from_utf8_lossy(&pool_bytes).to_string();
+                    match sweep_engine.sweep_genesis7_expiry(chrono::Utc::now().timestamp(), &pool_address) {
+                        Ok(0) => {}
+                        Ok(n) => info!(count = n, "sweep: Genesis 7 expiry transfers"),
+                        Err(e) => warn!(error = %e, "sweep: Genesis 7 expiry sweep failed"),
+                    }
+                }
+            }
+        });
+        info!("background sweep task started (every 5 minutes)");
+    }
+
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
 
@@ -176,14 +219,24 @@ fn load_or_generate_genesis_params(
             .with_context(|| format!("reading genesis params from {}", p.display()))?;
         return serde_json::from_str(&json).context("parsing genesis params JSON");
     }
-    warn!("No --genesis-params provided. Generating ephemeral keys — DO NOT USE IN PRODUCTION.");
     let ps = KeyPair::generate();
     let tr = KeyPair::generate();
     let hu = KeyPair::generate();
+    let nr = KeyPair::generate();
+    let ms = KeyPair::generate();
+    let re = KeyPair::generate();
     Ok(GenesisParams {
         public_sale_key: ps.public_key.clone(),
         treasury_key: tr.public_key.clone(),
         humanity_key: hu.public_key.clone(),
+        node_rewards_key: nr.public_key.clone(),
+        founder_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        misai_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        verifas_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        milestone_key: ms.public_key.clone(),
+        reserve_key: re.public_key.clone(),
+        faucet_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        axioms: None,
     })
 }
 

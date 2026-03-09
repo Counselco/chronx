@@ -80,6 +80,33 @@ pub enum Action {
         /// What happens if the claim window expires without a claim.
         #[serde(default)]
         unclaimed_action: Option<crate::account::UnclaimedAction>,
+        /// Lock type tag (e.g. "S" = standard, "M" = AI-managed). Open string field.
+        #[serde(default)]
+        lock_type: Option<String>,
+        /// Arbitrary JSON metadata associated with this lock.
+        #[serde(default)]
+        lock_metadata: Option<String>,
+
+        // ── Genesis 8 — AI Agent management fields ─────────────────────────
+        /// If true, this lock's investable fraction is managed by a registered AI agent.
+        #[serde(default)]
+        agent_managed: Option<bool>,
+        /// BLAKE3 of combined promise_axioms+trading_axioms. Required if agent_managed.
+        #[serde(default)]
+        grantor_axiom_consent_hash: Option<String>,
+        /// Fraction of promise value offered for AI investment (0.0 to 1.0).
+        #[serde(default)]
+        investable_fraction: Option<f64>,
+        /// Risk level (1-100) from wallet slider.
+        #[serde(default)]
+        risk_level: Option<u32>,
+        /// Comma-separated exclusion list.
+        #[serde(default)]
+        investment_exclusions: Option<String>,
+        /// Free text grantor intent (max MISAI_LOAN_PACKAGE_MAX_INTENT_CHARS chars).
+        #[serde(default)]
+        grantor_intent: Option<String>,
+
     },
 
     /// Claim a matured time-lock. Callable only by the registered recipient.
@@ -222,6 +249,56 @@ pub enum Action {
         /// The node computes BLAKE3(claim_secret.as_bytes()) and compares
         /// against the stored hash.
         claim_secret: String,
+    },
+
+    /// Manually reclaim an expired email lock whose claim window has passed.
+    /// The submitting account must be the original sender. Returns the locked
+    /// funds to the sender's balance and sets status to Reverted.
+    ReclaimExpiredLock {
+        lock_id: TimeLockId,
+    },
+
+    // ── Genesis 7 — Verified Delivery Protocol ────────────────────────────────
+    /// Register a bonded verifier in the on-chain registry.
+    /// Only the governance wallet (currently Founder) may submit this action.
+    VerifierRegister {
+        verifier_name: String,
+        wallet_address: String,
+        bond_amount_kx: u64,
+        dilithium2_public_key_hex: String,
+        jurisdiction: String,
+        /// "VerifasVault" or "BondedFinder"
+        role: String,
+    },
+
+    // ── Genesis 8 — AI Agent Architecture ─────────────────────────────────
+    /// Register an AI agent in the on-chain registry.
+    /// Only the governance wallet may submit this action.
+    AgentRegister {
+        agent_name: String,
+        agent_wallet: String,
+        agent_code_hash: String,
+        kyber_public_key_hex: String,
+        operator_wallet: String,
+        jurisdiction: String,
+    },
+
+    /// Update an agent's code hash and Kyber public key.
+    /// Only the operator_wallet of the existing agent record may submit.
+    AgentCodeUpdate {
+        agent_wallet: String,
+        new_code_hash: String,
+        new_kyber_public_key_hex: String,
+    },
+
+    /// MISAI accepts an agent-managed promise and commits to a return date.
+    /// Triggers loan disbursement and encrypted package generation.
+    AgentLoanRequest {
+        lock_id: String,
+        agent_wallet: String,
+        investable_fraction: f64,
+        proposed_return_date: u64,
+        agent_axiom_consent_hash: String,
     },
 }
 

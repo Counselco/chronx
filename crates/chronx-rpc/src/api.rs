@@ -2,9 +2,11 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
 use crate::types::{
-    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats,
-    RpcIncomingTransfer, RpcNetworkInfo, RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema,
-    RpcSearchQuery, RpcTimeLock, RpcVersionInfo,
+    RpcAccount, RpcCascadeDetails, RpcChainStats, RpcClaimState, RpcGenesisInfo,
+    RpcGlobalLockStats, RpcHumanityStakeBalance, RpcIncomingTransfer, RpcNetworkInfo,
+    RpcOracleSnapshot, RpcPromiseAxioms, RpcPromiseTriggerStatus, RpcProvider, RpcRecentTx,
+    RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
+    RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -138,4 +140,74 @@ pub trait ChronxApi {
     /// Max 500 results.
     #[method(name = "getIncomingTransfers")]
     async fn get_incoming_transfers(&self, account_id: String) -> RpcResult<Vec<RpcIncomingTransfer>>;
+
+    // ── V4 Cascade Send ────────────────────────────────────────────────────
+
+    /// Create a cascade of email time-locks in a single transaction.
+    /// All locks share one claim_secret_hash. The sender's wallet signs it.
+    /// `tx_hex` is hex-encoded bincode(Transaction) containing multiple
+    /// TimeLockCreate actions with the same extension_data (0xC5 + hash).
+    /// Returns the TxId hex on success.
+    #[method(name = "sendCascade")]
+    async fn send_cascade(&self, tx_hex: String) -> RpcResult<String>;
+
+    /// Return details of a cascade by its claim_secret_hash (hex).
+    /// Returns all locks sharing that hash, plus aggregate statistics.
+    #[method(name = "getCascadeDetails")]
+    async fn get_cascade_details(&self, claim_secret_hash: String) -> RpcResult<RpcCascadeDetails>;
+
+
+    // ── Genesis 7 — Verified Delivery Protocol ────────────────────────────
+
+    /// Return all Active verifiers in the on-chain registry.
+    #[method(name = "getVerifierRegistry")]
+    async fn get_verifier_registry(&self) -> RpcResult<Vec<RpcVerifierRecord>>;
+
+    /// Return the Day 91 trigger status for a lock (by TxId hex).
+    /// Returns null if the trigger has not yet fired.
+    #[method(name = "getPromiseTriggerStatus")]
+    async fn get_promise_trigger_status(&self, lock_id: String) -> RpcResult<Option<RpcPromiseTriggerStatus>>;
+
+    /// Return all Genesis 7 protocol constants from genesis metadata.
+    #[method(name = "getGenesis7Constants")]
+    async fn get_genesis7_constants(&self) -> RpcResult<serde_json::Value>;
+
+    /// Return the current balance of the Humanity Stake Pool wallet.
+    #[method(name = "getHumanityStakeBalance")]
+    async fn get_humanity_stake_balance(&self) -> RpcResult<RpcHumanityStakeBalance>;
+
+    /// Return Promise Axioms and Trading Axioms from genesis metadata.
+    #[method(name = "getPromiseAxioms")]
+    async fn get_promise_axioms(&self) -> RpcResult<RpcPromiseAxioms>;
+
+
+    // ── Genesis 8 — AI Agent Architecture ──────────────────────────────
+
+    /// Return all Active agents in the on-chain registry.
+    #[method(name = "getAgentRegistry")]
+    async fn get_agent_registry(&self) -> RpcResult<Vec<RpcAgentRecord>>;
+
+    /// Return a single agent loan record by lock_id hex.
+    #[method(name = "getAgentLoanRecord")]
+    async fn get_agent_loan_record(&self, lock_id: String) -> RpcResult<Option<RpcAgentLoanRecord>>;
+
+    /// Return a single agent custody record by lock_id hex.
+    #[method(name = "getAgentCustodyRecord")]
+    async fn get_agent_custody_record(&self, lock_id: String) -> RpcResult<Option<RpcAgentCustodyRecord>>;
+
+    /// Return all custody records for an agent wallet.
+    #[method(name = "getAgentHistory")]
+    async fn get_agent_history(&self, agent_wallet: String) -> RpcResult<Vec<RpcAgentCustodyRecord>>;
+
+    /// Return axiom consent record for a lock_id + party_type ("GRANTOR" or "AGENT").
+    #[method(name = "getAxiomConsent")]
+    async fn get_axiom_consent(&self, lock_id: String, party_type: String) -> RpcResult<Option<RpcAxiomConsentRecord>>;
+
+    /// Return all investable promises (agent_managed=true, not yet assigned, within investment window).
+    #[method(name = "getInvestablePromises")]
+    async fn get_investable_promises(&self) -> RpcResult<Vec<RpcInvestablePromise>>;
+
+    /// Return Genesis 8 constants from genesis metadata as JSON.
+    #[method(name = "getGenesis8Constants")]
+    async fn get_genesis8_constants(&self) -> RpcResult<serde_json::Value>;
 }

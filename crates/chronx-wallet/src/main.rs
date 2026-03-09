@@ -159,6 +159,48 @@ enum Command {
         memo: Option<String>,
     },
 
+    /// Send a cascade of time-locked email payments with one shared claim code.
+    Cascade {
+        /// Recipient email address.
+        #[arg(long)]
+        email: String,
+        /// JSON array of stages: [{"amount_kx":100,"lock_seconds":0}, ...]
+        #[arg(long)]
+        stages: String,
+        /// Optional memo (max 256 chars).
+        #[arg(long)]
+        memo: Option<String>,
+    },
+
+    /// Register a verifier (governance-only).
+    VerifierRegister {
+        /// Verifier display name.
+        #[arg(long)]
+        name: String,
+        /// Verifier wallet address (base-58).
+        #[arg(long)]
+        wallet: String,
+        /// Bond amount in KX.
+        #[arg(long)]
+        bond: u64,
+        /// Verifier Dilithium2 public key (hex).
+        #[arg(long)]
+        pubkey: String,
+        /// Jurisdiction code (e.g. "US-DE").
+        #[arg(long)]
+        jurisdiction: String,
+        /// Role: "VerifasVault" or "BondedFinder".
+        #[arg(long)]
+        role: String,
+    },
+
+
+    /// Claim email locks using a claim code (used by relay auto-delivery).
+    ClaimByCode {
+        /// The claim code (e.g. KX-XXXX-XXXX-XXXX-XXXX).
+        #[arg(long)]
+        claim_code: String,
+    },
     /// Print genesis/protocol info from the node.
     Info,
 
@@ -254,6 +296,14 @@ async fn main() -> anyhow::Result<()> {
                     recipient_email_hash: None,
                     claim_window_secs: None,
                     unclaimed_action: None,
+                lock_type: None,
+                lock_metadata: None,
+                    agent_managed: None,
+                    grantor_axiom_consent_hash: None,
+                    investable_fraction: None,
+                    risk_level: None,
+                    investment_exclusions: None,
+                    grantor_intent: None,
                 }],
                 &client,
             )
@@ -323,6 +373,14 @@ async fn main() -> anyhow::Result<()> {
                     recipient_email_hash: Some(email_hash_bytes),
                     claim_window_secs: Some(259_200),
                     unclaimed_action: Some(UnclaimedAction::RevertToSender),
+                    lock_type: None,
+                    lock_metadata: None,
+                    agent_managed: None,
+                    grantor_axiom_consent_hash: None,
+                    investable_fraction: None,
+                    risk_level: None,
+                    investment_exclusions: None,
+                    grantor_intent: None,
                 }],
                 &client,
             )
@@ -459,6 +517,190 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
+        Command::Cascade {
+            email,
+            stages,
+            memo,
+        } => {
+            use chronx_core::UnclaimedAction;
+            use rand::Rng;
+
+            let kp = load_keypair(&keyfile)?;
+
+            // Parse stages JSON
+            #[derive(serde::Deserialize)]
+            struct Stage {
+                amount_kx: f64,
+                lock_seconds: i64,
+            }
+            let parsed: Vec<Stage> =
+                serde_json::from_str(&stages).context("parsing stages JSON")?;
+
+            if parsed.is_empty() {
+                bail!("stages array cannot be empty");
+            }
+
+            // Generate claim code: KX-XXXX-XXXX-XXXX-XXXX
+            let mut rng = rand::thread_rng();
+            let segments: Vec<String> = (0..4)
+                .map(|_| {
+                    let n: u32 = rng.gen_range(0..36u32.pow(4));
+                    let chars: Vec<char> = (0..4)
+                        .map(|i| {
+                            let d = ((n / 36u32.pow(i)) % 36) as u8;
+                            if d < 10 {
+                                (b'0' + d) as char
+                            } else {
+                                (b'A' + d - 10) as char
+                            }
+                        })
+                        .collect();
+                    chars.into_iter().collect()
+                })
+                .collect();
+            let claim_code = format!(
+                "KX-{}-{}-{}-{}",
+                segments[0], segments[1], segments[2], segments[3]
+            );
+
+            // BLAKE3(claim_code) → extension_data (0xC5 marker + 32 bytes)
+            let code_hash = blake3::hash(claim_code.as_bytes());
+            let mut ext = vec![0xC5u8];
+            ext.extend_from_slice(code_hash.as_bytes());
+
+            // BLAKE3(lowercase email) → recipient_email_hash
+            let email_hash = blake3::hash(email.trim().to_lowercase().as_bytes());
+            let email_hash_bytes: [u8; 32] = *email_hash.as_bytes();
+
+            let now = chrono::Utc::now().timestamp();
+
+            // Build one TimeLockCreate action per stage
+            let actions: Vec<Action> = parsed
+                .iter()
+                .map(|s| {
+                    let unlock_at = if s.lock_seconds <= 0 {
+                        now
+                    } else {
+                        now + s.lock_seconds
+                    };
+                    Action::TimeLockCreate {
+                        recipient: kp.public_key.clone(),
+                        amount: kx_to_chronos(s.amount_kx),
+                        unlock_at,
+                        memo: memo.clone(),
+                        cancellation_window_secs: Some(259_200),
+                        notify_recipient: None,
+                        tags: None,
+                        private: None,
+                        expiry_policy: None,
+                        split_policy: None,
+                        claim_attempts_max: None,
+                        recurring: None,
+                        extension_data: Some(ext.clone()),
+                        oracle_hint: None,
+                        jurisdiction_hint: None,
+                        governance_proposal_id: None,
+                        client_ref: None,
+                        recipient_email_hash: Some(email_hash_bytes),
+                        claim_window_secs: Some(259_200),
+                        unclaimed_action: Some(UnclaimedAction::RevertToSender),
+                        lock_type: None,
+                        lock_metadata: None,
+                        agent_managed: None,
+                        grantor_axiom_consent_hash: None,
+                        investable_fraction: None,
+                        risk_level: None,
+                        investment_exclusions: None,
+                        grantor_intent: None,
+                    }
+                })
+                .collect();
+
+            let n_stages = parsed.len();
+            let total_kx: f64 = parsed.iter().map(|s| s.amount_kx).sum();
+            println!(
+                "Building cascade: {} stages, {} KX total...",
+                n_stages, total_kx
+            );
+
+            let tx = build_and_sign(&kp, actions, &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+
+            println!("Submitted:  {}", tx_id);
+            println!("ClaimCode:  {}", claim_code);
+            println!("Email:      {}", email);
+            for (i, s) in parsed.iter().enumerate() {
+                let unlock = if s.lock_seconds <= 0 {
+                    now
+                } else {
+                    now + s.lock_seconds
+                };
+                println!(
+                    "  Stage {}: {:>8.2} KX — unlock_at {} (lock {} sec)",
+                    i + 1,
+                    s.amount_kx,
+                    unlock,
+                    s.lock_seconds
+                );
+            }
+            Ok(())
+        }
+
+        Command::VerifierRegister { name, wallet, bond, pubkey, jurisdiction, role } => {
+            let kp = load_keypair(&keyfile)?;
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::VerifierRegister {
+                    verifier_name: name,
+                    wallet_address: wallet,
+                    bond_amount_kx: bond,
+                    dilithium2_public_key_hex: pubkey,
+                    jurisdiction,
+                    role,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("VerifierRegister submitted: {}", tx_id);
+            Ok(())
+        }
+
+
+        Command::ClaimByCode { claim_code } => {
+            let kp = load_keypair(&keyfile)?;
+            let code = claim_code.trim().to_uppercase();
+            let target_hash = hex::encode(blake3::hash(code.as_bytes()).as_bytes());
+
+            // Look up locks by claim_secret_hash
+            let cascade = client.get_cascade_details(&target_hash).await
+                .context("looking up claim code")?;
+            let locks = cascade["locks"].as_array()
+                .ok_or_else(|| anyhow::anyhow!("claim code not found"))?;
+
+            let now = chrono::Utc::now().timestamp();
+            let actions: Vec<Action> = locks.iter()
+                .filter(|l| l["status"].as_str() == Some("Pending"))
+                .filter(|l| l["unlock_at"].as_i64().map_or(false, |u| now >= u))
+                .filter_map(|l| {
+                    let id_hex = l["lock_id"].as_str()?;
+                    let lock_txid = TxId::from_hex(id_hex).ok()?;
+                    Some(Action::TimeLockClaimWithSecret {
+                        lock_id: TimeLockId(lock_txid),
+                        claim_secret: code.clone(),
+                    })
+                })
+                .collect();
+
+            if actions.is_empty() {
+                bail!("No claimable locks found for this code (may be immature or already claimed)");
+            }
+            let count = actions.len();
+            let tx = build_and_sign(&kp, actions, &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Claimed {} lock(s): {}", count, tx_id);
+            Ok(())
+        }
         Command::Info => {
             let info = client.get_genesis_info().await?;
             println!("Protocol:     {}", info.protocol);
@@ -511,15 +753,17 @@ fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("creating output directory {}", out_dir.display()))?;
 
-    // Generate all three keypairs.
+    // Generate all four keypairs.
     let public_sale_kp = KeyPair::generate();
     let treasury_kp = KeyPair::generate();
     let humanity_kp = KeyPair::generate();
+    let node_rewards_kp = KeyPair::generate();
 
     // Write each private keyfile.
     let ps_path = out_dir.join("public_sale.json");
     let tr_path = out_dir.join("treasury.json");
     let hu_path = out_dir.join("humanity.json");
+    let nr_path = out_dir.join("node_rewards.json");
 
     std::fs::write(&ps_path, serde_json::to_string_pretty(&public_sale_kp)?)
         .with_context(|| format!("writing {}", ps_path.display()))?;
@@ -527,12 +771,25 @@ fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
         .with_context(|| format!("writing {}", tr_path.display()))?;
     std::fs::write(&hu_path, serde_json::to_string_pretty(&humanity_kp)?)
         .with_context(|| format!("writing {}", hu_path.display()))?;
+    std::fs::write(&nr_path, serde_json::to_string_pretty(&node_rewards_kp)?)
+        .with_context(|| format!("writing {}", nr_path.display()))?;
 
     // Build GenesisParams (public keys only) and write genesis-params.json.
+    // Generate milestone and reserve keypairs (v8.0)
+    let milestone_kp = KeyPair::generate();
+    let reserve_kp = KeyPair::generate();
     let params = GenesisParams {
         public_sale_key: public_sale_kp.public_key.clone(),
         treasury_key: treasury_kp.public_key.clone(),
         humanity_key: humanity_kp.public_key.clone(),
+        node_rewards_key: node_rewards_kp.public_key.clone(),
+        founder_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        misai_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        verifas_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        milestone_key: milestone_kp.public_key.clone(),
+        reserve_key: reserve_kp.public_key.clone(),
+        faucet_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
+        axioms: None,
     };
     let params_path = out_dir.join("genesis-params.json");
     std::fs::write(&params_path, serde_json::to_string_pretty(&params)?)
@@ -554,6 +811,11 @@ fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
     println!("  Account:  {}", humanity_kp.account_id.to_b58());
     println!("  PubKey:   {}", hex::encode(&humanity_kp.public_key.0));
     println!("  Keyfile:  {}", hu_path.display());
+    println!();
+    println!("Node Rewards");
+    println!("  Account:  {}", node_rewards_kp.account_id.to_b58());
+    println!("  PubKey:   {}", hex::encode(&node_rewards_kp.public_key.0));
+    println!("  Keyfile:  {}", nr_path.display());
     println!();
     println!("genesis-params.json written to: {}", params_path.display());
     println!();

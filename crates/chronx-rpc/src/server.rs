@@ -20,6 +20,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 use chronx_core::account::TimeLockStatus;
+use chronx_core::error::ChronxError;
 use chronx_core::claims::ProviderStatus;
 use chronx_core::constants::{CHRONOS_PER_KX, TOTAL_SUPPLY_CHRONOS};
 use chronx_core::transaction::{Action, Transaction};
@@ -28,9 +29,11 @@ use chronx_state::StateDb;
 
 use crate::api::ChronxApiServer;
 use crate::types::{
-    RpcAccount, RpcChainStats, RpcClaimState, RpcGenesisInfo, RpcGlobalLockStats,
-    RpcIncomingTransfer, RpcNetworkInfo, RpcOracleSnapshot, RpcProvider, RpcRecentTx, RpcSchema,
-    RpcSearchQuery, RpcTimeLock, RpcVersionInfo,
+    RpcAccount, RpcCascadeDetails, RpcChainStats, RpcClaimState, RpcGenesisInfo,
+    RpcGlobalLockStats, RpcHumanityStakeBalance, RpcIncomingTransfer, RpcNetworkInfo,
+    RpcOracleSnapshot, RpcPromiseAxioms, RpcPromiseTriggerStatus, RpcProvider, RpcRecentTx,
+    RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
+    RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -92,6 +95,7 @@ fn tlc_status_str(status: &TimeLockStatus) -> String {
         TimeLockStatus::ClaimFinalized { .. } => "ClaimFinalized".to_string(),
         TimeLockStatus::ClaimSlashed { .. } => "ClaimSlashed".to_string(),
         TimeLockStatus::Cancelled { .. } => "Cancelled".to_string(),
+        TimeLockStatus::Reverted { .. } => "Reverted".to_string(),
     }
 }
 
@@ -111,6 +115,14 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
 
     let recipient_email_hash = tlc.recipient_email_hash.map(|h| hex::encode(h));
     let cancellation_window_secs = tlc.cancellation_window_secs;
+    let claim_window_secs_val = tlc.claim_window_secs;
+    let unclaimed_action_str = tlc.unclaimed_action.as_ref().map(|ua| {
+        match ua {
+            chronx_core::account::UnclaimedAction::RevertToSender => "RevertToSender".to_string(),
+            chronx_core::account::UnclaimedAction::Burn => "Burn".to_string(),
+            chronx_core::account::UnclaimedAction::ForwardTo(id) => format!("ForwardTo({})", id.to_b58()),
+        }
+    });
 
     RpcTimeLock {
         lock_id: tlc.id.to_hex(),
@@ -128,6 +140,10 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
         claim_secret_hash,
         cancellation_window_secs,
         recipient_email_hash,
+        claim_window_secs: claim_window_secs_val,
+        unclaimed_action: unclaimed_action_str,
+        lock_type: tlc.lock_type,
+        lock_metadata: tlc.lock_metadata,
     }
 }
 
@@ -223,7 +239,11 @@ impl ChronxApiServer for RpcServer {
             hex::decode(&tx_hex).map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
 
         let tx: Transaction = bincode::deserialize(&tx_bytes)
-            .map_err(|e| rpc_err(-32602, format!("invalid transaction encoding: {e}")))?;
+            .map_err(|e| {
+                let hex_preview = if tx_hex.len() > 400 { &tx_hex[..400] } else { &tx_hex };
+                eprintln!("[DEBUG] DESER FAIL: {} | len={} | first400hex={}", e, tx_bytes.len(), hex_preview);
+                rpc_err(-32602, format!("invalid transaction encoding: {e}"))
+            })?;
 
         let tx_id = tx.tx_id.to_hex();
 
@@ -823,5 +843,308 @@ impl ChronxApiServer for RpcServer {
             total_locked_chronos: total_locked_chronos.to_string(),
             total_locked_kx: total_locked_kx.to_string(),
         })
+    }
+
+    // ── V4 Cascade Send ────────────────────────────────────────────────────
+
+    /// `chronx_sendCascade` — submit a cascade transaction.
+    /// This is just `sendTransaction` with a semantic name. The transaction
+    /// must contain multiple `TimeLockCreate` actions sharing the same
+    /// `extension_data` (0xC5 + claim_secret_hash). Returns TxId hex.
+    async fn send_cascade(&self, tx_hex: String) -> RpcResult<String> {
+        // Delegate to the same pipeline as sendTransaction.
+        self.send_transaction(tx_hex).await
+    }
+
+    /// `chronx_getCascadeDetails` — return all locks sharing a claim_secret_hash.
+    async fn get_cascade_details(
+        &self,
+        claim_secret_hash: String,
+    ) -> RpcResult<RpcCascadeDetails> {
+        let hash_bytes = hex::decode(&claim_secret_hash)
+            .map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
+        if hash_bytes.len() != 32 {
+            return Err(rpc_err(-32602, "claim_secret_hash must be 64 hex chars (32 bytes)"));
+        }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hash_bytes);
+
+        let lock_ids = self
+            .state
+            .db
+            .get_locks_by_claim_hash(&hash)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let mut locks = Vec::new();
+        let mut total_chronos: u128 = 0;
+        let mut pending_count: u32 = 0;
+        let mut claimed_count: u32 = 0;
+
+        for lock_id in &lock_ids {
+            if let Some(tlc) = self
+                .state
+                .db
+                .get_timelock(lock_id)
+                .map_err(|e| rpc_err(-32603, e.to_string()))?
+            {
+                total_chronos += tlc.amount;
+                match &tlc.status {
+                    TimeLockStatus::Pending => pending_count += 1,
+                    TimeLockStatus::Claimed { .. } => claimed_count += 1,
+                    _ => {}
+                }
+                locks.push(tlc_to_rpc(tlc));
+            }
+        }
+
+        // Sort by unlock_at ascending.
+        locks.sort_by_key(|l| l.unlock_at);
+
+        Ok(RpcCascadeDetails {
+            claim_secret_hash,
+            lock_count: locks.len() as u32,
+            total_chronos: total_chronos.to_string(),
+            total_kx: (total_chronos / CHRONOS_PER_KX).to_string(),
+            pending_count,
+            claimed_count,
+            locks,
+        })
+    }
+
+
+    // ── Genesis 7 — Verified Delivery Protocol ────────────────────────────
+
+    /// `chronx_getVerifierRegistry` — return all Active verifiers.
+    async fn get_verifier_registry(&self) -> RpcResult<Vec<RpcVerifierRecord>> {
+        let verifiers = self.state.db.get_all_active_verifiers()
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?;
+        Ok(verifiers.into_iter().map(|v| RpcVerifierRecord {
+            verifier_name: v.verifier_name,
+            wallet_address: v.wallet_address,
+            bond_amount_kx: v.bond_amount_kx,
+            jurisdiction: v.jurisdiction,
+            role: v.role,
+            approval_date: v.approval_date,
+            status: v.status,
+        }).collect())
+    }
+
+    /// `chronx_getPromiseTriggerStatus` — return trigger record for a lock.
+    async fn get_promise_trigger_status(&self, lock_id: String) -> RpcResult<Option<RpcPromiseTriggerStatus>> {
+        let id_bytes = hex::decode(&lock_id)
+            .map_err(|_| rpc_err(-32602, "invalid lock_id hex"))?;
+        if id_bytes.len() != 32 {
+            return Err(rpc_err(-32602, "lock_id must be 32 bytes (64 hex chars)").into());
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&id_bytes);
+        let tx_id = TxId::from_bytes(arr);
+        let trigger = self.state.db.get_promise_trigger(&tx_id)
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?;
+        Ok(trigger.map(|t| RpcPromiseTriggerStatus {
+            lock_id: t.lock_id,
+            trigger_fired_at: t.trigger_fired_at,
+            package_routed_to: t.package_routed_to,
+            activation_deposit_chronos: t.activation_deposit_chronos,
+            remaining_chronos: t.remaining_chronos,
+            expiry_at: t.expiry_at,
+        }))
+    }
+
+    /// `chronx_getGenesis7Constants` — return Genesis 7 constants from metadata.
+    async fn get_genesis7_constants(&self) -> RpcResult<serde_json::Value> {
+        let meta: Option<Vec<u8>> = self.state.db.get_meta("genesis_7_constants")
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?;
+        match meta {
+            Some(bytes) => {
+                let s = String::from_utf8_lossy(&bytes);
+                serde_json::from_str(&s)
+                    .map_err(|e: serde_json::Error| rpc_err(-32603, format!("failed to parse genesis_7_constants: {}", e)))
+            }
+            None => Ok(serde_json::json!(null)),
+        }
+    }
+
+    /// `chronx_getHumanityStakeBalance` — return the Humanity Stake Pool balance.
+    async fn get_humanity_stake_balance(&self) -> RpcResult<RpcHumanityStakeBalance> {
+        let pool_bytes: Option<Vec<u8>> = self.state.db.get_meta("genesis_7_humanity_stake_pool")
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?;
+        let pool_address = match pool_bytes {
+            Some(ref b) => String::from_utf8_lossy(b).to_string(),
+            None => return Err(rpc_err(-32603, "Humanity Stake Pool address not found in genesis metadata").into()),
+        };
+        let pool_id = AccountId::from_b58(&pool_address)
+            .map_err(|_e| rpc_err(-32603, "invalid Humanity Stake Pool address"))?;
+        let balance: u128 = self.state.db.get_account(&pool_id)
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?
+            .map(|a| a.balance)
+            .unwrap_or(0);
+        Ok(RpcHumanityStakeBalance {
+            balance_chronos: balance.to_string(),
+            balance_kx: (balance / CHRONOS_PER_KX).to_string(),
+        })
+    }
+
+    /// `chronx_getPromiseAxioms` — return Promise Axioms and Trading Axioms.
+    async fn get_promise_axioms(&self) -> RpcResult<RpcPromiseAxioms> {
+        let promise = self.state.db.get_meta("promise_axioms")
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?
+            .map(|b: Vec<u8>| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
+        let trading = self.state.db.get_meta("trading_axioms")
+            .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?
+            .map(|b: Vec<u8>| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
+        // Genesis 8: compute combined axiom hash
+        let combined_hash = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(promise.as_bytes());
+            hasher.update(trading.as_bytes());
+            hasher.finalize().to_hex().to_string()
+        };
+        Ok(RpcPromiseAxioms {
+            promise_axioms: promise,
+            trading_axioms: trading,
+            combined_axiom_hash: combined_hash,
+        })
+    }
+
+
+    // ── Genesis 8 — AI Agent Architecture ────────────────────────────
+
+    /// `chronx_getAgentRegistry` — return all Active agents.
+    async fn get_agent_registry(&self) -> RpcResult<Vec<RpcAgentRecord>> {
+        let agents = self.state.db.get_all_active_agents()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(agents.into_iter().map(|a| RpcAgentRecord {
+            agent_name: a.agent_name,
+            agent_wallet: a.agent_wallet,
+            agent_code_hash: a.agent_code_hash,
+            kyber_public_key_hex: a.kyber_public_key_hex,
+            operator_wallet: a.operator_wallet,
+            jurisdiction: a.jurisdiction,
+            status: a.status,
+            registered_at: a.registered_at,
+            governance_tx_id: a.governance_tx_id,
+        }).collect())
+    }
+
+    /// `chronx_getAgentLoanRecord` — return a single loan record by lock_id.
+    async fn get_agent_loan_record(&self, lock_id: String) -> RpcResult<Option<RpcAgentLoanRecord>> {
+        let record = self.state.db.get_agent_loan(&lock_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcAgentLoanRecord {
+            lock_id: r.lock_id,
+            agent_wallet: r.agent_wallet,
+            agent_name: r.agent_name,
+            loan_amount_chronos: r.loan_amount_chronos,
+            original_promise_value: r.original_promise_value,
+            investable_fraction: r.investable_fraction,
+            return_wallet: r.return_wallet,
+            return_date: r.return_date,
+            risk_level: r.risk_level,
+            investment_exclusions: r.investment_exclusions,
+            grantor_intent: r.grantor_intent,
+            loan_package_encrypted: r.loan_package_encrypted,
+            disbursed_at: r.disbursed_at,
+            returned_at: r.returned_at,
+            returned_chronos: r.returned_chronos,
+            status: r.status,
+        }))
+    }
+
+    /// `chronx_getAgentCustodyRecord` — return a single custody record by lock_id.
+    async fn get_agent_custody_record(&self, lock_id: String) -> RpcResult<Option<RpcAgentCustodyRecord>> {
+        let record = self.state.db.get_agent_custody(&lock_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcAgentCustodyRecord {
+            lock_id: r.lock_id,
+            agent_name: r.agent_name,
+            agent_wallet: r.agent_wallet,
+            agent_code_hash: r.agent_code_hash,
+            operator_wallet: r.operator_wallet,
+            axiom_version_hash: r.axiom_version_hash,
+            grantor_consent_at: r.grantor_consent_at,
+            agent_consent_at: r.agent_consent_at,
+            released_at: r.released_at,
+            amount_chronos: r.amount_chronos,
+            statement: r.statement,
+        }))
+    }
+
+    /// `chronx_getAgentHistory` — all custody records for an agent wallet.
+    async fn get_agent_history(&self, agent_wallet: String) -> RpcResult<Vec<RpcAgentCustodyRecord>> {
+        let records = self.state.db.iter_agent_custody_for_wallet(&agent_wallet)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.into_iter().map(|r| RpcAgentCustodyRecord {
+            lock_id: r.lock_id,
+            agent_name: r.agent_name,
+            agent_wallet: r.agent_wallet,
+            agent_code_hash: r.agent_code_hash,
+            operator_wallet: r.operator_wallet,
+            axiom_version_hash: r.axiom_version_hash,
+            grantor_consent_at: r.grantor_consent_at,
+            agent_consent_at: r.agent_consent_at,
+            released_at: r.released_at,
+            amount_chronos: r.amount_chronos,
+            statement: r.statement,
+        }).collect())
+    }
+
+    /// `chronx_getAxiomConsent` — return axiom consent record.
+    async fn get_axiom_consent(&self, lock_id: String, party_type: String) -> RpcResult<Option<RpcAxiomConsentRecord>> {
+        let record = self.state.db.get_axiom_consent(&lock_id, &party_type)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcAxiomConsentRecord {
+            lock_id: r.lock_id,
+            party_type: r.party_type,
+            party_wallet: r.party_wallet,
+            axiom_hash: r.axiom_hash,
+            consented_at: r.consented_at,
+        }))
+    }
+
+    /// `chronx_getInvestablePromises` — all agent-managed, unassigned promises within investment window.
+    async fn get_investable_promises(&self) -> RpcResult<Vec<RpcInvestablePromise>> {
+        use chronx_core::constants::MISAI_MIN_INVESTMENT_WINDOW_DAYS;
+
+        let now = chrono::Utc::now().timestamp();
+        let min_unlock = now + (MISAI_MIN_INVESTMENT_WINDOW_DAYS as i64 * 86400);
+
+        let all_locks = self.state.db.iter_all_timelocks()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let results: Vec<RpcInvestablePromise> = all_locks.into_iter()
+            .filter(|tlc| {
+                tlc.status == TimeLockStatus::Pending
+                    && tlc.lock_type.as_deref() == Some("M")
+                    && tlc.unlock_at > min_unlock
+            })
+            .map(|tlc| RpcInvestablePromise {
+                lock_id: tlc.id.to_hex(),
+                sender: tlc.sender.to_b58(),
+                amount_chronos: tlc.amount.to_string(),
+                amount_kx: (tlc.amount / CHRONOS_PER_KX).to_string(),
+                unlock_at: tlc.unlock_at,
+                lock_type: tlc.lock_type,
+                lock_metadata: tlc.lock_metadata,
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// `chronx_getGenesis8Constants` — return Genesis 8 constants from metadata.
+    async fn get_genesis8_constants(&self) -> RpcResult<serde_json::Value> {
+        let meta: Option<Vec<u8>> = self.state.db.get_meta("genesis_8_constants")
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        match meta {
+            Some(bytes) => {
+                let s = String::from_utf8_lossy(&bytes);
+                serde_json::from_str(&s)
+                    .map_err(|e| rpc_err(-32603, format!("failed to parse genesis_8_constants: {}", e)))
+            }
+            None => Ok(serde_json::json!(null)),
+        }
     }
 }

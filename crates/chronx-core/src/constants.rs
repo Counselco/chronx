@@ -14,14 +14,29 @@ pub const TOTAL_SUPPLY_CHRONOS: u128 = 8_270_000_000_000_000;
 /// 1 KX expressed in Chronos.
 pub const CHRONOS_PER_KX: u128 = 1_000_000;
 
-/// Public sale allocation (KX). 7,268,000,000 after 1,000,000 KX redirected to
-/// milestone 2076 lock and protocol reserve lock (see genesis).
-pub const PUBLIC_SALE_KX: u128 = 7_268_000_000;
+/// Public sale allocation (KX). Genesis 8: 6,090,000,000 KX.
+pub const PUBLIC_SALE_KX: u128 = 6_090_000_000;
+
+/// Founder allocation (KX). Spendable at genesis.
+pub const FOUNDER_KX: u128 = 155_000_000;
+
+/// MISAI Bond allocation (KX). Ecosystem bond, spendable at genesis.
+pub const MISAI_BOND_KX: u128 = 10_000_000;
+
+/// Verifas Bond allocation (KX). Ecosystem bond, spendable at genesis.
+pub const VERIFAS_BOND_KX: u128 = 10_000_000;
+
+/// Faucet allocation (KX). Spendable at genesis.
+pub const FAUCET_KX: u128 = 3_000_000;
 
 /// Treasury allocation (KX). Released logarithmically over 100 years.
 pub const TREASURY_KX: u128 = 1_000_000_000;
 
-/// Humanity stake (KX). Locked until Jan 1 2127 00:00:00 UTC.
+/// Node Rewards allocation (KX). Same harmonic schedule as Treasury (2029-2128).
+/// Distribution to operators designed later; for now just locked on schedule.
+pub const NODE_REWARDS_KX: u128 = 1_000_000_000;
+
+/// Humanity stake (KX). Locked until Jan 1 2126 00:00:00 UTC (100 years from genesis).
 pub const HUMANITY_STAKE_KX: u128 = 1_000_000;
 
 // ── Genesis timestamps (Unix seconds UTC) ────────────────────────────────────
@@ -32,9 +47,8 @@ pub const GENESIS_TIMESTAMP: i64 = 1_735_689_600;
 /// Treasury release begins: 2029-01-01 00:00:00 UTC
 pub const TREASURY_START_TIMESTAMP: i64 = 1_861_920_000;
 
-/// Humanity stake unlock: 2127-01-01 00:00:00 UTC
-/// Treasury Release #99 also falls on this date — intentional alignment.
-pub const HUMANITY_UNLOCK_TIMESTAMP: i64 = 4_953_081_600;
+/// Humanity stake unlock: 2126-01-01 00:00:00 UTC — exactly 100 years from genesis.
+pub const HUMANITY_UNLOCK_TIMESTAMP: i64 = 4_922_899_200;
 
 /// Final treasury release: 2128-01-01 00:00:00 UTC
 pub const TREASURY_FINAL_TIMESTAMP: i64 = 4_984_704_000;
@@ -149,8 +163,8 @@ pub const MAX_EXTENSION_DATA_BYTES: usize = 1_024;
 /// Maximum recurring payment count (100 years of monthly payments).
 pub const MAX_RECURRING_COUNT: u32 = 1_200;
 
-/// Maximum cancellation window — 72 hours (supports email lock reversion).
-pub const CANCELLATION_WINDOW_MAX_SECS: u32 = 259_200;
+/// Maximum cancellation window — 7 days.
+pub const CANCELLATION_WINDOW_MAX_SECS: u32 = 604_800;
 
 /// Auto-set cancellation window for locks >= 1 year — 24 hours.
 pub const AUTO_CANCELLATION_WINDOW_SECS: u32 = 86_400;
@@ -171,6 +185,11 @@ pub const MILESTONE_2076_KX: u128 = 500_000;
 
 /// Protocol reserve stake (KX).
 pub const PROTOCOL_RESERVE_KX: u128 = 500_000;
+
+// ── MISAI ────────────────────────────────────────────────────────────────────
+
+/// Minimum days remaining until unlock for a promise to be investable.
+pub const MISAI_MIN_INVESTMENT_WINDOW_DAYS: u32 = 90;
 
 // ── Harmonic series constant H_100 (used for treasury schedule) ───────────────
 /// H_100 = sum(1/k, k=1..100) ≈ 5.187377517639621

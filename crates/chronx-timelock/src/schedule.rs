@@ -1,19 +1,16 @@
-//! Treasury logarithmic release schedule.
+//! Treasury & Node Rewards logarithmic release schedules.
 //!
-//! 1,000,000,000 KX released over 100 years, one unlock per year on Jan 1 UTC.
-//! Release years: 2029–2128.
+//! Both allocations: 1,000,000,000 KX each, released over 100 years.
+//! One unlock per year on Jan 1 UTC. Release years: 2029–2128.
 //!
-//! Formula:  amount_year_k = TREASURY_KX / (H_100 × k)
+//! Formula:  amount_year_k = POOL_KX / (H_100 × k)
 //!
 //! where H_100 = sum(1/k, k=1..100) ≈ 5.18737751763962
 //! and k is the 1-based release index (k=1 → 2029, k=100 → 2128).
-//!
-//! Meaningful alignment:
-//!   Release #99  = Jan 1 2127 = same date as Humanity Stake unlock
-//!   Release #100 = Jan 1 2128 = final treasury release, closing the loop
 
 use chronx_core::constants::{
-    H100_SCALE, H100_SCALED, TREASURY_KX, TREASURY_RELEASE_COUNT, TREASURY_START_TIMESTAMP,
+    H100_SCALE, H100_SCALED, NODE_REWARDS_KX, TREASURY_KX, TREASURY_RELEASE_COUNT,
+    TREASURY_START_TIMESTAMP,
 };
 use chronx_core::types::{Balance, Timestamp};
 
@@ -89,6 +86,51 @@ pub fn treasury_release_schedule() -> Vec<TreasuryRelease> {
     schedule
 }
 
+// ── Node Rewards release schedule (identical structure to Treasury) ───────────
+
+/// Compute the KX amount for node rewards release index `k` (1-based).
+/// Same harmonic formula as treasury but using NODE_REWARDS_KX pool.
+pub fn node_rewards_release_amount(k: u32) -> Balance {
+    assert!(
+        (1..=TREASURY_RELEASE_COUNT).contains(&k),
+        "k must be 1..=100"
+    );
+    let numerator = NODE_REWARDS_KX * 1_000_000 * H100_SCALE;
+    numerator / (H100_SCALED * k as u128)
+}
+
+/// Generate the complete 100-release node rewards schedule.
+/// Same timestamps as treasury (Jan 1, 2029 → Jan 1, 2128).
+pub fn node_rewards_release_schedule() -> Vec<TreasuryRelease> {
+    let mut schedule = Vec::with_capacity(TREASURY_RELEASE_COUNT as usize);
+    let total_target = NODE_REWARDS_KX * 1_000_000;
+
+    for k in 1..=TREASURY_RELEASE_COUNT {
+        let mut amount = node_rewards_release_amount(k);
+
+        if k == 1 {
+            let rest: Balance = (2..=TREASURY_RELEASE_COUNT)
+                .map(node_rewards_release_amount)
+                .sum();
+            amount = total_target - rest;
+        }
+
+        let year = 2028 + k;
+        let seconds_per_year_avg: i64 = 31_556_952;
+        let unlock_at = TREASURY_START_TIMESTAMP + (k as i64 - 1) * seconds_per_year_avg;
+
+        schedule.push(TreasuryRelease {
+            index: k,
+            amount_kx: (amount / 1_000_000) as u64,
+            amount_chronos: amount,
+            unlock_at,
+            year,
+        });
+    }
+
+    schedule
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,7 +168,7 @@ mod tests {
         let schedule = treasury_release_schedule();
         assert_eq!(
             schedule[98].year, 2127,
-            "release #99 must be year 2127 — aligns with humanity stake"
+            "release #99 must be year 2127"
         );
     }
 
@@ -150,5 +192,22 @@ mod tests {
                 schedule[i - 1].amount_chronos
             );
         }
+    }
+
+    #[test]
+    fn node_rewards_sums_to_total() {
+        let schedule = node_rewards_release_schedule();
+        let total: Balance = schedule.iter().map(|r| r.amount_chronos).sum();
+        let expected = NODE_REWARDS_KX * 1_000_000;
+        assert_eq!(
+            total, expected,
+            "node rewards schedule must sum exactly to 1,000,000,000 KX"
+        );
+    }
+
+    #[test]
+    fn node_rewards_has_100_releases() {
+        let schedule = node_rewards_release_schedule();
+        assert_eq!(schedule.len(), 100);
     }
 }

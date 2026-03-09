@@ -11,6 +11,7 @@ use chronx_core::constants::{
     ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS,
     RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chronx_core::error::ChronxError;
@@ -36,6 +37,8 @@ struct StagedMutations {
     oracle_submissions: Vec<OracleSubmission>,
     /// V3.3 email claim hashes to persist: (lock_id, blake3_hash_of_secret).
     email_hashes: Vec<(chronx_core::types::TxId, [u8; 32])>,
+    /// Lock IDs already acted on in this transaction (prevents double-credit).
+    acted_lock_ids: HashSet<[u8; 32]>,
 }
 
 // ── StateEngine ───────────────────────────────────────────────────────────────
@@ -72,34 +75,10 @@ impl StateEngine {
         }
 
         // ── Resolve sender account ────────────────────────────────────────────
-        // For TimeLockClaimWithSecret, auto-create the sender's account if it
-        // doesn't exist yet.  This lets first-time users (who received an
-        // email/cascade lock) claim without needing a prior inbound transfer.
-        let is_claim_with_secret = tx.actions.iter().any(|a| {
-            matches!(a, Action::TimeLockClaimWithSecret { .. })
-        });
-
-        let mut sender = match self.db.get_account(&tx.from)? {
-            Some(acc) => acc,
-            None if is_claim_with_secret => {
-                // Require sender_public_key so we can verify ownership.
-                let pk = tx.sender_public_key.as_ref().ok_or_else(|| {
-                    ChronxError::AuthPolicyViolation
-                })?;
-                let derived = account_id_from_pubkey(&pk.0);
-                if derived != tx.from {
-                    return Err(ChronxError::AuthPolicyViolation);
-                }
-                info!(account = %tx.from, "auto-creating account for email claim");
-                Account::new(
-                    tx.from.clone(),
-                    AuthPolicy::SingleSig { public_key: pk.clone() },
-                )
-            }
-            None => {
-                return Err(ChronxError::UnknownAccount(tx.from.to_string()));
-            }
-        };
+        let mut sender = self
+            .db
+            .get_account(&tx.from)?
+            .ok_or_else(|| ChronxError::UnknownAccount(tx.from.to_string()))?;
 
         // ── Key registration (P2PKH first-spend) ─────────────────────────────
         // Accounts created by receiving a Transfer have an empty auth_policy key
@@ -284,6 +263,14 @@ impl StateEngine {
                 recipient_email_hash,
                 claim_window_secs,
                 unclaimed_action,
+                lock_type,
+                lock_metadata,
+                agent_managed: _,
+                grantor_axiom_consent_hash: _,
+                investable_fraction: _,
+                risk_level: _,
+                investment_exclusions: _,
+                grantor_intent: _,
             } => {
                 // ── Consensus validation ──────────────────────────────────────
                 if *amount == 0 {
@@ -447,6 +434,9 @@ impl StateEngine {
                     condition_attestation_id: None,
                     condition_disputed: false,
                     condition_dispute_window_secs: None,
+                    // ── V8 fields ───────────────────────────────────────────
+                    lock_type: lock_type.clone(),
+                    lock_metadata: lock_metadata.clone(),
                 };
                 // V3.3 — detect email claim secret hash embedded in extension_data.
                 // Convention: extension_data = [0xC5, <32 bytes of BLAKE3(claim_code)>].
@@ -466,6 +456,10 @@ impl StateEngine {
 
             // ── TimeLockClaim ─────────────────────────────────────────────────
             Action::TimeLockClaim { lock_id } => {
+                // Prevent double-action on same lock within one transaction.
+                if staged.acted_lock_ids.contains(&lock_id.0.0) {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
                 let mut contract = self
                     .db
                     .get_timelock(&lock_id.0)?
@@ -492,6 +486,7 @@ impl StateEngine {
 
                 sender.balance += contract.amount;
                 contract.status = TimeLockStatus::Claimed { claimed_at: now };
+                staged.acted_lock_ids.insert(lock_id.0.0);
                 staged.timelocks.push(contract);
                 Ok(())
             }
@@ -509,6 +504,10 @@ impl StateEngine {
 
             // ── CancelTimeLock ────────────────────────────────────────────────
             Action::CancelTimeLock { lock_id } => {
+                // Prevent double-action on same lock within one transaction.
+                if staged.acted_lock_ids.contains(&lock_id.0.0) {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
                 let mut contract = self
                     .db
                     .get_timelock(&lock_id.0)?
@@ -534,6 +533,7 @@ impl StateEngine {
                 // Return funds to sender.
                 sender.balance += contract.amount;
                 contract.status = TimeLockStatus::Cancelled { cancelled_at: now };
+                staged.acted_lock_ids.insert(lock_id.0.0);
                 staged.timelocks.push(contract);
                 Ok(())
             }
@@ -1223,6 +1223,10 @@ impl StateEngine {
             // (a "cascade"), claiming any one of them with the correct secret claims
             // ALL matured, pending locks in the cascade.
             Action::TimeLockClaimWithSecret { lock_id, claim_secret } => {
+                // Prevent double-action on same lock within one transaction.
+                if staged.acted_lock_ids.contains(&lock_id.0.0) {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
                 let contract = self
                     .db
                     .get_timelock(&lock_id.0)?
@@ -1256,6 +1260,10 @@ impl StateEngine {
 
                 let mut claimed_any = false;
                 for cascade_id in &cascade_lock_ids {
+                    // Skip locks already acted on in this transaction.
+                    if staged.acted_lock_ids.contains(&cascade_id.0) {
+                        continue;
+                    }
                     let mut c = match self.db.get_timelock(cascade_id)? {
                         Some(c) => c,
                         None => continue,
@@ -1275,6 +1283,7 @@ impl StateEngine {
                     }
                     sender.balance += c.amount;
                     c.status = TimeLockStatus::Claimed { claimed_at: now };
+                    staged.acted_lock_ids.insert(cascade_id.0);
                     staged.timelocks.push(c);
                     claimed_any = true;
                 }
@@ -1292,7 +1301,139 @@ impl StateEngine {
 
                 Ok(())
             }
+
+            // ── ReclaimExpiredLock ─────────────────────────────────────────────
+            // Manual fallback: sender reclaims an expired email lock.
+            Action::ReclaimExpiredLock { lock_id } => {
+                // Prevent double-action on same lock within one transaction.
+                if staged.acted_lock_ids.contains(&lock_id.0.0) {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
+                let mut contract = self
+                    .db
+                    .get_timelock(&lock_id.0)?
+                    .ok_or_else(|| ChronxError::TimeLockNotFound(lock_id.to_string()))?;
+
+                // Only the original sender may reclaim.
+                if contract.sender != sender.account_id {
+                    return Err(ChronxError::ReclaimNotBySender);
+                }
+                // Lock must still be Pending.
+                if contract.status != TimeLockStatus::Pending {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
+                // Must have a claim window.
+                let window_secs = contract
+                    .claim_window_secs
+                    .ok_or(ChronxError::NoClaimWindow)?;
+                // Claim window must have expired.
+                if now <= contract.created_at + window_secs as i64 {
+                    return Err(ChronxError::ClaimWindowNotExpired);
+                }
+                // Must have RevertToSender action.
+                match &contract.unclaimed_action {
+                    Some(chronx_core::account::UnclaimedAction::RevertToSender) => {}
+                    _ => return Err(ChronxError::NotRevertToSender),
+                }
+
+                // Return funds to sender.
+                sender.balance += contract.amount;
+                contract.status = TimeLockStatus::Reverted { reverted_at: now };
+                staged.acted_lock_ids.insert(lock_id.0.0);
+                staged.timelocks.push(contract);
+                Ok(())
+            }
+
+            // ── V8 Agent actions (not yet active) ─────────────────────────────
+            Action::VerifierRegister { .. }
+            | Action::AgentRegister { .. }
+            | Action::AgentCodeUpdate { .. }
+            | Action::AgentLoanRequest { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Genesis 8 agent actions are not yet active".into(),
+                ))
+            }
         }
+    }
+}
+
+// ── Background sweep for expired email locks ──────────────────────────────────
+
+impl StateEngine {
+    /// Scan all Pending email locks and revert any whose claim window has expired
+    /// and whose `unclaimed_action` is `RevertToSender`.
+    ///
+    /// Called periodically by the node (every 5 minutes). This is NOT a
+    /// transaction — it directly modifies the DB. Each revert credits the
+    /// Genesis 7: fire Day 91 triggers on unclaimed matured locks.
+    /// Currently a no-op stub — no locks are old enough to trigger yet.
+    pub fn sweep_genesis7_triggers(&self, _now: i64) -> Result<u32, ChronxError> {
+        Ok(0)
+    }
+
+    /// Genesis 7: sweep unclaimed locks past the 100-year expiry window and
+    /// route them to the Humanity Stake Pool. Currently a no-op stub — no locks
+    /// are old enough to trigger (earliest maturity is 2036).
+    pub fn sweep_genesis7_expiry(&self, _now: i64, _pool_address: &str) -> Result<u32, ChronxError> {
+        // No locks can be 100+ years past maturity yet. Stub for forward compatibility.
+        Ok(0)
+    }
+
+    /// sender's balance and sets the lock status to `Reverted`.
+    ///
+    /// Returns the number of locks reverted in this sweep.
+    pub fn sweep_expired_email_locks(&self, now: i64) -> Result<u32, ChronxError> {
+        let all_locks = self.db.iter_all_timelocks()?;
+        let mut reverted_count = 0u32;
+
+        for lock in all_locks {
+            // Only process Pending locks.
+            if lock.status != TimeLockStatus::Pending {
+                continue;
+            }
+            // Must be an email lock (0xC5 marker).
+            let is_email = lock
+                .extension_data
+                .as_ref()
+                .map(|d| d.len() == 33 && d[0] == 0xC5)
+                .unwrap_or(false);
+            if !is_email {
+                continue;
+            }
+            // Must have a claim window.
+            let window_secs = match lock.claim_window_secs {
+                Some(w) => w,
+                None => continue,
+            };
+            // Check if the claim window has expired.
+            if now <= lock.created_at + window_secs as i64 {
+                continue;
+            }
+            // Must have RevertToSender action.
+            match &lock.unclaimed_action {
+                Some(chronx_core::account::UnclaimedAction::RevertToSender) => {}
+                _ => continue,
+            }
+
+            // Revert: credit sender, update lock status.
+            let mut sender = match self.db.get_account(&lock.sender)? {
+                Some(a) => a,
+                None => continue, // orphaned lock — skip
+            };
+            sender.balance += lock.amount;
+            self.db.put_account(&sender)?;
+
+            let mut reverted_lock = lock;
+            reverted_lock.status = TimeLockStatus::Reverted { reverted_at: now };
+            self.db.put_timelock(&reverted_lock)?;
+
+            reverted_count += 1;
+        }
+
+        if reverted_count > 0 {
+            self.db.flush()?;
+        }
+        Ok(reverted_count)
     }
 }
 

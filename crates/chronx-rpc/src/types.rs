@@ -64,6 +64,14 @@ pub struct RpcTimeLock {
     pub cancellation_window_secs: Option<u32>,
     /// Hex of BLAKE3(recipient_email) — used for email-lock discovery.
     pub recipient_email_hash: Option<String>,
+    /// Seconds from creation the recipient has to claim.
+    pub claim_window_secs: Option<u64>,
+    /// What happens if claim window expires: "RevertToSender", "Burn", or "ForwardTo(<id>)".
+    pub unclaimed_action: Option<String>,
+    /// Lock type tag (e.g. "S" = standard, "M" = AI-managed).
+    pub lock_type: Option<String>,
+    /// JSON metadata associated with this lock.
+    pub lock_metadata: Option<String>,
 }
 
 /// Protocol constants returned by `chronx_getGenesisInfo`.
@@ -78,6 +86,8 @@ pub struct RpcGenesisInfo {
     pub treasury_start: i64,
     pub humanity_unlock: i64,
     pub pow_difficulty: u8,
+    pub node_rewards_kx: String,
+    pub node_rewards_start: i64,
 }
 
 impl RpcGenesisInfo {
@@ -93,6 +103,8 @@ impl RpcGenesisInfo {
             treasury_start: TREASURY_START_TIMESTAMP,
             humanity_unlock: HUMANITY_UNLOCK_TIMESTAMP,
             pow_difficulty,
+            node_rewards_kx: NODE_REWARDS_KX.to_string(),
+            node_rewards_start: TREASURY_START_TIMESTAMP,
         }
     }
 }
@@ -203,6 +215,40 @@ pub struct RpcSearchQuery {
     pub limit: Option<u32>,
 }
 
+// ── V4 Cascade Send types ───────────────────────────────────────────────────
+
+/// Details of a cascade (multiple locks sharing a claim_secret_hash).
+/// Returned by `chronx_getCascadeDetails`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcCascadeDetails {
+    /// The shared claim_secret_hash (hex).
+    pub claim_secret_hash: String,
+    /// Number of locks in this cascade.
+    pub lock_count: u32,
+    /// Total amount across all locks (Chronos as string).
+    pub total_chronos: String,
+    /// Total amount in KX.
+    pub total_kx: String,
+    /// Number of locks still Pending.
+    pub pending_count: u32,
+    /// Number of locks already Claimed.
+    pub claimed_count: u32,
+    /// All locks in this cascade.
+    pub locks: Vec<RpcTimeLock>,
+}
+
+/// Input for a single entry in a cascade send.
+/// Used by `chronx_sendCascade`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcCascadeEntry {
+    /// Amount in KX (decimal string, e.g. "100.5").
+    pub amount_kx: String,
+    /// Unlock timestamp (Unix seconds UTC).
+    pub unlock_at: i64,
+    /// Optional memo.
+    pub memo: Option<String>,
+}
+
 /// A single incoming transaction for an account, returned by `chronx_getIncomingTransfers`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcIncomingTransfer {
@@ -220,4 +266,122 @@ pub struct RpcIncomingTransfer {
     pub tx_type: String,
     /// Optional memo (from timelocks).
     pub memo: Option<String>,
+}
+
+
+// ── Genesis 7 — Verified Delivery Protocol RPC types ─────────────────────────
+
+/// Verifier registry entry returned by `chronx_getVerifierRegistry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcVerifierRecord {
+    pub verifier_name: String,
+    pub wallet_address: String,
+    pub bond_amount_kx: u64,
+    pub jurisdiction: String,
+    pub role: String,
+    pub approval_date: u64,
+    pub status: String,
+}
+
+/// Promise trigger status returned by `chronx_getPromiseTriggerStatus`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcPromiseTriggerStatus {
+    pub lock_id: String,
+    pub trigger_fired_at: u64,
+    pub package_routed_to: String,
+    pub activation_deposit_chronos: u64,
+    pub remaining_chronos: u64,
+    pub expiry_at: u64,
+}
+
+/// Humanity Stake Pool balance returned by `chronx_getHumanityStakeBalance`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcHumanityStakeBalance {
+    pub balance_chronos: String,
+    pub balance_kx: String,
+}
+
+/// Promise axioms returned by `chronx_getPromiseAxioms`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcPromiseAxioms {
+    pub promise_axioms: String,
+    pub trading_axioms: String,
+    /// BLAKE3 hash of (promise_axioms || trading_axioms) — wallets use this
+    /// to compute axiom consent hashes without recalculating.
+    pub combined_axiom_hash: String,
+}
+
+// ── Genesis 8 — AI Agent Architecture RPC types ──────────────────────────────
+
+/// Agent registry entry returned by `chronx_getAgentRegistry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcAgentRecord {
+    pub agent_name: String,
+    pub agent_wallet: String,
+    pub agent_code_hash: String,
+    pub kyber_public_key_hex: String,
+    pub operator_wallet: String,
+    pub jurisdiction: String,
+    pub status: String,
+    pub registered_at: u64,
+    pub governance_tx_id: String,
+}
+
+/// Agent loan record returned by `chronx_getAgentLoanRecord`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcAgentLoanRecord {
+    pub lock_id: String,
+    pub agent_wallet: String,
+    pub agent_name: String,
+    pub loan_amount_chronos: u64,
+    pub original_promise_value: u64,
+    pub investable_fraction: f64,
+    pub return_wallet: String,
+    pub return_date: u64,
+    pub risk_level: u32,
+    pub investment_exclusions: String,
+    pub grantor_intent: String,
+    pub loan_package_encrypted: bool,
+    pub disbursed_at: u64,
+    pub returned_at: u64,
+    pub returned_chronos: u64,
+    pub status: String,
+}
+
+/// Agent custody record returned by `chronx_getAgentCustodyRecord`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcAgentCustodyRecord {
+    pub lock_id: String,
+    pub agent_name: String,
+    pub agent_wallet: String,
+    pub agent_code_hash: String,
+    pub operator_wallet: String,
+    pub axiom_version_hash: String,
+    pub grantor_consent_at: u64,
+    pub agent_consent_at: u64,
+    pub released_at: u64,
+    pub amount_chronos: u64,
+    pub statement: String,
+}
+
+/// Axiom consent record returned by `chronx_getAxiomConsent`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcAxiomConsentRecord {
+    pub lock_id: String,
+    pub party_type: String,
+    pub party_wallet: String,
+    pub axiom_hash: String,
+    pub consented_at: u64,
+}
+
+/// Investable promise summary returned by `chronx_getInvestablePromises`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcInvestablePromise {
+    pub lock_id: String,
+    pub sender: String,
+    pub amount_chronos: String,
+    pub amount_kx: String,
+    pub unlock_at: i64,
+    pub lock_type: Option<String>,
+    pub lock_metadata: Option<String>,
 }

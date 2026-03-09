@@ -539,6 +539,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "blake3",
+ "chrono",
  "chronx-core",
  "chronx-genesis",
  "chronx-state",
@@ -585,6 +587,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "blake3",
  "chrono",
  "chronx-core",
  "chronx-crypto",
@@ -592,6 +595,7 @@ dependencies = [
  "chronx-rpc",
  "clap",
  "hex",
+ "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",

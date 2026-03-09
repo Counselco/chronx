@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, noise, ping, swarm::SwarmEvent, tcp, yamux, Multiaddr, PeerId, Swarm,
+    gossipsub, identify, identity::Keypair, kad, noise, ping, swarm::SwarmEvent, tcp, yamux,
+    Multiaddr, PeerId, Swarm,
 };
 use libp2p_swarm::NetworkBehaviour;
 use tokio::sync::mpsc;
@@ -50,7 +51,10 @@ impl P2pNetwork {
     ) -> Result<(Self, P2pHandle), Box<dyn std::error::Error + Send + Sync>> {
         let topic = gossipsub::IdentTopic::new(&config.vertex_topic);
 
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        // Load or generate a persistent identity keypair.
+        let keypair = load_or_generate_identity(&config.identity_file)?;
+
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -185,4 +189,31 @@ impl P2pNetwork {
             }
         }
     }
+}
+
+/// Load an Ed25519 keypair from `path` (protobuf-encoded bytes).
+/// If the file does not exist, generate a new keypair and save it.
+/// If `path` is `None`, generate a throwaway in-memory keypair.
+fn load_or_generate_identity(
+    path: &Option<std::path::PathBuf>,
+) -> Result<Keypair, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(p) = path else {
+        return Ok(Keypair::generate_ed25519());
+    };
+
+    if p.exists() {
+        let bytes = std::fs::read(p)?;
+        let kp = Keypair::from_protobuf_encoding(&bytes)?;
+        info!(file = %p.display(), "loaded persistent P2P identity");
+        return Ok(kp);
+    }
+
+    // Generate and persist.
+    let kp = Keypair::generate_ed25519();
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(p, kp.to_protobuf_encoding()?)?;
+    info!(file = %p.display(), "generated and saved new P2P identity");
+    Ok(kp)
 }

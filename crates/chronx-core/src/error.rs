@@ -92,6 +92,18 @@ pub enum ChronxError {
     #[error("claim window has expired — the 72-hour window to claim this KX has passed")]
     ClaimWindowExpired,
 
+    #[error("lock has no claim window — not an email lock")]
+    NoClaimWindow,
+
+    #[error("claim window has not expired yet")]
+    ClaimWindowNotExpired,
+
+    #[error("lock does not have RevertToSender unclaimed action")]
+    NotRevertToSender,
+
+    #[error("only the original sender may reclaim an expired lock")]
+    ReclaimNotBySender,
+
     #[error("only the original sender may cancel a time-lock")]
     CancelNotBySender,
 
