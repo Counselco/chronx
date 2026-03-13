@@ -15,6 +15,9 @@ use anyhow::Context;
 use clap::Parser;
 use tracing::{info, warn};
 
+/// Current node software version. Compared against https://chronx.io/version.json at startup.
+const NODE_VERSION: &str = "1.1.0";
+
 use chronx_consensus::DifficultyConfig;
 use chronx_core::constants::POW_INITIAL_DIFFICULTY;
 use chronx_crypto::KeyPair;
@@ -72,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    info!("ChronX node starting");
+    info!(version = NODE_VERSION, "ChronX node starting");
+
+    // ── Version check against chronx.io/version.json ─────────────────────────
+    check_node_version().await;
 
     // ── State database ────────────────────────────────────────────────────────
     let data_dir = expand_tilde(&args.data_dir);
@@ -88,6 +94,72 @@ async fn main() -> anyhow::Result<()> {
         apply_genesis(&db, &params).context("applying genesis")?;
     } else {
         info!("existing database found — skipping genesis");
+    }
+
+    // ── Store MISAI X25519 public key if provided and not yet stored ─────────
+    if let Ok(pubkey_hex) = std::env::var("MISAI_X25519_PUBKEY") {
+        if !pubkey_hex.is_empty() {
+            match db.get_meta("misai_x25519_pubkey") {
+                Ok(None) => {
+                    db.put_meta("misai_x25519_pubkey", pubkey_hex.as_bytes())
+                        .expect("failed to store misai_x25519_pubkey");
+                    info!(pubkey = %pubkey_hex, "stored MISAI X25519 public key in metadata");
+                }
+                Ok(Some(existing)) => {
+                    let existing_hex = String::from_utf8_lossy(&existing);
+                    if existing_hex != pubkey_hex {
+                        db.put_meta("misai_x25519_pubkey", pubkey_hex.as_bytes())
+                            .expect("failed to update misai_x25519_pubkey");
+                        info!(pubkey = %pubkey_hex, "updated MISAI X25519 public key in metadata");
+                    }
+                }
+                Err(e) => warn!(error = %e, "failed to check misai_x25519_pubkey"),
+            }
+        }
+    }
+
+    // ── Store MISAI executor wallet address if provided ─────────────────────
+    if let Ok(executor_wallet) = std::env::var("MISAI_EXECUTOR_WALLET") {
+        if !executor_wallet.is_empty() {
+            match db.get_meta("misai_executor_wallet") {
+                Ok(None) => {
+                    db.put_meta("misai_executor_wallet", executor_wallet.as_bytes())
+                        .expect("failed to store misai_executor_wallet");
+                    info!(wallet = %executor_wallet, "stored MISAI executor wallet in metadata");
+                }
+                Ok(Some(existing)) => {
+                    let existing_str = String::from_utf8_lossy(&existing);
+                    if existing_str != executor_wallet {
+                        db.put_meta("misai_executor_wallet", executor_wallet.as_bytes())
+                            .expect("failed to update misai_executor_wallet");
+                        info!(wallet = %executor_wallet, "updated MISAI executor wallet in metadata");
+                    }
+                }
+                Err(e) => warn!(error = %e, "failed to check misai_executor_wallet"),
+            }
+        }
+    }
+
+    // ── Store MISAI executor pubkey if provided ───────────────────────────────
+    if let Ok(executor_pubkey) = std::env::var("MISAI_EXECUTOR_PUBKEY") {
+        if !executor_pubkey.is_empty() {
+            match db.get_meta("misai_executor_pubkey") {
+                Ok(None) => {
+                    db.put_meta("misai_executor_pubkey", executor_pubkey.as_bytes())
+                        .expect("failed to store misai_executor_pubkey");
+                    info!(pubkey_len = executor_pubkey.len(), "stored MISAI executor pubkey in metadata");
+                }
+                Ok(Some(existing)) => {
+                    let existing_str = String::from_utf8_lossy(&existing);
+                    if existing_str != executor_pubkey {
+                        db.put_meta("misai_executor_pubkey", executor_pubkey.as_bytes())
+                            .expect("failed to update misai_executor_pubkey");
+                        info!(pubkey_len = executor_pubkey.len(), "updated MISAI executor pubkey in metadata");
+                    }
+                }
+                Err(e) => warn!(error = %e, "failed to check misai_executor_pubkey"),
+            }
+        }
     }
 
     // ── State engine ──────────────────────────────────────────────────────────
@@ -183,6 +255,42 @@ async fn main() -> anyhow::Result<()> {
         info!("background sweep task started (every 5 minutes)");
     }
 
+    // ── Background sweep: finalize executor withdrawals every 60 seconds ─────
+    {
+        let executor_sweep_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                match executor_sweep_engine.sweep_executor_withdrawals(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {} // nothing to finalize — silent
+                    Ok(n) => info!(count = n, "sweep: finalized executor withdrawals"),
+                    Err(e) => warn!(error = %e, "sweep: failed to process executor withdrawals"),
+                }
+            }
+        });
+        info!("executor withdrawal sweep task started (every 60 seconds)");
+    }
+
+    // ── Background sweep: auto-deliver matured wallet-to-wallet locks every 60s ──
+    {
+        let wallet_sweep_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                match wallet_sweep_engine.sweep_matured_wallet_locks(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {} // nothing to deliver — silent
+                    Ok(n) => info!(count = n, "sweep: auto-delivered matured wallet locks"),
+                    Err(e) => warn!(error = %e, "sweep: failed to auto-deliver wallet locks"),
+                }
+            }
+        });
+        info!("wallet-to-wallet auto-delivery sweep started (every 60 seconds)");
+    }
+
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
 
@@ -191,6 +299,40 @@ async fn main() -> anyhow::Result<()> {
         let now = chrono::Utc::now().timestamp();
         match engine.apply(&tx, now) {
             Ok(()) => {
+                // Check if any action is an ExecutorWithdraw and fire alert email.
+                for action in &tx.actions {
+                    if let chronx_core::transaction::Action::ExecutorWithdraw {
+                        lock_id,
+                        destination,
+                        ..
+                    } = action
+                    {
+                        // Look up the withdrawal record for the amount.
+                        let lock_id_hex = lock_id.to_string();
+                        let amount_kx = match db.get_executor_withdrawal(&lock_id_hex) {
+                            Ok(Some(r)) => r.amount_chronos / 1_000_000,
+                            _ => 0,
+                        };
+                        let delay_secs: i64 = std::env::var("EXECUTOR_WITHDRAW_DELAY_SECONDS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(86400);
+                        let finalize_at = now + delay_secs;
+                        // Fire alert email asynchronously.
+                        let lock_str = lock_id_hex.clone();
+                        let dest_str = destination.to_string();
+                        tokio::spawn(async move {
+                            send_executor_withdraw_alert(
+                                &lock_str,
+                                amount_kx,
+                                &dest_str,
+                                now,
+                                finalize_at,
+                            )
+                            .await;
+                        });
+                    }
+                }
                 let payload = bincode::serialize(&tx).unwrap_or_default();
                 let _ = outbound_tx.send(P2pMessage::NewVertex { payload }).await;
                 let ts_ms = (tx.timestamp * 1000) as u64;
@@ -238,6 +380,131 @@ fn load_or_generate_genesis_params(
         faucet_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
         axioms: None,
     })
+}
+
+/// Check the node version against https://chronx.io/version.json on startup.
+/// Never blocks or fails startup — silently skips on any network error.
+async fn check_node_version() {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let resp = match client.get("https://chronx.io/version.json").send().await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+
+    let latest_str = json["node_version"].as_str().unwrap_or("");
+    let min_str = json["node_min_version"].as_str().unwrap_or("");
+
+    if latest_str.is_empty() || min_str.is_empty() {
+        return; // version.json doesn't have node fields yet — skip silently
+    }
+
+    let current = match semver::Version::parse(NODE_VERSION) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let latest = match semver::Version::parse(latest_str) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let minimum = match semver::Version::parse(min_str) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    if current < minimum {
+        // Red error box — exit(1)
+        eprintln!();
+        eprintln!("\x1b[31m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}");
+        eprintln!("\u{2551}  \u{2717}  ChronX Node Version No Longer Supported         \u{2551}");
+        eprintln!("\u{2551}  Your version:   v{:<39}\u{2551}", NODE_VERSION);
+        eprintln!("\u{2551}  Minimum:        v{:<39}\u{2551}", min_str);
+        eprintln!("\u{2551}  Please update:  https://chronx.io/node.html        \u{2551}");
+        eprintln!("\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
+        eprintln!();
+        std::process::exit(1);
+    } else if current < latest {
+        // Yellow warning box — continue starting
+        eprintln!();
+        eprintln!("\x1b[33m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}");
+        eprintln!("\u{2551}  \u{26a0}  ChronX Node Update Available                    \u{2551}");
+        eprintln!("\u{2551}  Your version:   v{:<39}\u{2551}", NODE_VERSION);
+        eprintln!("\u{2551}  Latest version: v{:<39}\u{2551}", latest_str);
+        eprintln!("\u{2551}  Download at:    https://chronx.io/node.html        \u{2551}");
+        eprintln!("\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
+        eprintln!();
+    }
+    // If current >= latest: start silently, no output
+}
+
+/// Send an alert email via the notify API when an ExecutorWithdraw is submitted.
+/// This gives a 24-hour window to cancel if the executor key is compromised.
+async fn send_executor_withdraw_alert(
+    lock_id: &str,
+    amount_kx: u64,
+    destination: &str,
+    submitted_at: i64,
+    finalize_at: i64,
+) {
+    let client = reqwest::Client::new();
+    let notify_url = std::env::var("NOTIFY_API_URL")
+        .unwrap_or_else(|_| "https://api.chronx.io/notify".to_string());
+
+    let subject = format!(
+        "\u{26a0}\u{fe0f} MISAI ExecutorWithdraw Submitted \u{2014} Lock {}",
+        &lock_id[..16]
+    );
+
+    let body_text = format!(
+        "MISAI ExecutorWithdraw Alert\n\n\
+         Lock ID: {}\n\
+         Amount: {} KX\n\
+         Destination: {}\n\
+         Submitted: {} (Unix)\n\
+         Finalization: {} (Unix)\n\n\
+         If this is unexpected, cancel immediately.\n\
+         The lock is in PendingExecutor status and can be cancelled before finalization.",
+        lock_id, amount_kx, destination, submitted_at, finalize_at
+    );
+
+    let payload = serde_json::json!({
+        "email": "alerts@misai.io",
+        "subject": subject,
+        "body": body_text,
+        "alert_type": "executor_withdraw"
+    });
+
+    match client.post(&notify_url).json(&payload).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                info!(lock_id = %lock_id, "ExecutorWithdraw alert email sent to alerts@misai.io");
+            } else {
+                warn!(
+                    lock_id = %lock_id,
+                    status = %resp.status(),
+                    "ExecutorWithdraw alert email failed"
+                );
+            }
+        }
+        Err(e) => {
+            warn!(
+                lock_id = %lock_id,
+                error = %e,
+                "failed to send ExecutorWithdraw alert email"
+            );
+        }
+    }
 }
 
 /// Expand a leading `~` to the user's home directory (`HOME` or `USERPROFILE`).

@@ -1344,6 +1344,108 @@ impl StateEngine {
                 Ok(())
             }
 
+            // ── ExecutorWithdraw ──────────────────────────────────────────────
+            // MISAI executor withdraws KX from a live Type M lock.
+            // Sets lock to PendingExecutor status; a background sweep finalizes
+            // after the configurable delay (EXECUTOR_WITHDRAW_DELAY_SECONDS).
+            Action::ExecutorWithdraw {
+                lock_id,
+                destination,
+                executor_pubkey,
+            } => {
+                // Prevent double-action on same lock within one transaction.
+                if staged.acted_lock_ids.contains(&lock_id.0.0) {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
+
+                let mut contract = self
+                    .db
+                    .get_timelock(&lock_id.0)?
+                    .ok_or_else(|| ChronxError::TimeLockNotFound(lock_id.to_string()))?;
+
+                // 1. lock_type must be "M" — reject all non-M locks.
+                match &contract.lock_type {
+                    Some(lt) if lt == "M" => {}
+                    _ => return Err(ChronxError::NotTypeMlock),
+                }
+
+                // 2. Signer must match the registered MISAI executor pubkey.
+                let stored_executor_pubkey = self
+                    .db
+                    .get_meta("misai_executor_pubkey")?
+                    .map(|b| String::from_utf8_lossy(&b).to_string())
+                    .unwrap_or_default();
+                if stored_executor_pubkey.is_empty() || *executor_pubkey != stored_executor_pubkey {
+                    return Err(ChronxError::ExecutorPubkeyMismatch);
+                }
+
+                // 3. Lock must be Pending.
+                if contract.status != TimeLockStatus::Pending {
+                    return Err(ChronxError::TimeLockAlreadyClaimed);
+                }
+
+                // 4. lock_metadata must not be null.
+                if contract.lock_metadata.is_none() {
+                    return Err(ChronxError::LockMetadataNull);
+                }
+
+                // 5. Destination must match registered executor wallet.
+                let stored_executor_wallet = self
+                    .db
+                    .get_meta("misai_executor_wallet")?
+                    .map(|b| String::from_utf8_lossy(&b).to_string())
+                    .unwrap_or_default();
+                if stored_executor_wallet.is_empty()
+                    || destination.to_string() != stored_executor_wallet
+                {
+                    return Err(ChronxError::ExecutorWalletMismatch);
+                }
+
+                // 6. Rate limit: max 3 per 24-hour window.
+                let recent_count = self
+                    .db
+                    .count_recent_executor_withdrawals(now, 86400)?;
+                if recent_count >= 3 {
+                    return Err(ChronxError::ExecutorWithdrawRateLimited);
+                }
+
+                // Read configurable delay (default 86400 = 24 hours).
+                let delay_secs: i64 = std::env::var("EXECUTOR_WITHDRAW_DELAY_SECONDS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(86400);
+
+                let finalize_at = now + delay_secs;
+
+                // 7. Set lock to PendingExecutor — KX stays locked until sweep finalizes.
+                contract.status = TimeLockStatus::PendingExecutor {
+                    submitted_at: now,
+                    finalize_at,
+                };
+                staged.acted_lock_ids.insert(lock_id.0.0);
+                staged.timelocks.push(contract.clone());
+
+                // Record the withdrawal for the finalization sweep and rate limiting.
+                let record = crate::db::ExecutorWithdrawalRecord {
+                    lock_id: lock_id.to_string(),
+                    destination: destination.to_string(),
+                    amount_chronos: contract.amount as u64,
+                    submitted_at: now,
+                    finalize_at,
+                    status: "PendingExecutor".to_string(),
+                };
+                self.db.put_executor_withdrawal(&lock_id.to_string(), &record)?;
+
+                info!(
+                    lock_id = %lock_id,
+                    amount_kx = contract.amount / chronx_core::constants::CHRONOS_PER_KX,
+                    finalize_at = finalize_at,
+                    "ExecutorWithdraw submitted — PendingExecutor until finalize_at"
+                );
+
+                Ok(())
+            }
+
             // ── V8 Agent actions (not yet active) ─────────────────────────────
             Action::VerifierRegister { .. }
             | Action::AgentRegister { .. }
@@ -1377,6 +1479,64 @@ impl StateEngine {
     pub fn sweep_genesis7_expiry(&self, _now: i64, _pool_address: &str) -> Result<u32, ChronxError> {
         // No locks can be 100+ years past maturity yet. Stub for forward compatibility.
         Ok(0)
+    }
+
+    /// Auto-deliver matured wallet-to-wallet locks.
+    ///
+    /// Finds all Pending locks where:
+    ///   - NOT an email lock (no 0xC5 marker in extension_data)
+    ///   - unlock_at <= now
+    /// For each: credits recipient balance, sets status to Claimed.
+    ///
+    /// Returns the number of locks auto-delivered.
+    pub fn sweep_matured_wallet_locks(&self, now: i64) -> Result<u32, ChronxError> {
+        let all_locks = self.db.iter_all_timelocks()?;
+        let mut delivered_count = 0u32;
+
+        for lock in all_locks {
+            if lock.status != TimeLockStatus::Pending {
+                continue;
+            }
+            // Skip email locks (0xC5 marker).
+            let is_email = lock
+                .extension_data
+                .as_ref()
+                .map(|d| d.len() == 33 && d[0] == 0xC5)
+                .unwrap_or(false);
+            if is_email {
+                continue;
+            }
+            // Must be matured.
+            if now < lock.unlock_at {
+                continue;
+            }
+
+            // Credit recipient balance.
+            let mut recipient = match self.db.get_account(&lock.recipient_account_id)? {
+                Some(a) => a,
+                None => continue, // recipient account doesn't exist — skip
+            };
+            recipient.balance += lock.amount;
+            self.db.put_account(&recipient)?;
+
+            let mut delivered_lock = lock.clone();
+            delivered_lock.status = TimeLockStatus::Claimed { claimed_at: now };
+            self.db.put_timelock(&delivered_lock)?;
+
+            info!(
+                amount_kx = lock.amount / 1_000_000,
+                lock_id = %lock.id,
+                recipient = %lock.recipient_account_id,
+                "Auto-delivered wallet-to-wallet lock"
+            );
+
+            delivered_count += 1;
+        }
+
+        if delivered_count > 0 {
+            self.db.flush()?;
+        }
+        Ok(delivered_count)
     }
 
     /// sender's balance and sets the lock status to `Reverted`.
@@ -1434,6 +1594,84 @@ impl StateEngine {
             self.db.flush()?;
         }
         Ok(reverted_count)
+    }
+
+    /// Finalize any PendingExecutor withdrawals whose delay has elapsed.
+    ///
+    /// Called periodically by the node (every 60 seconds). For each pending
+    /// withdrawal whose finalize_at <= now:
+    ///   1. Transfer the lock's KX to the executor wallet
+    ///   2. Set lock status to ExecutorWithdrawn
+    ///   3. Mark the withdrawal record as "Finalized"
+    ///
+    /// Returns the number of withdrawals finalized.
+    pub fn sweep_executor_withdrawals(&self, now: i64) -> Result<u32, ChronxError> {
+        let pending = self.db.iter_pending_executor_withdrawals()?;
+        let mut finalized_count = 0u32;
+
+        for record in pending {
+            if now < record.finalize_at {
+                continue; // Not yet ready to finalize.
+            }
+
+            // Parse the lock_id from the record.
+            let lock_id_hex = &record.lock_id;
+            let lock_txid = match chronx_core::types::TxId::from_hex(lock_id_hex) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            // Load the lock.
+            let mut contract = match self.db.get_timelock(&lock_txid)? {
+                Some(c) => c,
+                None => continue,
+            };
+
+            // Only finalize if still in PendingExecutor status.
+            if !matches!(contract.status, TimeLockStatus::PendingExecutor { .. }) {
+                // Already cancelled or something else happened — mark record as done.
+                let mut updated_record = record.clone();
+                updated_record.status = "Cancelled".to_string();
+                self.db.put_executor_withdrawal(lock_id_hex, &updated_record)?;
+                continue;
+            }
+
+            // Transfer KX to executor wallet.
+            let dest_id = match chronx_core::types::AccountId::from_b58(&record.destination) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            let mut dest_account = match self.db.get_account(&dest_id)? {
+                Some(a) => a,
+                None => continue, // Executor wallet account doesn't exist — skip.
+            };
+
+            dest_account.balance += contract.amount;
+            self.db.put_account(&dest_account)?;
+
+            // Update lock status.
+            contract.status = TimeLockStatus::ExecutorWithdrawn { withdrawn_at: now };
+            self.db.put_timelock(&contract)?;
+
+            // Mark withdrawal record as finalized.
+            let mut updated_record = record.clone();
+            updated_record.status = "Finalized".to_string();
+            self.db.put_executor_withdrawal(lock_id_hex, &updated_record)?;
+
+            info!(
+                lock_id = %lock_id_hex,
+                amount_chronos = record.amount_chronos,
+                destination = %record.destination,
+                "ExecutorWithdraw finalized — KX transferred to executor wallet"
+            );
+
+            finalized_count += 1;
+        }
+
+        if finalized_count > 0 {
+            self.db.flush()?;
+        }
+        Ok(finalized_count)
     }
 }
 
@@ -1548,6 +1786,8 @@ mod tests {
             condition_attestation_id: None,
             condition_disputed: false,
             condition_dispute_window_secs: None,
+            lock_type: None,
+            lock_metadata: None,
         };
         db.put_timelock(&contract).unwrap();
     }
@@ -1606,6 +1846,8 @@ mod tests {
             condition_attestation_id: None,
             condition_disputed: false,
             condition_dispute_window_secs: None,
+            lock_type: None,
+            lock_metadata: None,
         };
         db.put_timelock(&contract).unwrap();
     }
