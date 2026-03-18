@@ -1,0 +1,18 @@
+[package]
+name = "chronx-genesis"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+chronx-core    = { workspace = true }
+chronx-crypto  = { workspace = true }
+chronx-state   = { workspace = true }
+chronx-timelock = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+bincode        = { workspace = true }
+blake3         = { workspace = true }
+thiserror      = { workspace = true }
+tracing        = { workspace = true }

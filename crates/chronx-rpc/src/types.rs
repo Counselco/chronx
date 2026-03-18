@@ -72,6 +72,8 @@ pub struct RpcTimeLock {
     pub lock_type: Option<String>,
     /// JSON metadata associated with this lock.
     pub lock_metadata: Option<String>,
+    /// Suggestion-only conversion currency hint.
+    pub convert_to: Option<String>,
 }
 
 /// Protocol constants returned by `chronx_getGenesisInfo`.
@@ -269,6 +271,26 @@ pub struct RpcIncomingTransfer {
 }
 
 
+
+
+/// A single outgoing transaction for an account, returned by .
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcOutgoingTransfer {
+    /// The transaction ID (hex) that carried this transfer.
+    pub tx_id: String,
+    /// Base-58 account ID of the recipient.
+    pub to: String,
+    /// Amount sent in Chronos (u128 as string).
+    pub amount_chronos: String,
+    /// Amount sent in KX (whole units as string).
+    pub amount_kx: String,
+    /// Unix timestamp of the transaction.
+    pub timestamp: i64,
+    /// One of: "transfer", "email_send", "promise_sent"
+    pub tx_type: String,
+    /// Optional memo.
+    pub memo: Option<String>,
+}
 // ── Genesis 7 — Verified Delivery Protocol RPC types ─────────────────────────
 
 /// Verifier registry entry returned by `chronx_getVerifierRegistry`.
@@ -385,3 +407,151 @@ pub struct RpcInvestablePromise {
     pub lock_type: Option<String>,
     pub lock_metadata: Option<String>,
 }
+
+// ── Admin-facing detailed transaction types ─────────────────────────────────
+
+/// A parsed action summary for the admin dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcActionSummary {
+    pub action_type: String,
+    pub to_address: Option<String>,
+    pub amount_chronos: Option<String>,
+    pub amount_kx: Option<String>,
+    pub lock_until: Option<i64>,
+    pub memo: Option<String>,
+    pub email_hash: Option<String>,
+    pub lock_id: Option<String>,
+}
+
+/// A detailed recent transaction returned by `chronx_getRecentTransactionsDetailed`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcDetailedTx {
+    pub tx_id: String,
+    pub timestamp: i64,
+    pub from: String,
+    pub action_count: usize,
+    pub depth: u64,
+    pub actions: Vec<RpcActionSummary>,
+    pub memo: Option<String>,
+}
+
+// ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger RPC types ─────────
+
+/// Invoice record returned by `chronx_getInvoice`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcInvoiceRecord {
+    pub invoice_id: String,
+    pub issuer_pubkey: String,
+    pub payer_pubkey: Option<String>,
+    pub amount_chronos: String,
+    pub amount_kx: String,
+    pub expiry: u64,
+    pub status: String,
+    pub created_at: u64,
+    pub fulfilled_at: Option<u64>,
+}
+
+/// Credit authorization returned by `chronx_getCreditAuthorization`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcCreditRecord {
+    pub credit_id: String,
+    pub grantor_pubkey: String,
+    pub beneficiary_pubkey: String,
+    pub ceiling_chronos: String,
+    pub ceiling_kx: String,
+    pub per_draw_max_chronos: Option<String>,
+    pub expiry: u64,
+    pub drawn_chronos: String,
+    pub drawn_kx: String,
+    pub status: String,
+    pub created_at: u64,
+}
+
+/// Deposit record returned by `chronx_getDeposit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcDepositRecord {
+    pub deposit_id: String,
+    pub depositor_pubkey: String,
+    pub obligor_pubkey: String,
+    pub principal_chronos: String,
+    pub principal_kx: String,
+    pub rate_basis_points: u64,
+    pub term_seconds: u64,
+    pub compounding: String,
+    pub maturity_timestamp: u64,
+    pub total_due_chronos: String,
+    pub total_due_kx: String,
+    pub status: String,
+    pub created_at: u64,
+    pub settled_at: Option<u64>,
+}
+
+/// Conditional payment returned by `chronx_getConditionalPayment`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcConditionalRecord {
+    pub type_v_id: String,
+    pub sender_pubkey: String,
+    pub recipient_pubkey: String,
+    pub amount_chronos: String,
+    pub amount_kx: String,
+    pub min_attestors: u32,
+    pub attestations_received: u32,
+    pub valid_until: u64,
+    pub fallback: String,
+    pub status: String,
+    pub created_at: u64,
+}
+
+/// Ledger entry returned by `chronx_getLedgerEntries`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcLedgerEntryRecord {
+    pub entry_id: String,
+    pub author_pubkey: String,
+    pub promise_id: Option<String>,
+    pub entry_type: String,
+    pub content_hash: String,
+    pub content_summary: String,
+    pub timestamp: u64,
+}
+
+
+// ── Genesis 8 — Sign of Life and Promise Chain RPC types ────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcSignOfLifeRecord {
+    pub lock_id: String,
+    pub interval_days: u64,
+    pub grace_days: u64,
+    pub last_attestation: u64,
+    pub next_due: u64,
+    pub status: String,
+    pub responsible: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcPromiseChainRecord {
+    pub promise_id: String,
+    pub entry_count: u32,
+    pub last_anchor_hash: Option<String>,
+    pub last_anchor_at: Option<u64>,
+    pub created_at: u64,
+}
+
+
+// ── Identity Verification RPC types ─────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcIdentityRecord {
+    pub wallet: String,
+    pub issuer_wallet: String,
+    pub display_name: String,
+    pub badge_code: String,
+    pub badge_color: Option<String>,
+    pub verified: bool,
+    pub entry_id: String,
+    pub issued_at: u64,
+    pub expires_at: Option<u64>,
+    pub issuer_notes: Option<String>,
+}
+

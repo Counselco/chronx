@@ -27,8 +27,10 @@ tokio            = { workspace = true }
 clap             = { workspace = true }
 anyhow           = { workspace = true }
 chrono           = { workspace = true }
+reqwest          = { workspace = true }
+hex              = { workspace = true }
+semver           = { workspace = true }
+notify-rust      = { workspace = true }
 
 [dev-dependencies]
-reqwest    = { workspace = true }
-hex        = { workspace = true }
 chronx-dag = { workspace = true }

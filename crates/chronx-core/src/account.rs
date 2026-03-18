@@ -296,6 +296,16 @@ pub enum TimeLockStatus {
     Cancelled { cancelled_at: Timestamp },
     /// Lock expired unclaimed; funds reverted to sender by background sweep or manual reclaim.
     Reverted { reverted_at: Timestamp },
+
+    // ── ExecutorWithdraw lifecycle ────────────────────────────────────────────
+    /// MISAI executor submitted a withdrawal; KX held in limbo until finalize_at.
+    /// If not cancelled before finalize_at, the sweep finalizes the withdrawal.
+    PendingExecutor {
+        submitted_at: Timestamp,
+        finalize_at: Timestamp,
+    },
+    /// MISAI executor withdrawal finalized; KX transferred to executor wallet.
+    ExecutorWithdrawn { withdrawn_at: Timestamp },
 }
 
 impl TimeLockStatus {
@@ -308,6 +318,7 @@ impl TimeLockStatus {
                 | TimeLockStatus::ClaimSlashed { .. }
                 | TimeLockStatus::Cancelled { .. }
                 | TimeLockStatus::Reverted { .. }
+                | TimeLockStatus::ExecutorWithdrawn { .. }
         )
     }
 }
@@ -521,4 +532,5 @@ pub struct TimeLockContract {
     /// Arbitrary JSON metadata associated with this lock.
     #[serde(default)]
     pub lock_metadata: Option<String>,
+
 }

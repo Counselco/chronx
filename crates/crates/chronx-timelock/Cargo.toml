@@ -1,0 +1,13 @@
+[package]
+name = "chronx-timelock"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+chronx-core   = { workspace = true }
+chronx-state  = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }

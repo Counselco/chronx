@@ -2,11 +2,15 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
 use crate::types::{
+    RpcInvoiceRecord, RpcCreditRecord, RpcDepositRecord,
+    RpcConditionalRecord, RpcLedgerEntryRecord,
+    RpcSignOfLifeRecord, RpcPromiseChainRecord,
+    RpcIdentityRecord,
     RpcAccount, RpcCascadeDetails, RpcChainStats, RpcClaimState, RpcGenesisInfo,
-    RpcGlobalLockStats, RpcHumanityStakeBalance, RpcIncomingTransfer, RpcNetworkInfo,
+    RpcGlobalLockStats, RpcHumanityStakeBalance, RpcIncomingTransfer, RpcOutgoingTransfer, RpcNetworkInfo,
     RpcOracleSnapshot, RpcPromiseAxioms, RpcPromiseTriggerStatus, RpcProvider, RpcRecentTx,
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
-    RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
+    RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise, RpcDetailedTx,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -141,6 +145,13 @@ pub trait ChronxApi {
     #[method(name = "getIncomingTransfers")]
     async fn get_incoming_transfers(&self, account_id: String) -> RpcResult<Vec<RpcIncomingTransfer>>;
 
+
+    /// Return all outgoing transactions for an account: direct transfers sent,
+    /// email timelocks, and promise sends. Sorted newest-first.
+    /// Max 500 results.
+    #[method(name = "getOutgoingTransfers")]
+    async fn get_outgoing_transfers(&self, account_id: String) -> RpcResult<Vec<RpcOutgoingTransfer>>;
+
     // ── V4 Cascade Send ────────────────────────────────────────────────────
 
     /// Create a cascade of email time-locks in a single transaction.
@@ -210,4 +221,80 @@ pub trait ChronxApi {
     /// Return Genesis 8 constants from genesis metadata as JSON.
     #[method(name = "getGenesis8Constants")]
     async fn get_genesis8_constants(&self) -> RpcResult<serde_json::Value>;
+
+    /// Return MISAI executor's X25519 public key (hex) for lock_metadata encryption.
+    #[method(name = "getMisaiPubkey")]
+    async fn get_misai_pubkey(&self) -> RpcResult<serde_json::Value>;
+
+    /// Recent transactions with parsed action details (admin dashboard).
+    #[method(name = "getRecentTransactionsDetailed")]
+    async fn get_recent_transactions_detailed(&self, limit: u32) -> RpcResult<Vec<RpcDetailedTx>>;
+
+    // ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger queries ───
+
+    /// Return an invoice by its ID (hex).
+    #[method(name = "getInvoice")]
+    async fn get_invoice(&self, invoice_id_hex: String) -> RpcResult<Option<RpcInvoiceRecord>>;
+
+    /// Return all open invoices where the wallet is issuer or payer.
+    #[method(name = "getOpenInvoices")]
+    async fn get_open_invoices(&self, wallet: String) -> RpcResult<Vec<RpcInvoiceRecord>>;
+
+    /// Return a credit authorization by its ID (hex).
+    #[method(name = "getCreditAuthorization")]
+    async fn get_credit_authorization(&self, credit_id_hex: String) -> RpcResult<Option<RpcCreditRecord>>;
+
+    /// Return all open credits where the wallet is grantor or beneficiary.
+    #[method(name = "getOpenCredits")]
+    async fn get_open_credits(&self, wallet: String) -> RpcResult<Vec<RpcCreditRecord>>;
+
+    /// Return a deposit by its ID (hex).
+    #[method(name = "getDeposit")]
+    async fn get_deposit(&self, deposit_id_hex: String) -> RpcResult<Option<RpcDepositRecord>>;
+
+    /// Return all active/matured deposits for a wallet.
+    #[method(name = "getActiveDeposits")]
+    async fn get_active_deposits(&self, wallet: String) -> RpcResult<Vec<RpcDepositRecord>>;
+
+    /// Return a conditional payment by its type_v_id (hex).
+    #[method(name = "getConditionalPayment")]
+    async fn get_conditional_payment(&self, type_v_id_hex: String) -> RpcResult<Option<RpcConditionalRecord>>;
+
+    /// Return all ledger entries for a promise (by promise_id hex).
+    #[method(name = "getLedgerEntries")]
+    async fn get_ledger_entries(&self, promise_id_hex: String) -> RpcResult<Vec<RpcLedgerEntryRecord>>;
+
+    // ── Genesis 8 — Sign of Life and Promise Chain queries ──────────
+
+    /// Return sign-of-life status for a lock.
+    #[method(name = "getSignOfLifeStatus")]
+    async fn get_sign_of_life_status(&self, lock_id: String) -> RpcResult<Option<RpcSignOfLifeRecord>>;
+
+    /// Return promise chain metadata by promise_id (hex).
+    #[method(name = "getPromiseChain")]
+    async fn get_promise_chain(&self, promise_id_hex: String) -> RpcResult<Option<RpcPromiseChainRecord>>;
+
+    /// Return promise chain anchor history by promise_id (hex).
+    #[method(name = "getPromiseChainAnchors")]
+    async fn get_promise_chain_anchors(&self, promise_id_hex: String) -> RpcResult<Option<RpcPromiseChainRecord>>;
+
+    // ── Identity Verification queries ───────────────────────────────
+
+    /// Return the latest verified identity for a wallet (or null if none).
+    #[method(name = "getVerifiedIdentity")]
+    async fn get_verified_identity(&self, wallet_b58: String) -> RpcResult<Option<RpcIdentityRecord>>;
+
+    /// Return all identity-related TYPE L entries for a wallet.
+    #[method(name = "getIdentityHistory")]
+    async fn get_identity_history(&self, wallet_b58: String) -> RpcResult<Vec<RpcLedgerEntryRecord>>;
+
+    // ── Genesis 9 — TYPE_G Wallet Group queries ─────────────────────────
+
+    /// Return a wallet group by its group_id (hex).
+    #[method(name = "getGroup")]
+    async fn get_group(&self, group_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Check if a public key is a member of a group.
+    #[method(name = "isGroupMember")]
+    async fn is_group_member(&self, group_id_hex: String, pubkey_hex: String) -> RpcResult<serde_json::Value>;
 }

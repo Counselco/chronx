@@ -6,16 +6,18 @@
 //!
 //! Genesis allocations v8.0 (all at GENESIS_TIMESTAMP = 2026-01-01 00:00:00 UTC):
 //!
-//! 1.  Public sale address  — 6,090,000,000 KX  (spendable immediately)
+//! Genesis 9 allocations (6 entries only — all at GENESIS_TIMESTAMP = 2026-01-01 00:00:00 UTC):
+//!
+//! 1.  Public sale address  — 6,093,000,000 KX  (spendable immediately)
 //! 2.  Treasury             — 1,000,000,000 KX  (100 annual time-locks, log-declining)
 //! 3.  Node Rewards         — 1,000,000,000 KX  (100 annual time-locks, log-declining)
-//! 4.  Founder              —   155,000,000 KX  (spendable immediately)
-//! 5.  MISAI Bond           —    10,000,000 KX  (ecosystem bond, spendable)
-//! 6.  Verifas Bond         —    10,000,000 KX  (ecosystem bond, spendable)
-//! 7.  Faucet               —     3,000,000 KX  (spendable immediately)
-//! 8.  Humanity stake       —     1,000,000 KX  (single lock until 2126-01-01, own wallet)
-//! 9.  Milestone 2076       —       500,000 KX  (unlocks 2076-01-01, own wallet)
-//! 10. Protocol reserve     —       500,000 KX  (unlocks 2036-01-01, own wallet)
+//! 4.  Humanity stake       —     1,000,000 KX  (single lock until 2126-01-01, own wallet)
+//! 5.  Milestone 2076       —       500,000 KX  (unlocks 2076-01-01, own wallet)
+//! 6.  Protocol reserve     —       500,000 KX  (unlocks 2036-01-01, own wallet)
+//!
+//! Genesis block total: 8,095,000,000 KX
+//! Remaining 175,000,000 KX sits in Public Sale, distributed post-genesis:
+//!   Founder 188M, Faucet 3M, MISAI Bond 10M, Verifas Bond 10M, + community wallets
 //!
 //! Total supply: 8,270,000,000 KX
 
@@ -315,7 +317,10 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
     Ok(accounts)
 }
 
-/// Verify that all balances + pending time-locks sum to exactly TOTAL_SUPPLY.
+/// Verify that all genesis balances + pending time-locks sum correctly.
+/// Genesis 9: Only Public Sale + timelocked allocations are created at genesis.
+/// Founder, Faucet, MISAI Bond, Verifas Bond are funded post-genesis from Public Sale.
+/// Genesis block total = TOTAL_SUPPLY_CHRONOS (all KX starts in Public Sale + timelocks).
 fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), ChronxError> {
     use chronx_core::constants::TOTAL_SUPPLY_CHRONOS;
 
@@ -357,9 +362,11 @@ fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), Chr
         + milestone_amount
         + reserve_amount;
 
-    if total != TOTAL_SUPPLY_CHRONOS {
+    // Genesis 9: genesis block total = 8,095,000,000 KX (175M distributed post-genesis)
+    let genesis_block_total: u128 = (PUBLIC_SALE_KX + TREASURY_KX + NODE_REWARDS_KX + HUMANITY_STAKE_KX + MILESTONE_2076_KX + PROTOCOL_RESERVE_KX) * CHRONOS_PER_KX;
+    if total != genesis_block_total {
         return Err(ChronxError::GenesisSupplyMismatch {
-            expected: TOTAL_SUPPLY_CHRONOS,
+            expected: genesis_block_total,
             got: total,
         });
     }

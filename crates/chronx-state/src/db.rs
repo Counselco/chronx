@@ -1,3 +1,5 @@
+use serde_json;
+use hex;
 use chronx_core::account::{Account, TimeLockContract};
 use chronx_core::claims::{CertificateSchema, ClaimState, OracleSnapshot, ProviderRecord};
 use chronx_core::error::ChronxError;
@@ -124,6 +126,180 @@ pub struct AxiomConsentRecord {
 }
 
 
+// ── MISAI ExecutorWithdraw tracking ────────────────────────────────────────
+
+/// Record of an ExecutorWithdraw submission, stored in the `executor_withdrawals` tree.
+/// Tracks pending withdrawals for the finalization sweep and enforces rate limits.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExecutorWithdrawalRecord {
+    pub lock_id: String,
+    pub destination: String,
+    pub amount_chronos: u64,
+    pub submitted_at: i64,
+    pub finalize_at: i64,
+    pub status: String, // "PendingExecutor" or "Finalized"
+}
+
+
+// ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger record types ──────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum InvoiceStatus {
+    Open,
+    Fulfilled,
+    Lapsed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InvoiceRecord {
+    pub invoice_id: [u8; 32],
+    pub issuer_pubkey: Vec<u8>,
+    pub payer_pubkey: Option<Vec<u8>>,
+    pub amount_chronos: u64,
+    pub expiry: u64,
+    pub encrypted_memo: Option<Vec<u8>>,
+    pub memo_hash: Option<[u8; 32]>,
+    pub status: InvoiceStatus,
+    pub created_at: u64,
+    pub fulfilled_at: Option<u64>,
+    pub fulfilled_by: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CreditStatus {
+    Open,
+    Closed,
+    Lapsed,
+    Revoked,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreditRecord {
+    pub credit_id: [u8; 32],
+    pub grantor_pubkey: Vec<u8>,
+    pub beneficiary_pubkey: Vec<u8>,
+    pub ceiling_chronos: u64,
+    pub per_draw_max_chronos: Option<u64>,
+    pub expiry: u64,
+    pub drawn_chronos: u64,
+    pub status: CreditStatus,
+    pub encrypted_terms: Option<Vec<u8>>,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum DepositStatus {
+    Active,
+    Matured,
+    Settled,
+    Defaulted,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DepositRecord {
+    pub deposit_id: [u8; 32],
+    pub depositor_pubkey: Vec<u8>,
+    pub obligor_pubkey: Vec<u8>,
+    pub principal_chronos: u64,
+    pub rate_basis_points: u64,
+    pub term_seconds: u64,
+    pub compounding: String,
+    pub maturity_timestamp: u64,
+    pub total_due_chronos: u64,
+    pub penalty_basis_points: Option<u64>,
+    pub status: DepositStatus,
+    pub created_at: u64,
+    pub settled_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ConditionalStatus {
+    Pending,
+    Released,
+    Voided,
+    Returned,
+    Escrowed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConditionalRecord {
+    pub type_v_id: [u8; 32],
+    pub sender_pubkey: Vec<u8>,
+    pub recipient_pubkey: Vec<u8>,
+    pub amount_chronos: u64,
+    pub attestor_pubkeys: Vec<Vec<u8>>,
+    pub min_attestors: u32,
+    pub attestation_memo: Option<String>,
+    pub valid_until: u64,
+    pub fallback: String,
+    pub encrypted_terms: Option<Vec<u8>>,
+    pub attestations_received: Vec<(Vec<u8>, u64)>,
+    pub status: ConditionalStatus,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LedgerEntryRecord {
+    pub entry_id: [u8; 32],
+    pub author_pubkey: Vec<u8>,
+    pub mandate_id: Option<[u8; 32]>,
+    pub promise_id: Option<[u8; 32]>,
+    pub entry_type: String,
+    pub content_hash: [u8; 32],
+    pub content_summary: Vec<u8>,
+    pub promise_chain_hash: Option<[u8; 32]>,
+    pub external_ref: Option<String>,
+    pub timestamp: u64,
+}
+
+
+// ── Genesis 8 — Sign of Life and Promise Chain record types ─────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignOfLifeRecord {
+    pub lock_id: String,
+    pub grantor_pubkey: Vec<u8>,
+    pub guardian_pubkey: Option<Vec<u8>>,
+    pub alt_guardian_pubkey: Option<Vec<u8>>,
+    pub interval_days: u64,
+    pub grace_days: u64,
+    pub guardian_until: Option<u64>,
+    pub last_attestation: u64,
+    pub next_due: u64,
+    pub grace_expires: Option<u64>,
+    pub status: String,           // "Active", "GracePeriod", "Transitioned"
+    pub responsible: String,      // "Grantor" or "Guardian"
+    pub beneficiary_description_hash: Option<[u8; 32]>,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PromiseChainRecord {
+    pub promise_id: [u8; 32],
+    pub entries: Vec<[u8; 32]>,   // ordered list of entry_ids
+    pub last_anchor_hash: Option<[u8; 32]>,
+    pub last_anchor_at: Option<u64>,
+    pub created_at: u64,
+}
+
+
+// ── Identity Verification record ────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IdentityRecord {
+    pub wallet_b58: String,
+    pub issuer_wallet_b58: String,
+    pub display_name: String,
+    pub badge_code: String,
+    pub badge_color: Option<String>,
+    pub verified: bool,
+    pub entry_id: [u8; 32],
+    pub issued_at: u64,
+    pub expires_at: Option<u64>,
+    pub issuer_notes: Option<String>,
+}
+
 /// Persistent state database backed by sled (pure-Rust, no C dependencies).
 ///
 /// Named trees:
@@ -168,6 +344,29 @@ pub struct StateDb {
     agent_custody_records: sled::Tree,
     axiom_consents: sled::Tree,
 
+    // Genesis 8 — Sign of Life and Promise Chain trees
+    sign_of_life: sled::Tree,
+    promise_chains: sled::Tree,
+
+    // Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger trees
+    invoices: sled::Tree,
+    credits: sled::Tree,
+    deposits: sled::Tree,
+    conditionals: sled::Tree,
+    ledger_entries: sled::Tree,
+    /// Secondary index: promise_id [u8;32] -> bincode(Vec<[u8;32]>) of entry_ids.
+    ledger_promise_index: sled::Tree,
+    /// Identity index: wallet_b58 bytes -> bincode(Vec<[u8;32]>) of identity entry_ids.
+    identity_index: sled::Tree,
+    /// Suggestion-only convert_to field: lock_id bytes -> UTF-8 string (max 50 chars).
+    lock_convert_to: sled::Tree,
+
+    /// MISAI ExecutorWithdraw: maps lock_id bytes → bincode(ExecutorWithdrawalRecord).
+    /// Tracks pending executor withdrawals for finalization sweep and rate limiting.
+    executor_withdrawals: sled::Tree,
+
+    /// Genesis 9: TYPE_G Wallet Groups — maps group_id [u8;32] -> bincode(GroupRecord).
+    groups: sled::Tree,
 }
 
 impl StateDb {
@@ -229,6 +428,42 @@ impl StateDb {
         let axiom_consents = db
             .open_tree("axiom_consents")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let sign_of_life = db
+            .open_tree("sign_of_life")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let promise_chains = db
+            .open_tree("promise_chains")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let invoices = db
+            .open_tree("invoices")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let credits = db
+            .open_tree("credits")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let deposits = db
+            .open_tree("deposits")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let conditionals = db
+            .open_tree("conditionals")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let ledger_entries = db
+            .open_tree("ledger_entries")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let identity_index = db
+            .open_tree("identity_index")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let lock_convert_to = db
+            .open_tree("lock_convert_to")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let ledger_promise_index = db
+            .open_tree("ledger_promise_index")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let executor_withdrawals = db
+            .open_tree("executor_withdrawals")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let groups = db
+            .open_tree("groups")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(Self {
             _db: db,
             accounts,
@@ -249,6 +484,18 @@ impl StateDb {
             agent_loans,
             agent_custody_records,
             axiom_consents,
+            sign_of_life,
+            promise_chains,
+            invoices,
+            credits,
+            deposits,
+            conditionals,
+            ledger_entries,
+            identity_index,
+            lock_convert_to,
+            ledger_promise_index,
+            executor_withdrawals,
+            groups,
         })
     }
 
@@ -911,6 +1158,69 @@ impl StateDb {
         }
     }
 
+    // ── MISAI ExecutorWithdraw ──────────────────────────────────────────
+
+    /// Store an executor withdrawal record keyed by lock_id hex.
+    pub fn put_executor_withdrawal(
+        &self,
+        lock_id_hex: &str,
+        record: &ExecutorWithdrawalRecord,
+    ) -> Result<(), ChronxError> {
+        let b = bincode::serialize(record)
+            .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.executor_withdrawals
+            .insert(lock_id_hex.as_bytes(), b)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve an executor withdrawal record by lock_id hex.
+    pub fn get_executor_withdrawal(
+        &self,
+        lock_id_hex: &str,
+    ) -> Result<Option<ExecutorWithdrawalRecord>, ChronxError> {
+        match self
+            .executor_withdrawals
+            .get(lock_id_hex.as_bytes())
+            .map_err(|e| ChronxError::Storage(e.to_string()))?
+        {
+            Some(b) => Ok(Some(
+                bincode::deserialize(&b)
+                    .map_err(|e| ChronxError::Serialization(e.to_string()))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Count executor withdrawals submitted in the last `window_secs` seconds.
+    pub fn count_recent_executor_withdrawals(&self, now: i64, window_secs: i64) -> Result<u32, ChronxError> {
+        let mut count = 0u32;
+        let cutoff = now - window_secs;
+        for item in self.executor_withdrawals.iter() {
+            let (_, b) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: ExecutorWithdrawalRecord = bincode::deserialize(&b)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.submitted_at >= cutoff {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Iterate all executor withdrawal records with status "PendingExecutor".
+    pub fn iter_pending_executor_withdrawals(&self) -> Result<Vec<ExecutorWithdrawalRecord>, ChronxError> {
+        let mut out = Vec::new();
+        for item in self.executor_withdrawals.iter() {
+            let (_, b) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: ExecutorWithdrawalRecord = bincode::deserialize(&b)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.status == "PendingExecutor" {
+                out.push(record);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn has_both_consents(&self, lock_id: &str) -> bool {
         let grantor_key = format!("{}:GRANTOR", lock_id);
         let agent_key = format!("{}:AGENT", lock_id);
@@ -927,6 +1237,473 @@ impl StateDb {
         hasher.update(&promise);
         hasher.update(&trading);
         Ok(hasher.finalize().to_hex().to_string())
+    }
+
+    // ── Genesis 8 — Invoice accessors ─────────────────────────────────────
+
+    pub fn get_invoice(&self, invoice_id: &[u8; 32]) -> Result<Option<InvoiceRecord>, ChronxError> {
+        match self.invoices.get(invoice_id) {
+            Ok(Some(bytes)) => {
+                let record: InvoiceRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_invoice(&self, record: &InvoiceRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.invoices.insert(&record.invoice_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_invoice_status(&self, invoice_id: &[u8; 32], status: InvoiceStatus, fulfilled_at: Option<u64>, fulfilled_by: Option<Vec<u8>>) -> Result<(), ChronxError> {
+        if let Some(mut record) = self.get_invoice(invoice_id)? {
+            record.status = status;
+            record.fulfilled_at = fulfilled_at;
+            record.fulfilled_by = fulfilled_by;
+            self.put_invoice(&record)
+        } else {
+            Err(ChronxError::Other(format!("invoice not found: {}", hex::encode(invoice_id))))
+        }
+    }
+
+    pub fn iter_invoices_for_wallet(&self, wallet_pubkey: &[u8]) -> Result<Vec<InvoiceRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.invoices.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: InvoiceRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.issuer_pubkey == wallet_pubkey || record.payer_pubkey.as_deref() == Some(wallet_pubkey) {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn iter_open_invoices_for_wallet(&self, wallet_pubkey: &[u8]) -> Result<Vec<InvoiceRecord>, ChronxError> {
+        Ok(self.iter_invoices_for_wallet(wallet_pubkey)?
+            .into_iter()
+            .filter(|r| matches!(r.status, InvoiceStatus::Open))
+            .collect())
+    }
+
+    pub fn iter_all_invoices(&self) -> Result<Vec<InvoiceRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.invoices.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: InvoiceRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            results.push(record);
+        }
+        Ok(results)
+    }
+
+    // ── Genesis 8 — Credit accessors ──────────────────────────────────────
+
+    pub fn get_credit(&self, credit_id: &[u8; 32]) -> Result<Option<CreditRecord>, ChronxError> {
+        match self.credits.get(credit_id) {
+            Ok(Some(bytes)) => {
+                let record: CreditRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_credit(&self, record: &CreditRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.credits.insert(&record.credit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_credit_drawn(&self, credit_id: &[u8; 32], additional: u64) -> Result<CreditRecord, ChronxError> {
+        if let Some(mut record) = self.get_credit(credit_id)? {
+            record.drawn_chronos += additional;
+            if record.drawn_chronos >= record.ceiling_chronos {
+                record.status = CreditStatus::Closed;
+            }
+            self.put_credit(&record)?;
+            Ok(record)
+        } else {
+            Err(ChronxError::Other(format!("credit not found: {}", hex::encode(credit_id))))
+        }
+    }
+
+    pub fn update_credit_status(&self, credit_id: &[u8; 32], status: CreditStatus) -> Result<(), ChronxError> {
+        if let Some(mut record) = self.get_credit(credit_id)? {
+            record.status = status;
+            self.put_credit(&record)
+        } else {
+            Err(ChronxError::Other(format!("credit not found: {}", hex::encode(credit_id))))
+        }
+    }
+
+    pub fn iter_open_credits_for_wallet(&self, wallet_pubkey: &[u8]) -> Result<Vec<CreditRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.credits.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: CreditRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if matches!(record.status, CreditStatus::Open) &&
+               (record.grantor_pubkey == wallet_pubkey || record.beneficiary_pubkey == wallet_pubkey) {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn iter_all_credits(&self) -> Result<Vec<CreditRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.credits.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: CreditRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            results.push(record);
+        }
+        Ok(results)
+    }
+
+    // ── Genesis 8 — Deposit accessors ─────────────────────────────────────
+
+    pub fn get_deposit(&self, deposit_id: &[u8; 32]) -> Result<Option<DepositRecord>, ChronxError> {
+        match self.deposits.get(deposit_id) {
+            Ok(Some(bytes)) => {
+                let record: DepositRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_deposit(&self, record: &DepositRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.deposits.insert(&record.deposit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_deposit_status(&self, deposit_id: &[u8; 32], status: DepositStatus, settled_at: Option<u64>) -> Result<(), ChronxError> {
+        if let Some(mut record) = self.get_deposit(deposit_id)? {
+            record.status = status;
+            record.settled_at = settled_at;
+            self.put_deposit(&record)
+        } else {
+            Err(ChronxError::Other(format!("deposit not found: {}", hex::encode(deposit_id))))
+        }
+    }
+
+    pub fn iter_active_deposits_for_wallet(&self, wallet_pubkey: &[u8]) -> Result<Vec<DepositRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.deposits.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: DepositRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if matches!(record.status, DepositStatus::Active | DepositStatus::Matured) &&
+               (record.depositor_pubkey == wallet_pubkey || record.obligor_pubkey == wallet_pubkey) {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn iter_all_deposits(&self) -> Result<Vec<DepositRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.deposits.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: DepositRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            results.push(record);
+        }
+        Ok(results)
+    }
+
+    // ── Genesis 8 — Conditional accessors ─────────────────────────────────
+
+    pub fn get_conditional(&self, type_v_id: &[u8; 32]) -> Result<Option<ConditionalRecord>, ChronxError> {
+        match self.conditionals.get(type_v_id) {
+            Ok(Some(bytes)) => {
+                let record: ConditionalRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_conditional(&self, record: &ConditionalRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.conditionals.insert(&record.type_v_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn add_attestation(&self, type_v_id: &[u8; 32], attestor_pubkey: Vec<u8>, timestamp: u64) -> Result<ConditionalRecord, ChronxError> {
+        if let Some(mut record) = self.get_conditional(type_v_id)? {
+            record.attestations_received.push((attestor_pubkey, timestamp));
+            self.put_conditional(&record)?;
+            Ok(record)
+        } else {
+            Err(ChronxError::Other(format!("conditional not found: {}", hex::encode(type_v_id))))
+        }
+    }
+
+    pub fn update_conditional_status(&self, type_v_id: &[u8; 32], status: ConditionalStatus) -> Result<(), ChronxError> {
+        if let Some(mut record) = self.get_conditional(type_v_id)? {
+            record.status = status;
+            self.put_conditional(&record)
+        } else {
+            Err(ChronxError::Other(format!("conditional not found: {}", hex::encode(type_v_id))))
+        }
+    }
+
+    pub fn iter_all_conditionals(&self) -> Result<Vec<ConditionalRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.conditionals.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: ConditionalRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            results.push(record);
+        }
+        Ok(results)
+    }
+
+    // ── Genesis 8 — Ledger Entry accessors ────────────────────────────────
+
+    pub fn put_ledger_entry(&self, record: &LedgerEntryRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.ledger_entries.insert(&record.entry_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+
+        // Update promise_id secondary index
+        if let Some(promise_id) = &record.promise_id {
+            let mut entry_ids: Vec<[u8; 32]> = match self.ledger_promise_index.get(promise_id) {
+                Ok(Some(bytes)) => bincode::deserialize(&bytes).unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            entry_ids.push(record.entry_id);
+            let idx_bytes = bincode::serialize(&entry_ids).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            self.ledger_promise_index.insert(promise_id.as_ref(), idx_bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub fn get_ledger_entry(&self, entry_id: &[u8; 32]) -> Result<Option<LedgerEntryRecord>, ChronxError> {
+        match self.ledger_entries.get(entry_id) {
+            Ok(Some(bytes)) => {
+                let record: LedgerEntryRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn get_ledger_entries_by_promise(&self, promise_id: &[u8; 32]) -> Result<Vec<LedgerEntryRecord>, ChronxError> {
+        let entry_ids: Vec<[u8; 32]> = match self.ledger_promise_index.get(promise_id) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).unwrap_or_default(),
+            _ => return Ok(Vec::new()),
+        };
+        let mut results = Vec::new();
+        for eid in entry_ids {
+            if let Some(record) = self.get_ledger_entry(&eid)? {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn ledger_entry_exists(&self, entry_id: &[u8; 32]) -> bool {
+        self.ledger_entries.contains_key(entry_id).unwrap_or(false)
+    }
+
+
+    // ── Identity verification accessors ───────────────────────────────
+
+    pub fn add_identity_entry(&self, wallet_b58: &str, entry_id: [u8; 32]) -> Result<(), ChronxError> {
+        let key = wallet_b58.as_bytes();
+        let mut entry_ids: Vec<[u8; 32]> = match self.identity_index.get(key) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        entry_ids.push(entry_id);
+        let bytes = bincode::serialize(&entry_ids).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.identity_index.insert(key, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_identity_entries(&self, wallet_b58: &str) -> Result<Vec<LedgerEntryRecord>, ChronxError> {
+        let key = wallet_b58.as_bytes();
+        let entry_ids: Vec<[u8; 32]> = match self.identity_index.get(key) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).unwrap_or_default(),
+            _ => return Ok(Vec::new()),
+        };
+        let mut results = Vec::new();
+        for eid in entry_ids {
+            if let Some(record) = self.get_ledger_entry(&eid)? {
+                results.push(record);
+            }
+        }
+        results.sort_by_key(|r| r.timestamp);
+        Ok(results)
+    }
+
+    pub fn get_latest_identity(&self, wallet_b58: &str, now_unix: u64) -> Result<Option<IdentityRecord>, ChronxError> {
+        let entries = self.get_identity_entries(wallet_b58)?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        // Most recent entry wins
+        let latest = entries.last().unwrap();
+        let is_verified = latest.entry_type == "IdentityVerified";
+        // Parse content_summary as JSON
+        let summary_str = String::from_utf8_lossy(&latest.content_summary).to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&summary_str).unwrap_or_default();
+        let display_name = parsed.get("display").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let badge_code = parsed.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let badge_color = parsed.get("color").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let expires_at_val = parsed.get("expires").and_then(|v| v.as_u64());
+        let expires_at = if expires_at_val == Some(0) { None } else { expires_at_val };
+        let issuer_notes = parsed.get("notes").and_then(|v| v.as_str()).map(|s| s.to_string());
+        // Check expiry
+        let verified = if is_verified {
+            match expires_at {
+                Some(exp) if now_unix > exp => false,
+                _ => true,
+            }
+        } else {
+            false
+        };
+        let issuer_b58 = hex::encode(&latest.author_pubkey);
+        Ok(Some(IdentityRecord {
+            wallet_b58: wallet_b58.to_string(),
+            issuer_wallet_b58: issuer_b58,
+            display_name,
+            badge_code,
+            badge_color,
+            verified,
+            entry_id: latest.entry_id,
+            issued_at: latest.timestamp,
+            expires_at,
+            issuer_notes,
+        }))
+    }
+
+    // ── convert_to field accessors ────────────────────────────────────
+
+    pub fn put_lock_convert_to(&self, lock_id: &chronx_core::types::TxId, value: &str) -> Result<(), ChronxError> {
+        self.lock_convert_to.insert(lock_id.as_bytes(), value.as_bytes())
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_lock_convert_to(&self, lock_id: &chronx_core::types::TxId) -> Result<Option<String>, ChronxError> {
+        match self.lock_convert_to.get(lock_id.as_bytes()) {
+            Ok(Some(bytes)) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    // ── Genesis 8 — Sign of Life accessors ────────────────────────────
+
+    pub fn get_sign_of_life(&self, lock_id: &str) -> Result<Option<SignOfLifeRecord>, ChronxError> {
+        match self.sign_of_life.get(lock_id.as_bytes()) {
+            Ok(Some(bytes)) => {
+                let record: SignOfLifeRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_sign_of_life(&self, lock_id: &str, record: &SignOfLifeRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.sign_of_life.insert(lock_id.as_bytes(), bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn iter_active_sign_of_life(&self) -> Result<Vec<SignOfLifeRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.sign_of_life.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: SignOfLifeRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.status == "Active" || record.status == "GracePeriod" {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    // ── Genesis 8 — Promise Chain accessors ───────────────────────────
+
+    pub fn get_promise_chain(&self, promise_id: &[u8; 32]) -> Result<Option<PromiseChainRecord>, ChronxError> {
+        match self.promise_chains.get(promise_id) {
+            Ok(Some(bytes)) => {
+                let record: PromiseChainRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_promise_chain(&self, record: &PromiseChainRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.promise_chains.insert(&record.promise_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn iter_all_promise_chains(&self) -> Result<Vec<PromiseChainRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.promise_chains.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: PromiseChainRecord =
+                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            results.push(record);
+        }
+        Ok(results)
+    }
+
+
+    // ── Genesis 9: Wallet Group accessors ────────────────────────────────────
+
+    pub fn get_group(&self, group_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::GroupRecord>, ChronxError> {
+        match self.groups.get(group_id).map_err(|e| ChronxError::Storage(e.to_string()))? {
+            Some(bytes) => {
+                let record: chronx_core::transaction::GroupRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn put_group(&self, record: &chronx_core::transaction::GroupRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.groups.insert(&record.group_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn is_group_member(&self, group_id: &[u8; 32], pubkey: &chronx_core::types::DilithiumPublicKey) -> Result<bool, ChronxError> {
+        match self.get_group(group_id)? {
+            Some(record) => {
+                if record.status == chronx_core::transaction::GroupStatus::Dissolved {
+                    return Ok(false);
+                }
+                Ok(record.members.iter().any(|m| m == pubkey))
+            }
+            None => Ok(false),
+        }
     }
 
 }

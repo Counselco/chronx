@@ -26,14 +26,20 @@ use chronx_core::constants::{CHRONOS_PER_KX, TOTAL_SUPPLY_CHRONOS};
 use chronx_core::transaction::{Action, Transaction};
 use chronx_core::types::{AccountId, TxId};
 use chronx_state::StateDb;
+use chronx_state::db::{InvoiceStatus, CreditStatus, DepositStatus, ConditionalStatus};
 
 use crate::api::ChronxApiServer;
 use crate::types::{
+    RpcInvoiceRecord, RpcCreditRecord, RpcDepositRecord,
+    RpcConditionalRecord, RpcLedgerEntryRecord,
+    RpcSignOfLifeRecord, RpcPromiseChainRecord,
+    RpcIdentityRecord,
     RpcAccount, RpcCascadeDetails, RpcChainStats, RpcClaimState, RpcGenesisInfo,
-    RpcGlobalLockStats, RpcHumanityStakeBalance, RpcIncomingTransfer, RpcNetworkInfo,
+    RpcGlobalLockStats, RpcHumanityStakeBalance, RpcIncomingTransfer, RpcOutgoingTransfer, RpcNetworkInfo,
     RpcOracleSnapshot, RpcPromiseAxioms, RpcPromiseTriggerStatus, RpcProvider, RpcRecentTx,
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
+    RpcDetailedTx, RpcActionSummary,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -44,6 +50,8 @@ fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
 pub struct RpcServerState {
     pub db: Arc<StateDb>,
     pub pow_difficulty: u8,
+
+
     /// Optional sender to forward incoming transactions to the node pipeline.
     pub tx_sender: Option<tokio::sync::mpsc::Sender<Transaction>>,
     /// Full libp2p multiaddress of this node (e.g. `/ip4/127.0.0.1/tcp/7777/p2p/<PeerId>`).
@@ -96,6 +104,8 @@ fn tlc_status_str(status: &TimeLockStatus) -> String {
         TimeLockStatus::ClaimSlashed { .. } => "ClaimSlashed".to_string(),
         TimeLockStatus::Cancelled { .. } => "Cancelled".to_string(),
         TimeLockStatus::Reverted { .. } => "Reverted".to_string(),
+        TimeLockStatus::PendingExecutor { .. } => "PendingExecutor".to_string(),
+        TimeLockStatus::ExecutorWithdrawn { .. } => "ExecutorWithdrawn".to_string(),
     }
 }
 
@@ -144,6 +154,7 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
         unclaimed_action: unclaimed_action_str,
         lock_type: tlc.lock_type,
         lock_metadata: tlc.lock_metadata,
+        convert_to: None, // populated by caller from lock_convert_to tree
     }
 }
 
@@ -816,6 +827,68 @@ impl ChronxApiServer for RpcServer {
         Ok(results)
     }
 
+
+    /// `chronx_getOutgoingTransfers` -- all outgoing transactions for an account:
+    /// direct transfers sent, email timelocks, and promise sends.
+    /// Sorted newest-first, max 500 results.
+    async fn get_outgoing_transfers(&self, account_id: String) -> RpcResult<Vec<RpcOutgoingTransfer>> {
+        let id = AccountId::from_b58(&account_id)
+            .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
+
+        let mut results: Vec<RpcOutgoingTransfer> = Vec::new();
+
+        // 1. Scan all DAG vertices for Transfer actions where from == account_id
+        let vertices = self.state.db.iter_all_vertices()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        for v in &vertices {
+            let tx = &v.transaction;
+            if tx.from != id { continue; }
+            for action in &tx.actions {
+                if let Action::Transfer { to, amount } = action {
+                    if *to != id {
+                        results.push(RpcOutgoingTransfer {
+                            tx_id: tx.tx_id.to_hex(),
+                            to: to.to_b58(),
+                            amount_chronos: amount.to_string(),
+                            amount_kx: format!("{}.{:06}", amount / CHRONOS_PER_KX, amount % CHRONOS_PER_KX),
+                            timestamp: tx.timestamp,
+                            tx_type: "transfer".to_string(),
+                            memo: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Find timelocks where this account is the sender
+        let outgoing_locks = self.state.db.iter_timelocks_for_sender(&id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        for tlc in outgoing_locks {
+            let tx_type = if tlc.recipient_email_hash.is_some() {
+                "email_send"
+            } else {
+                "promise_sent"
+            };
+            let recipient = if tlc.recipient_email_hash.is_some() {
+                String::new()
+            } else {
+                tlc.recipient_account_id.to_b58()
+            };
+            results.push(RpcOutgoingTransfer {
+                tx_id: tlc.id.to_hex(),
+                to: recipient,
+                amount_chronos: tlc.amount.to_string(),
+                amount_kx: format!("{}.{:06}", tlc.amount / CHRONOS_PER_KX, tlc.amount % CHRONOS_PER_KX),
+                timestamp: tlc.created_at,
+                tx_type: tx_type.to_string(),
+                memo: tlc.memo.clone(),
+            });
+        }
+
+        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        results.truncate(500);
+        Ok(results)
+    }
     /// `chronx_getGlobalLockStats` — aggregate stats across all Pending timelocks.
     /// Designed for the public website stats bar: single cheap call, no pagination.
     async fn get_global_lock_stats(&self) -> RpcResult<RpcGlobalLockStats> {
@@ -1146,5 +1219,446 @@ impl ChronxApiServer for RpcServer {
             }
             None => Ok(serde_json::json!(null)),
         }
+    }
+
+    /// `chronx_getMisaiPubkey` — return MISAI executor's X25519 public key (hex).
+    /// The wallet uses this to encrypt lock_metadata for Type M locks.
+    async fn get_misai_pubkey(&self) -> RpcResult<serde_json::Value> {
+        let meta = self.state.db.get_meta("misai_x25519_pubkey")
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        match meta {
+            Some(bytes) => {
+                let hex_str = String::from_utf8_lossy(&bytes).to_string();
+                Ok(serde_json::json!({ "pubkey_hex": hex_str }))
+            }
+            None => Ok(serde_json::json!({ "pubkey_hex": null })),
+        }
+    }
+
+    /// `chronx_getRecentTransactionsDetailed` - recent transactions with parsed action details.
+    async fn get_recent_transactions_detailed(&self, limit: u32) -> RpcResult<Vec<RpcDetailedTx>> {
+        let limit = limit.min(500) as usize;
+
+        let mut vertices = self
+            .state
+            .db
+            .iter_all_vertices()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        vertices.sort_by(|a, b| b.transaction.timestamp.cmp(&a.transaction.timestamp));
+
+        let result: Vec<RpcDetailedTx> = vertices
+            .into_iter()
+            .take(limit)
+            .map(|v| {
+                let actions: Vec<RpcActionSummary> = v.transaction.actions.iter().map(|action| {
+                    match action {
+                        Action::Transfer { to, amount } => RpcActionSummary {
+                            action_type: "Transfer".to_string(),
+                            to_address: Some(to.to_b58()),
+                            amount_chronos: Some(amount.to_string()),
+                            amount_kx: Some((amount / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                        Action::TimeLockCreate {
+                            amount, unlock_at, memo, recipient_email_hash, ..
+                        } => {
+                            let email_hash_hex = recipient_email_hash.map(|h| hex::encode(h));
+                            let atype = if email_hash_hex.is_some() { "EmailLock" } else { "TimeLock" };
+                            RpcActionSummary {
+                                action_type: atype.to_string(),
+                                to_address: None,
+                                amount_chronos: Some(amount.to_string()),
+                                amount_kx: Some((amount / CHRONOS_PER_KX).to_string()),
+                                lock_until: Some(*unlock_at),
+                                memo: memo.clone(),
+                                email_hash: email_hash_hex,
+                                lock_id: None,
+                            }
+                        },
+                        Action::TimeLockClaim { lock_id } => RpcActionSummary {
+                            action_type: "Claim".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        Action::TimeLockClaimWithSecret { lock_id, .. } => RpcActionSummary {
+                            action_type: "EmailClaim".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        Action::CancelTimeLock { lock_id } => RpcActionSummary {
+                            action_type: "Cancel".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        Action::ReclaimExpiredLock { lock_id } => RpcActionSummary {
+                            action_type: "Reclaim".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        _ => RpcActionSummary {
+                            action_type: "Other".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                    }
+                }).collect();
+
+                // Extract memo from the first action that has one
+                let memo = actions.iter().find_map(|a| a.memo.clone());
+
+                RpcDetailedTx {
+                    tx_id: v.transaction.tx_id.to_hex(),
+                    timestamp: v.transaction.timestamp,
+                    from: v.transaction.from.to_b58(),
+                    action_count: v.transaction.actions.len(),
+                    depth: v.depth,
+                    actions,
+                    memo,
+                }
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    // ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger RPC impls ──
+
+    async fn get_invoice(&self, invoice_id_hex: String) -> RpcResult<Option<RpcInvoiceRecord>> {
+        let bytes = hex::decode(&invoice_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        if bytes.len() != 32 { return Err(rpc_err(-32602, "invoice_id must be 32 bytes hex")); }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        let record = self.state.db.get_invoice(&id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| invoice_to_rpc(&r)))
+    }
+
+    async fn get_open_invoices(&self, wallet: String) -> RpcResult<Vec<RpcInvoiceRecord>> {
+        let account_id = AccountId::from_b58(&wallet).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        let account = self.state.db.get_account(&account_id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        let pubkey_bytes = match &account {
+            Some(acc) => match &acc.auth_policy {
+                chronx_core::account::AuthPolicy::SingleSig { public_key: ref pk } => pk.0.clone(),
+                _ => return Ok(Vec::new()),
+            },
+            None => return Ok(Vec::new()),
+        };
+        let records = self.state.db.iter_open_invoices_for_wallet(&pubkey_bytes)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.iter().map(invoice_to_rpc).collect())
+    }
+
+    async fn get_credit_authorization(&self, credit_id_hex: String) -> RpcResult<Option<RpcCreditRecord>> {
+        let bytes = hex::decode(&credit_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        if bytes.len() != 32 { return Err(rpc_err(-32602, "credit_id must be 32 bytes hex")); }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        let record = self.state.db.get_credit(&id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| credit_to_rpc(&r)))
+    }
+
+    async fn get_open_credits(&self, wallet: String) -> RpcResult<Vec<RpcCreditRecord>> {
+        let account_id = AccountId::from_b58(&wallet).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        let account = self.state.db.get_account(&account_id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        let pubkey_bytes = match &account {
+            Some(acc) => match &acc.auth_policy {
+                chronx_core::account::AuthPolicy::SingleSig { public_key: ref pk } => pk.0.clone(),
+                _ => return Ok(Vec::new()),
+            },
+            None => return Ok(Vec::new()),
+        };
+        let records = self.state.db.iter_open_credits_for_wallet(&pubkey_bytes)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.iter().map(credit_to_rpc).collect())
+    }
+
+    async fn get_deposit(&self, deposit_id_hex: String) -> RpcResult<Option<RpcDepositRecord>> {
+        let bytes = hex::decode(&deposit_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        if bytes.len() != 32 { return Err(rpc_err(-32602, "deposit_id must be 32 bytes hex")); }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        let record = self.state.db.get_deposit(&id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| deposit_to_rpc(&r)))
+    }
+
+    async fn get_active_deposits(&self, wallet: String) -> RpcResult<Vec<RpcDepositRecord>> {
+        let account_id = AccountId::from_b58(&wallet).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        let account = self.state.db.get_account(&account_id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        let pubkey_bytes = match &account {
+            Some(acc) => match &acc.auth_policy {
+                chronx_core::account::AuthPolicy::SingleSig { public_key: ref pk } => pk.0.clone(),
+                _ => return Ok(Vec::new()),
+            },
+            None => return Ok(Vec::new()),
+        };
+        let records = self.state.db.iter_active_deposits_for_wallet(&pubkey_bytes)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.iter().map(deposit_to_rpc).collect())
+    }
+
+    async fn get_conditional_payment(&self, type_v_id_hex: String) -> RpcResult<Option<RpcConditionalRecord>> {
+        let bytes = hex::decode(&type_v_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        if bytes.len() != 32 { return Err(rpc_err(-32602, "type_v_id must be 32 bytes hex")); }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        let record = self.state.db.get_conditional(&id).map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| conditional_to_rpc(&r)))
+    }
+
+    async fn get_ledger_entries(&self, promise_id_hex: String) -> RpcResult<Vec<RpcLedgerEntryRecord>> {
+        let bytes = hex::decode(&promise_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        if bytes.len() != 32 { return Err(rpc_err(-32602, "promise_id must be 32 bytes hex")); }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        let records = self.state.db.get_ledger_entries_by_promise(&id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.iter().map(ledger_entry_to_rpc).collect())
+    }
+
+
+    async fn get_sign_of_life_status(&self, lock_id: String) -> RpcResult<Option<RpcSignOfLifeRecord>> {
+        let record = self.state.db.get_sign_of_life(&lock_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcSignOfLifeRecord {
+            lock_id: r.lock_id,
+            interval_days: r.interval_days,
+            grace_days: r.grace_days,
+            last_attestation: r.last_attestation,
+            next_due: r.next_due,
+            status: r.status,
+            responsible: r.responsible,
+            created_at: r.created_at,
+        }))
+    }
+
+    async fn get_promise_chain(&self, promise_id_hex: String) -> RpcResult<Option<RpcPromiseChainRecord>> {
+        let bytes = hex::decode(&promise_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
+        if bytes.len() != 32 { return Err(rpc_err(-32602, "promise_id must be 32 bytes hex")); }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        let record = self.state.db.get_promise_chain(&id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcPromiseChainRecord {
+            promise_id: hex::encode(r.promise_id),
+            entry_count: r.entries.len() as u32,
+            last_anchor_hash: r.last_anchor_hash.map(|h| hex::encode(h)),
+            last_anchor_at: r.last_anchor_at,
+            created_at: r.created_at,
+        }))
+    }
+
+    async fn get_promise_chain_anchors(&self, promise_id_hex: String) -> RpcResult<Option<RpcPromiseChainRecord>> {
+        // Same as get_promise_chain — anchors are part of the chain record
+        self.get_promise_chain(promise_id_hex).await
+    }
+
+    async fn get_verified_identity(&self, wallet_b58: String) -> RpcResult<Option<RpcIdentityRecord>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let record = self.state.db.get_latest_identity(&wallet_b58, now)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcIdentityRecord {
+            wallet: r.wallet_b58,
+            issuer_wallet: r.issuer_wallet_b58,
+            display_name: r.display_name,
+            badge_code: r.badge_code,
+            badge_color: r.badge_color,
+            verified: r.verified,
+            entry_id: hex::encode(r.entry_id),
+            issued_at: r.issued_at,
+            expires_at: r.expires_at,
+            issuer_notes: r.issuer_notes,
+        }))
+    }
+
+    async fn get_identity_history(&self, wallet_b58: String) -> RpcResult<Vec<RpcLedgerEntryRecord>> {
+        let entries = self.state.db.get_identity_entries(&wallet_b58)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(entries.iter().map(ledger_entry_to_rpc).collect())
+    }
+
+    // ── Genesis 9 — TYPE_G Wallet Group implementations ─────────────────
+
+    async fn get_group(&self, group_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
+        let bytes = hex::decode(&group_id_hex).map_err(|e| {
+            ErrorObject::owned(-32602, format!("Invalid hex: {}", e), None::<()>)
+        })?;
+        if bytes.len() != 32 {
+            return Err(ErrorObject::owned(-32602, "group_id must be 32 bytes (64 hex chars)", None::<()>));
+        }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        match self.state.db.get_group(&id) {
+            Ok(Some(record)) => {
+                let val = serde_json::json!({
+                    "group_id": group_id_hex,
+                    "owner_pubkey": hex::encode(&record.owner_pubkey.0),
+                    "name_hash": hex::encode(record.name_hash),
+                    "member_count": record.member_count,
+                    "created_at": record.created_at,
+                    "status": format!("{:?}", record.status),
+                    "members": record.members.iter().map(|m| hex::encode(&m.0)).collect::<Vec<_>>(),
+                });
+                Ok(Some(val))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ErrorObject::owned(-32603, format!("{}", e), None::<String>)),
+        }
+    }
+
+    async fn is_group_member(&self, group_id_hex: String, pubkey_hex: String) -> RpcResult<serde_json::Value> {
+        let gid_bytes = hex::decode(&group_id_hex).map_err(|e| {
+            ErrorObject::owned(-32602, format!("Invalid group_id hex: {}", e), None::<()>)
+        })?;
+        if gid_bytes.len() != 32 {
+            return Err(ErrorObject::owned(-32602, "group_id must be 32 bytes", None::<()>));
+        }
+        let mut gid = [0u8; 32];
+        gid.copy_from_slice(&gid_bytes);
+
+        let pk_bytes = hex::decode(&pubkey_hex).map_err(|e| {
+            ErrorObject::owned(-32602, format!("Invalid pubkey hex: {}", e), None::<()>)
+        })?;
+        let pubkey = chronx_core::types::DilithiumPublicKey(pk_bytes);
+
+        match self.state.db.is_group_member(&gid, &pubkey) {
+            Ok(member) => Ok(serde_json::json!({ "member": member })),
+            Err(e) => Err(ErrorObject::owned(-32603, format!("{}", e), None::<String>)),
+        }
+    }
+}
+
+
+// ── Genesis 8 — RPC conversion helpers ──────────────────────────────────────
+
+fn invoice_to_rpc(r: &chronx_state::db::InvoiceRecord) -> RpcInvoiceRecord {
+    let status = match r.status {
+        InvoiceStatus::Open => "Open",
+        InvoiceStatus::Fulfilled => "Fulfilled",
+        InvoiceStatus::Lapsed => "Lapsed",
+        InvoiceStatus::Cancelled => "Cancelled",
+    };
+    RpcInvoiceRecord {
+        invoice_id: hex::encode(r.invoice_id),
+        issuer_pubkey: hex::encode(&r.issuer_pubkey),
+        payer_pubkey: r.payer_pubkey.as_ref().map(|p| hex::encode(p)),
+        amount_chronos: r.amount_chronos.to_string(),
+        amount_kx: format!("{}", r.amount_chronos / CHRONOS_PER_KX as u64),
+        expiry: r.expiry,
+        status: status.to_string(),
+        created_at: r.created_at,
+        fulfilled_at: r.fulfilled_at,
+    }
+}
+
+fn credit_to_rpc(r: &chronx_state::db::CreditRecord) -> RpcCreditRecord {
+    let status = match r.status {
+        CreditStatus::Open => "Open",
+        CreditStatus::Closed => "Closed",
+        CreditStatus::Lapsed => "Lapsed",
+        CreditStatus::Revoked => "Revoked",
+    };
+    RpcCreditRecord {
+        credit_id: hex::encode(r.credit_id),
+        grantor_pubkey: hex::encode(&r.grantor_pubkey),
+        beneficiary_pubkey: hex::encode(&r.beneficiary_pubkey),
+        ceiling_chronos: r.ceiling_chronos.to_string(),
+        ceiling_kx: format!("{}", r.ceiling_chronos / CHRONOS_PER_KX as u64),
+        per_draw_max_chronos: r.per_draw_max_chronos.map(|v| v.to_string()),
+        expiry: r.expiry,
+        drawn_chronos: r.drawn_chronos.to_string(),
+        drawn_kx: format!("{}", r.drawn_chronos / CHRONOS_PER_KX as u64),
+        status: status.to_string(),
+        created_at: r.created_at,
+    }
+}
+
+fn deposit_to_rpc(r: &chronx_state::db::DepositRecord) -> RpcDepositRecord {
+    let status = match r.status {
+        DepositStatus::Active => "Active",
+        DepositStatus::Matured => "Matured",
+        DepositStatus::Settled => "Settled",
+        DepositStatus::Defaulted => "Defaulted",
+    };
+    RpcDepositRecord {
+        deposit_id: hex::encode(r.deposit_id),
+        depositor_pubkey: hex::encode(&r.depositor_pubkey),
+        obligor_pubkey: hex::encode(&r.obligor_pubkey),
+        principal_chronos: r.principal_chronos.to_string(),
+        principal_kx: format!("{}", r.principal_chronos / CHRONOS_PER_KX as u64),
+        rate_basis_points: r.rate_basis_points,
+        term_seconds: r.term_seconds,
+        compounding: r.compounding.clone(),
+        maturity_timestamp: r.maturity_timestamp,
+        total_due_chronos: r.total_due_chronos.to_string(),
+        total_due_kx: format!("{}", r.total_due_chronos / CHRONOS_PER_KX as u64),
+        status: status.to_string(),
+        created_at: r.created_at,
+        settled_at: r.settled_at,
+    }
+}
+
+fn conditional_to_rpc(r: &chronx_state::db::ConditionalRecord) -> RpcConditionalRecord {
+    let status = match r.status {
+        ConditionalStatus::Pending => "Pending",
+        ConditionalStatus::Released => "Released",
+        ConditionalStatus::Voided => "Voided",
+        ConditionalStatus::Returned => "Returned",
+        ConditionalStatus::Escrowed => "Escrowed",
+    };
+    RpcConditionalRecord {
+        type_v_id: hex::encode(r.type_v_id),
+        sender_pubkey: hex::encode(&r.sender_pubkey),
+        recipient_pubkey: hex::encode(&r.recipient_pubkey),
+        amount_chronos: r.amount_chronos.to_string(),
+        amount_kx: format!("{}", r.amount_chronos / CHRONOS_PER_KX as u64),
+        min_attestors: r.min_attestors,
+        attestations_received: r.attestations_received.len() as u32,
+        valid_until: r.valid_until,
+        fallback: r.fallback.clone(),
+        status: status.to_string(),
+        created_at: r.created_at,
+    }
+}
+
+fn ledger_entry_to_rpc(r: &chronx_state::db::LedgerEntryRecord) -> RpcLedgerEntryRecord {
+    RpcLedgerEntryRecord {
+        entry_id: hex::encode(r.entry_id),
+        author_pubkey: hex::encode(&r.author_pubkey),
+        promise_id: r.promise_id.map(|id| hex::encode(id)),
+        entry_type: r.entry_type.clone(),
+        content_hash: hex::encode(r.content_hash),
+        content_summary: String::from_utf8_lossy(&r.content_summary).to_string(),
+        timestamp: r.timestamp,
     }
 }

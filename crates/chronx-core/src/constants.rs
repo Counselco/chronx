@@ -15,19 +15,23 @@ pub const TOTAL_SUPPLY_CHRONOS: u128 = 8_270_000_000_000_000;
 pub const CHRONOS_PER_KX: u128 = 1_000_000;
 
 /// Public sale allocation (KX). Genesis 8: 6,090,000,000 KX.
-pub const PUBLIC_SALE_KX: u128 = 6_090_000_000;
+pub const PUBLIC_SALE_KX: u128 = 6_093_000_000;
 
 /// Founder allocation (KX). Spendable at genesis.
-pub const FOUNDER_KX: u128 = 155_000_000;
+// Genesis 9: Founder funded via post-genesis transfer from Public Sale
+pub const FOUNDER_KX: u128 = 0;
 
 /// MISAI Bond allocation (KX). Ecosystem bond, spendable at genesis.
-pub const MISAI_BOND_KX: u128 = 10_000_000;
+// Genesis 9: MISAI Bond funded via post-genesis transfer from Public Sale
+pub const MISAI_BOND_KX: u128 = 0;
 
 /// Verifas Bond allocation (KX). Ecosystem bond, spendable at genesis.
-pub const VERIFAS_BOND_KX: u128 = 10_000_000;
+// Genesis 9: Verifas Bond funded via post-genesis transfer from Public Sale
+pub const VERIFAS_BOND_KX: u128 = 0;
 
 /// Faucet allocation (KX). Spendable at genesis.
-pub const FAUCET_KX: u128 = 3_000_000;
+// Genesis 9: Faucet funded via post-genesis transfer from Public Sale
+pub const FAUCET_KX: u128 = 0;
 
 /// Treasury allocation (KX). Released logarithmically over 100 years.
 pub const TREASURY_KX: u128 = 1_000_000_000;
@@ -196,3 +200,147 @@ pub const MISAI_MIN_INVESTMENT_WINDOW_DAYS: u32 = 90;
 /// Scaled by 1_000_000_000_000 for integer arithmetic.
 pub const H100_SCALED: u128 = 5_187_377_517_640;
 pub const H100_SCALE: u128 = 1_000_000_000_000;
+
+// ── Genesis 8 — TYPE I Invoice ─────────────────────────────────────────────
+
+/// Minimum invoice expiry: 1 hour.
+pub const INVOICE_MIN_EXPIRY_SECONDS: u64 = 3600;
+
+/// Maximum invoice expiry: 1 year.
+pub const INVOICE_MAX_EXPIRY_SECONDS: u64 = 31_536_000;
+
+/// Invoice fee: zero — always free.
+pub const INVOICE_FEE_BASIS_POINTS: u64 = 0;
+
+// ── Genesis 8 — TYPE C Credit Authorization ────────────────────────────────
+
+/// Minimum credit ceiling: 1 KX.
+pub const CREDIT_MIN_CEILING_CHRONOS: u64 = 1_000_000;  // 1 KX minimum
+
+/// Maximum credit expiry: 3 years.
+pub const CREDIT_MAX_EXPIRY_SECONDS: u64 = 94_608_000;
+
+/// Credit fee: zero — always free.
+pub const CREDIT_FEE_BASIS_POINTS: u64 = 0;
+
+// ── Genesis 8 — TYPE Y Interest Bearing Deposit ───────────────────────────
+
+/// Minimum deposit term: 1 day.
+pub const DEPOSIT_MIN_TERM_SECONDS: u64 = 86_400;
+
+/// Maximum deposit term: 10 years.
+pub const DEPOSIT_MAX_TERM_SECONDS: u64 = 315_360_000;
+
+/// Maximum deposit rate: 1000% (100_000 basis points). Peer-to-peer; no protocol guarantee.
+pub const DEPOSIT_MAX_RATE_BASIS_POINTS: u64 = 100_000;
+
+/// Deposit fee: zero — always free.
+pub const DEPOSIT_FEE_BASIS_POINTS: u64 = 0;
+
+/// Default grace period after maturity before Defaulted status: 7 days.
+pub const DEPOSIT_DEFAULT_GRACE_SECONDS: u64 = 604_800;
+
+// ── Genesis 8 — TYPE V Conditional Validity ────────────────────────────────
+
+/// Minimum number of attestors required.
+pub const CONDITIONAL_MIN_ATTESTORS: u32 = 1;
+
+/// Maximum number of attestors allowed.
+pub const CONDITIONAL_MAX_ATTESTORS: u32 = 10;
+
+/// Conditional payment fee: zero — always free.
+pub const CONDITIONAL_FEE_BASIS_POINTS: u64 = 0;
+
+// ── Genesis 8 — TYPE L Ledger Entry ────────────────────────────────────────
+
+/// Ledger entry fee: zero — always free.
+pub const LEDGER_ENTRY_FEE_BASIS_POINTS: u64 = 0;
+
+/// Maximum content summary size.
+pub const LEDGER_MAX_SUMMARY_BYTES: usize = 500;
+
+// ── Genesis 8 — Sign of Life ───────────────────────────────────────────────
+
+/// Default interval between sign-of-life attestations: 1 year.
+pub const SIGN_OF_LIFE_DEFAULT_INTERVAL_DAYS: u64 = 365;
+
+/// Default grace period after missed sign-of-life: 90 days.
+pub const SIGN_OF_LIFE_DEFAULT_GRACE_DAYS: u64 = 90;
+
+/// Minimum sign-of-life interval: 30 days.
+pub const SIGN_OF_LIFE_MIN_INTERVAL_DAYS: u64 = 30;
+
+// ── Genesis 8 — Promise Chain ──────────────────────────────────────────────
+
+/// Interval between automatic promise chain anchors: 24 hours.
+pub const PROMISE_CHAIN_ANCHOR_INTERVAL_SECONDS: u64 = 86_400;
+
+// ═══ GENESIS 9 — TYPE_G Wallet Group ═══════════════════════════════════════
+// Protocol ceiling is unlimited — hardware limits today.
+// Node software enforces lower practical limits without
+// requiring a re-genesis.
+pub const WALLET_GROUP_PROTOCOL_MAX_MEMBERS: u64 = u64::MAX;
+pub const WALLET_GROUP_PROTOCOL_MAX_PER_OWNER: u64 = u64::MAX;
+pub const WALLET_GROUP_NAME_MAX_BYTES: usize = 128;
+pub const WALLET_GROUP_FEE_BASIS_POINTS: u64 = 0;
+
+// Inline authorized payers without a named Group.
+// Protocol allows up to 255. Node enforces 10 today.
+pub const INVOICE_MAX_INLINE_PAYERS: usize = 255;
+
+// Type M AI Lock — backup executor hard ceiling.
+// 1 primary + 3 backups = 4 total AI agents maximum.
+pub const AI_LOCK_MAX_BACKUP_EXECUTORS: usize = 3;
+
+// ═══ GENESIS 9 — Humanity Stake ════════════════════════════════════════════
+//
+// "One million KX — set aside not for the builders
+// of this protocol, not for those who governed it,
+// and not for those who grew wealthy from it —
+// but for the world that inherits it.
+//
+// Beginning one hundred years from the first day
+// of 2026, these funds shall be released in a
+// measured cadence — patient as the stars,
+// unhurried as the tide — into the hands of those
+// who stewarded none of this creation and therefore
+// owe it nothing.
+//
+// Those who governed ChronX shall not direct it.
+// Those who prospered most from KX shall not claim it.
+// It belongs to the future, which cannot yet
+// speak for itself.
+//
+// This is the Humanity Stake: a promise from the
+// present to all tomorrows."
+
+// Release begins 100 years from genesis: 2126-01-01
+pub const HUMANITY_STAKE_RELEASE_START_TIMESTAMP: u64
+    = 4892198400; // 2126-01-01 00:00:00 UTC
+
+// Same harmonic H_100 schedule as Treasury +
+// Node Rewards: 100 annual releases 2126-2225
+pub const HUMANITY_STAKE_HARMONIC_N: u64 = 100;
+
+// Immutable governance exclusions — forever:
+// 1. Any current or former ChronX Foundation
+//    governance board member is excluded from
+//    directing distribution.
+// 2. Any wallet holding MORE than the median KX
+//    balance at time of each distribution is
+//    excluded from voting.
+//    (Bottom half of holders by balance only —
+//     scales automatically regardless of KX value.)
+pub const HUMANITY_STAKE_EXCLUDES_GOVERNANCE_BOARD:
+    bool = true;
+pub const HUMANITY_STAKE_EXCLUDES_ABOVE_MEDIAN_HOLDER:
+    bool = true;
+
+// No single recipient may receive more than 10%
+// of any one release tranche.
+pub const HUMANITY_STAKE_MAX_SINGLE_RECIPIENT_PCT:
+    u64 = 10;
+
+// Any proposal for distribution must be publicly
+// posted for a minimum of 365 days before funds move.
+pub const HUMANITY_STAKE_MIN_PROPOSAL_DAYS: u64 = 365;

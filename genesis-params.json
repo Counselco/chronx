@@ -18396,5 +18396,82 @@
     186,
     135,
     205
-  ]
+  ],
+  "ai_agent_axioms": {
+    "title": "ChronX AI Agent Axioms",
+    "version": "genesis_8",
+    "replaces": "trading_axioms",
+    "axioms": [
+      {
+        "number": "I",
+        "title": "Mandate",
+        "text": "The grantor's intent, once encoded, is carried forward by autonomous software. Algorithms may evolve. The intent does not. An autonomous agent has no authority beyond that mandate, including any credit, attestation, or draw authority the grantor explicitly encoded."
+      },
+      {
+        "number": "II",
+        "title": "Transparency",
+        "text": "An AI agent must commit to a permanent public record before acting. Every decision is publicly verifiable. There are no private actions."
+      },
+      {
+        "number": "III",
+        "title": "Risk",
+        "text": "The grantor acknowledges, and the AI agent affirms, that AI management of any investment tranche may result in gains or losses up to and including total loss."
+      },
+      {
+        "number": "IV",
+        "title": "Separation",
+        "text": "The agent that decides does not hold funds. The agent that holds does not decide."
+      },
+      {
+        "number": "V",
+        "title": "Coordination",
+        "text": "An agent is not the only actor. Before acting, an agent must account for the aggregate effect of similarly situated agents acting on similar instructions."
+      },
+      {
+        "number": "VI",
+        "title": "The Law",
+        "text": "All agent actions, mandates, and their fulfillment remain subject to the laws of applicable jurisdictions."
+      }
+    ]
+  },
+  "genesis_version": "8.0",
+  "genesis_date": "2026-03-16",
+  "genesis8_transaction_types": {
+    "TYPE_I": "Invoice \u2014 recipient-gated payment request",
+    "TYPE_C": "Credit Authorization \u2014 pre-authorized variable draws",
+    "TYPE_Y": "Interest Bearing Deposit \u2014 principal obligation with calculated return",
+    "TYPE_V": "Conditional Validity \u2014 attestor-released payment",
+    "TYPE_L": "Ledger Entry \u2014 bonded agent reasoning and audit records"
+  },
+  "genesis8_sign_of_life": {
+    "default_interval_days": 365,
+    "default_grace_days": 90,
+    "min_interval_days": 30,
+    "guardian_defaults_to_grantor": true
+  },
+  "genesis8_zero_fees": {
+    "TYPE_I": 0,
+    "TYPE_C": 0,
+    "TYPE_Y": 0,
+    "TYPE_V": 0,
+    "TYPE_L": 0,
+    "note": "Zero fees on all Genesis 8 transaction types. Immutable forever."
+  },
+  "convert_to_field": {
+    "version": "genesis_8",
+    "behavior": "suggestion_only",
+    "note": "Records grantor intent for future third-party conversion services. No protocol execution. KX always releases to recipient wallet regardless of this field."
+  },
+  "identity_verification": {
+    "version": "genesis_8_patch_1",
+    "entry_types": [
+      "IdentityVerified",
+      "IdentityRevoked"
+    ],
+    "issuer_requirement": "bonded_verifier_only",
+    "display_name_max_chars": 64,
+    "badge_code_max_chars": 32,
+    "behavior": "latest_entry_wins",
+    "note": "On-chain identity verification infrastructure. Blue checkmark displayed when latest entry is IdentityVerified and not expired. Designed for corporate identity, professional credentials, and regulatory identifiers."
+  }
 }

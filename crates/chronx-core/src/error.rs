@@ -230,63 +230,123 @@ pub enum ChronxError {
     #[error("schema registration bond below minimum ({min} Chronos required)")]
     SchemaBondTooLow { min: u128 },
 
-    // Genesis 7 — Verified Delivery Protocol errors
-    #[error("only the governance wallet may register verifiers")]
-    GovernanceOnly,
+    // ── ExecutorWithdraw errors ─────────────────────────────────────────────
+    #[error("lock is not a Type M (AI-managed) lock")]
+    NotTypeMlock,
 
-    #[error("verifier bond below minimum ({min} KX required)")]
-    VerifierBondTooLow { min: u64 },
+    #[error("executor pubkey does not match registered MISAI executor")]
+    ExecutorPubkeyMismatch,
 
-    #[error("invalid verifier role: must be VerifasVault or BondedFinder")]
-    InvalidVerifierRole,
+    #[error("destination does not match registered executor wallet")]
+    ExecutorWalletMismatch,
 
-    #[error("a VerifasVault is already registered — revoke it before registering a new one")]
-    VerifasVaultAlreadyRegistered,
+    #[error("lock metadata is null — cannot process pre-encryption-fix locks")]
+    LockMetadataNull,
+
+    #[error("executor withdraw rate limit exceeded (max 3 per 24 hours)")]
+    ExecutorWithdrawRateLimited,
 
 
-    // Genesis 8 — AI Agent Architecture errors
-    #[error("agent-managed timelock requires axiom consent hash")]
-    AxiomConsentRequired,
+    // ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger errors ────────
+    #[error("invoice not found: {0}")]
+    InvoiceNotFound(String),
 
-    #[error("axiom consent hash does not match current genesis axioms")]
-    AxiomConsentMismatch,
+    #[error("invoice already exists: {0}")]
+    InvoiceDuplicate(String),
 
-    #[error("recipient wallet is not a registered ChronX-approved AI agent")]
-    AgentNotRegistered,
+    #[error("invoice has lapsed (expired)")]
+    InvoiceLapsed,
 
-    #[error("agent is not currently Active in the registry")]
-    AgentNotActive,
+    #[error("invoice is not open")]
+    InvoiceNotOpen,
 
-    #[error("agent already registered in the registry")]
-    AgentAlreadyRegistered,
+    #[error("invoice payer mismatch")]
+    InvoicePayerMismatch,
 
-    #[error("invalid investable fraction: must be between 0.0 and {max}")]
-    InvalidInvestableFraction { max: f64 },
+    #[error("invoice amount mismatch")]
+    InvoiceAmountMismatch,
 
-    #[error("lock is not agent-managed")]
-    LockNotAgentManaged,
+    #[error("invoice expiry out of range")]
+    InvoiceExpiryOutOfRange,
 
-    #[error("proposed return date is too soon — minimum {min_days} day investment window")]
-    ReturnDateTooSoon { min_days: u64 },
+    #[error("credit not found: {0}")]
+    CreditNotFound(String),
 
-    #[error("return date must be before promise maturity")]
-    ReturnDateAfterMaturity,
+    #[error("credit already exists: {0}")]
+    CreditDuplicate(String),
 
-    #[error("requested fraction does not match grantor's specified investable fraction")]
-    FractionMismatch,
+    #[error("credit is not open")]
+    CreditNotOpen,
 
-    #[error("grantor intent exceeds maximum of {max} characters")]
-    GrantorIntentTooLong { max: usize },
+    #[error("credit has lapsed (expired)")]
+    CreditLapsed,
 
-    #[error("only the operator wallet may update agent code")]
-    AgentCodeUpdateNotByOperator,
+    #[error("credit draw exceeds per-draw maximum")]
+    CreditDrawExceedsPerDrawMax,
 
-    #[error("invalid Kyber1024 public key length")]
-    InvalidKyberKeyLength,
+    #[error("credit draw would exceed ceiling")]
+    CreditDrawExceedsCeiling,
 
-    #[error("package encryption failed: {0}")]
-    EncryptionFailed(String),
+    #[error("credit ceiling below minimum")]
+    CreditCeilingTooLow,
 
-        #[error("{0}")]
+    #[error("credit expiry out of range")]
+    CreditExpiryOutOfRange,
+
+    #[error("deposit not found: {0}")]
+    DepositNotFound(String),
+
+    #[error("deposit already exists: {0}")]
+    DepositDuplicate(String),
+
+    #[error("deposit term out of range")]
+    DepositTermOutOfRange,
+
+    #[error("deposit rate exceeds maximum")]
+    DepositRateTooHigh,
+
+    #[error("deposit is not active or matured")]
+    DepositNotSettleable,
+
+    #[error("deposit settlement amount mismatch")]
+    DepositAmountMismatch,
+
+    #[error("conditional not found: {0}")]
+    ConditionalNotFound(String),
+
+    #[error("conditional already exists: {0}")]
+    ConditionalDuplicate(String),
+
+    #[error("conditional is not pending")]
+    ConditionalNotPending,
+
+    #[error("conditional has expired")]
+    ConditionalExpired,
+
+    #[error("attestor count out of range")]
+    AttestorCountOutOfRange,
+
+    #[error("min_attestors exceeds attestor count")]
+    MinAttestorsExceedsCount,
+
+    #[error("valid_until must be in the future")]
+    ConditionalExpiryInPast,
+
+    #[error("attestor not authorized for this conditional")]
+    AttestorNotAuthorized,
+
+    #[error("attestor has already attested this conditional")]
+    AttestorAlreadyAttested,
+
+    #[error("author is not a bonded agent")]
+    NotBondedAgent,
+
+    #[error("content summary exceeds maximum size of {max} bytes")]
+    ContentSummaryTooLarge { max: usize },
+
+    #[error("ledger entry already exists: {0}")]
+    LedgerEntryDuplicate(String),
+
+    #[error("{0}")]
     Other(String),
 }

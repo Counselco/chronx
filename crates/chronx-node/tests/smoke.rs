@@ -311,8 +311,6 @@ async fn smoke_transfer_and_timelock() {
             recipient_email_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
-        lock_type: None,
-        lock_metadata: None,
         }],
     );
     send_tx(&http, &rpc_url, &tx2).await;

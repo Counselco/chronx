@@ -19,7 +19,14 @@ use tracing::info;
 
 use chronx_core::{
     constants::{CHRONOS_PER_KX, POW_INITIAL_DIFFICULTY},
-    transaction::{Action, AuthScheme, Transaction},
+    transaction::{
+        Action, AuthScheme, Transaction,
+        CreateInvoiceAction, FulfillInvoiceAction, CancelInvoiceAction,
+        CreateCreditAction, DrawCreditAction, RevokeCreditAction,
+        CreateDepositAction, SettleDepositAction, Compounding,
+        CreateConditionalAction, AttestConditionalAction, ConditionalFallback,
+        CreateLedgerEntryAction, LedgerEntryType,
+    },
     types::{AccountId, DilithiumPublicKey, TimeLockId, TxId},
 };
 use chronx_crypto::{hash::tx_id_from_body, mine_pow, KeyPair};
@@ -201,8 +208,124 @@ enum Command {
         #[arg(long)]
         claim_code: String,
     },
+
+    /// MISAI executor withdraws KX from a live Type M lock for AI-managed trading.
+    /// The executor wallet keyfile must be used to sign the transaction.
+    ExecutorWithdraw {
+        /// Lock ID (TxId hex of the Type M lock to withdraw from).
+        #[arg(long)]
+        lock_id: String,
+    },
+
     /// Print genesis/protocol info from the node.
     Info,
+
+    /// Create an invoice requesting payment.
+    CreateInvoice {
+        /// Amount in KX.
+        #[arg(long)]
+        amount: f64,
+        /// Expiry in days from now.
+        #[arg(long)]
+        expiry_days: u64,
+        /// Optional payer wallet (base-58). If omitted, invoice is OPEN.
+        #[arg(long)]
+        payer: Option<String>,
+        /// Optional memo text.
+        #[arg(long)]
+        memo: Option<String>,
+    },
+
+    /// Create a credit authorization for a beneficiary.
+    CreateCredit {
+        /// Beneficiary wallet (base-58).
+        #[arg(long)]
+        beneficiary: String,
+        /// Credit ceiling in KX.
+        #[arg(long)]
+        ceiling: f64,
+        /// Expiry in days from now.
+        #[arg(long)]
+        expiry_days: u64,
+        /// Optional per-draw maximum in KX.
+        #[arg(long)]
+        per_draw: Option<f64>,
+    },
+
+    /// Draw from a credit authorization.
+    DrawCredit {
+        /// Credit ID (hex).
+        #[arg(long)]
+        credit_id: String,
+        /// Amount in KX.
+        #[arg(long)]
+        amount: f64,
+    },
+
+    /// Create an interest-bearing deposit.
+    CreateDeposit {
+        /// Obligor wallet (base-58).
+        #[arg(long)]
+        obligor: String,
+        /// Principal in KX.
+        #[arg(long)]
+        amount: f64,
+        /// Interest rate in basis points.
+        #[arg(long)]
+        rate_bps: u64,
+        /// Term in days.
+        #[arg(long)]
+        term_days: u64,
+        /// Compounding: simple, daily, monthly, annually.
+        #[arg(long, default_value = "simple")]
+        compounding: String,
+    },
+
+    /// Create a conditional payment requiring attestor approval.
+    CreateConditional {
+        /// Recipient wallet (base-58).
+        #[arg(long)]
+        recipient: String,
+        /// Amount in KX.
+        #[arg(long)]
+        amount: f64,
+        /// Attestor wallet(s) — can specify multiple.
+        #[arg(long)]
+        attestor: Vec<String>,
+        /// Minimum attestors needed.
+        #[arg(long)]
+        min_attestors: u32,
+        /// Expiry in days from now.
+        #[arg(long)]
+        expiry_days: u64,
+        /// Fallback: void, return, escrow.
+        #[arg(long, default_value = "return")]
+        fallback: String,
+    },
+
+    /// Attest (approve) a conditional payment.
+    AttestConditional {
+        /// Type V ID (hex).
+        #[arg(long)]
+        type_v_id: String,
+    },
+
+    /// Create a ledger entry (bonded agents only).
+    CreateLedgerEntry {
+        /// Promise ID (hex).
+        #[arg(long)]
+        promise_id: String,
+        /// Entry type: decision, summary, sign-of-life, beneficiary-identified.
+        #[arg(long, name = "type")]
+        entry_type: String,
+        /// Content hash (hex).
+        #[arg(long)]
+        content_hash: String,
+        /// Summary text.
+        #[arg(long)]
+        summary: String,
+    },
+
 
     /// Generate three genesis keypairs (public_sale, treasury, humanity) and
     /// write genesis-params.json to the output directory.
@@ -304,6 +427,14 @@ async fn main() -> anyhow::Result<()> {
                     risk_level: None,
                     investment_exclusions: None,
                     grantor_intent: None,
+                    sign_of_life_interval_days: None,
+                    sign_of_life_grace_days: None,
+                    guardian_pubkey: None,
+                    guardian_until: None,
+                    alt_guardian_pubkey: None,
+                    beneficiary_description: None,
+                    beneficiary_description_hash: None,
+                    convert_to: None, authorized_claimants: None, succession_group: None, backup_executors: None, executor_threshold: None,
                 }],
                 &client,
             )
@@ -381,6 +512,14 @@ async fn main() -> anyhow::Result<()> {
                     risk_level: None,
                     investment_exclusions: None,
                     grantor_intent: None,
+                    sign_of_life_interval_days: None,
+                    sign_of_life_grace_days: None,
+                    guardian_pubkey: None,
+                    guardian_until: None,
+                    alt_guardian_pubkey: None,
+                    beneficiary_description: None,
+                    beneficiary_description_hash: None,
+                    convert_to: None, authorized_claimants: None, succession_group: None, backup_executors: None, executor_threshold: None,
                 }],
                 &client,
             )
@@ -612,6 +751,14 @@ async fn main() -> anyhow::Result<()> {
                         risk_level: None,
                         investment_exclusions: None,
                         grantor_intent: None,
+                    sign_of_life_interval_days: None,
+                    sign_of_life_grace_days: None,
+                    guardian_pubkey: None,
+                    guardian_until: None,
+                    alt_guardian_pubkey: None,
+                    beneficiary_description: None,
+                    beneficiary_description_hash: None,
+                    convert_to: None, authorized_claimants: None, succession_group: None, backup_executors: None, executor_threshold: None,
                     }
                 })
                 .collect();
@@ -701,6 +848,257 @@ async fn main() -> anyhow::Result<()> {
             println!("Claimed {} lock(s): {}", count, tx_id);
             Ok(())
         }
+        Command::ExecutorWithdraw { lock_id } => {
+            let kp = load_keypair(&keyfile)?;
+            let lock_txid =
+                TxId::from_hex(&lock_id).map_err(|e| anyhow::anyhow!("invalid lock id: {e}"))?;
+
+            // The destination is the executor's own wallet (the keyfile being used).
+            let destination = kp.account_id.clone();
+            // The executor pubkey is the hex of the signing key.
+            let executor_pubkey = hex::encode(&kp.public_key.0);
+
+            let tx = build_and_sign(
+                &kp,
+                vec![Action::ExecutorWithdraw {
+                    lock_id: TimeLockId(lock_txid),
+                    destination: destination.clone(),
+                    executor_pubkey,
+                }],
+                &client,
+            )
+            .await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("ExecutorWithdraw submitted: {}", tx_id);
+            println!("Lock:        {}", lock_id);
+            println!("Destination: {}", destination.to_b58());
+            println!("Status: PendingExecutor — will finalize after configured delay.");
+            println!("An alert email will be sent to alerts@misai.io.");
+            Ok(())
+        }
+
+
+        Command::CreateInvoice { amount, expiry_days, payer, memo } => {
+            let kp = load_keypair(&keyfile)?;
+            let amount_chronos = kx_to_chronos(amount) as u64;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let expiry = now + expiry_days * 86400;
+            let id_data = bincode::serialize(&(kp.account_id.clone(), now, amount_chronos)).unwrap();
+            let invoice_id: [u8; 32] = *blake3::hash(&id_data).as_bytes();
+
+            let encrypted_memo = memo.as_ref().map(|m| m.as_bytes().to_vec());
+            let memo_hash = memo.as_ref().map(|m| *blake3::hash(m.as_bytes()).as_bytes());
+
+            let action = Action::CreateInvoice(CreateInvoiceAction {
+                issuer_pubkey: kp.public_key.clone(),
+                payer_pubkey: None, // OPEN invoice — payer resolution deferred to wallet GUI
+                amount_chronos,
+                invoice_id,
+                expiry,
+                encrypted_memo,
+                memo_hash,
+                authorized_payers: None,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Invoice created. TxId: {}", tx_id);
+            println!("Invoice ID: {}", hex::encode(invoice_id));
+            Ok(())
+        }
+
+        Command::CreateCredit { beneficiary, ceiling, expiry_days, per_draw } => {
+            let kp = load_keypair(&keyfile)?;
+            let ceiling_chronos = kx_to_chronos(ceiling) as u64;
+            let per_draw_chronos = per_draw.map(|v| kx_to_chronos(v) as u64);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let expiry = now + expiry_days * 86400;
+            let id_data = bincode::serialize(&(kp.account_id.clone(), now, ceiling_chronos)).unwrap();
+            let credit_id: [u8; 32] = *blake3::hash(&id_data).as_bytes();
+
+            // Note: beneficiary pubkey resolution requires account lookup
+            // For CLI, use an empty placeholder — full resolution in wallet GUI
+            let _beneficiary_id = AccountId::from_b58(&beneficiary)
+                .map_err(|e| anyhow::anyhow!("invalid beneficiary address: {e}"))?;
+
+            let action = Action::CreateCredit(CreateCreditAction {
+                grantor_pubkey: kp.public_key.clone(),
+                beneficiary_pubkey: DilithiumPublicKey(Vec::new()),
+                ceiling_chronos,
+                per_draw_max_chronos: per_draw_chronos,
+                expiry,
+                credit_id,
+                encrypted_terms: None,
+                beneficiary_group: None,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Credit authorization created. TxId: {}", tx_id);
+            println!("Credit ID: {}", hex::encode(credit_id));
+            Ok(())
+        }
+
+        Command::DrawCredit { credit_id, amount } => {
+            let kp = load_keypair(&keyfile)?;
+            let amount_chronos = kx_to_chronos(amount) as u64;
+            let id_bytes = hex::decode(&credit_id).context("invalid credit_id hex")?;
+            let mut cid = [0u8; 32];
+            cid.copy_from_slice(&id_bytes);
+
+            let action = Action::DrawCredit(DrawCreditAction {
+                beneficiary_pubkey: kp.public_key.clone(),
+                credit_id: cid,
+                amount_chronos,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Credit drawn. TxId: {}", tx_id);
+            Ok(())
+        }
+
+        Command::CreateDeposit { obligor, amount, rate_bps, term_days, compounding } => {
+            let kp = load_keypair(&keyfile)?;
+            let principal_chronos = kx_to_chronos(amount) as u64;
+            let term_seconds = term_days * 86400;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let id_data = bincode::serialize(&(kp.account_id.clone(), now, principal_chronos)).unwrap();
+            let deposit_id: [u8; 32] = *blake3::hash(&id_data).as_bytes();
+
+            let comp = match compounding.as_str() {
+                "daily" => Compounding::Daily,
+                "monthly" => Compounding::Monthly,
+                "annually" => Compounding::Annually,
+                _ => Compounding::Simple,
+            };
+
+            let _obligor_id = AccountId::from_b58(&obligor)
+                .map_err(|e| anyhow::anyhow!("invalid obligor address: {e}"))?;
+
+            let action = Action::CreateDeposit(CreateDepositAction {
+                depositor_pubkey: kp.public_key.clone(),
+                obligor_pubkey: DilithiumPublicKey(Vec::new()),
+                principal_chronos,
+                rate_basis_points: rate_bps,
+                term_seconds,
+                compounding: comp,
+                penalty_basis_points: None,
+                deposit_id,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Deposit created. TxId: {}", tx_id);
+            println!("Deposit ID: {}", hex::encode(deposit_id));
+            Ok(())
+        }
+
+        Command::CreateConditional { recipient, amount, attestor, min_attestors, expiry_days, fallback } => {
+            let kp = load_keypair(&keyfile)?;
+            let amount_chronos = kx_to_chronos(amount) as u64;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let valid_until = now + expiry_days * 86400;
+            let id_data = bincode::serialize(&(kp.account_id.clone(), now, amount_chronos)).unwrap();
+            let type_v_id: [u8; 32] = *blake3::hash(&id_data).as_bytes();
+
+            let fb = match fallback.as_str() {
+                "void" => ConditionalFallback::Void,
+                "escrow" => ConditionalFallback::Escrow,
+                _ => ConditionalFallback::Return,
+            };
+
+            let _recipient_id = AccountId::from_b58(&recipient)
+                .map_err(|e| anyhow::anyhow!("invalid recipient address: {e}"))?;
+
+            let action = Action::CreateConditional(CreateConditionalAction {
+                sender_pubkey: kp.public_key.clone(),
+                recipient_pubkey: DilithiumPublicKey(Vec::new()),
+                amount_chronos,
+                attestor_pubkeys: Vec::new(), // Attestor pubkey resolution deferred to wallet GUI
+                min_attestors,
+                attestation_memo: None,
+                valid_until,
+                fallback: fb,
+                encrypted_terms: None,
+                type_v_id,
+                attestor_group: None,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Conditional payment created. TxId: {}", tx_id);
+            println!("Type V ID: {}", hex::encode(type_v_id));
+            Ok(())
+        }
+
+        Command::AttestConditional { type_v_id } => {
+            let kp = load_keypair(&keyfile)?;
+            let id_bytes = hex::decode(&type_v_id).context("invalid type_v_id hex")?;
+            let mut vid = [0u8; 32];
+            vid.copy_from_slice(&id_bytes);
+
+            let action = Action::AttestConditional(AttestConditionalAction {
+                attestor_pubkey: kp.public_key.clone(),
+                type_v_id: vid,
+                attestation_memo: None,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Conditional attested. TxId: {}", tx_id);
+            Ok(())
+        }
+
+        Command::CreateLedgerEntry { promise_id, entry_type, content_hash, summary } => {
+            let kp = load_keypair(&keyfile)?;
+            let pid_bytes = hex::decode(&promise_id).context("invalid promise_id hex")?;
+            let mut pid = [0u8; 32];
+            pid.copy_from_slice(&pid_bytes);
+            let ch_bytes = hex::decode(&content_hash).context("invalid content_hash hex")?;
+            let mut ch = [0u8; 32];
+            ch.copy_from_slice(&ch_bytes);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let id_data = bincode::serialize(&(kp.account_id.clone(), now, &promise_id)).unwrap();
+            let entry_id: [u8; 32] = *blake3::hash(&id_data).as_bytes();
+
+            let et = match entry_type.as_str() {
+                "decision" => LedgerEntryType::Decision,
+                "summary" => LedgerEntryType::Summary,
+                "sign-of-life" => LedgerEntryType::SignOfLife,
+                "beneficiary-identified" => LedgerEntryType::BeneficiaryIdentified,
+                "audit" => LedgerEntryType::Audit,
+                "milestone" => LedgerEntryType::Milestone,
+                "identity-verified" => LedgerEntryType::IdentityVerified,
+                "identity-revoked" => LedgerEntryType::IdentityRevoked,
+                _ => LedgerEntryType::Summary,
+            };
+
+            let action = Action::CreateLedgerEntry(CreateLedgerEntryAction {
+                author_pubkey: kp.public_key.clone(),
+                mandate_id: None,
+                promise_id: Some(pid),
+                entry_type: et,
+                content_hash: ch,
+                content_summary: summary.into_bytes(),
+                promise_chain_hash: None,
+                external_ref: None,
+                entry_id,
+            });
+
+            let tx = build_and_sign(&kp, vec![action], &client).await?;
+            let tx_id = client.send_transaction(&tx).await?;
+            println!("Ledger entry created. TxId: {}", tx_id);
+            println!("Entry ID: {}", hex::encode(entry_id));
+            Ok(())
+        }
+
+
         Command::Info => {
             let info = client.get_genesis_info().await?;
             println!("Protocol:     {}", info.protocol);
