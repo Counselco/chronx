@@ -929,3 +929,172 @@ pub struct DeprecatedCurrency {
     pub conversion_rate_numerator: Option<u64>,
     pub conversion_rate_denominator: Option<u64>,
 }
+
+// ================================================================
+// RE-GENESIS 10 -- Collateralized Lending, Escrow, Variable Rates
+// ================================================================
+
+// -- Interest Rate Types --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InterestRate {
+    Fixed(u32),                          // basis points, immutable
+    Variable {
+        spread_bps: u32,                 // margin above index
+        adjustment_period_seconds: u64,  // how often rate resets
+        cap_bps: Option<u32>,            // maximum rate ceiling
+        floor_bps: Option<u32>,          // minimum rate floor
+        rate_source: RateSource,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RateSource {
+    ExternalOracle(String),   // URL or identifier parties agreed to
+    LenderProvided,           // lender submits RateAdjustment each period
+    BothPartiesAgree,         // dual signature required each period
+}
+
+// -- Payment Match --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PaymentMatch {
+    Exact,
+    WithinBps(u16),
+    PartialAccepted,
+    InstallmentsAllowed {
+        count: u8,
+        window_seconds: u64,
+    },
+    MinimumRequired {
+        minimum_chronos: u64,
+    },
+}
+
+// -- Default Triggers --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DefaultTrigger {
+    MissedPayment {
+        grace_period_seconds: u64,
+    },
+    EscrowShortfall {
+        escrow_id: [u8; 32],
+        grace_period_seconds: u64,
+    },
+    CollateralUndersecured {
+        liquidation_threshold_pct: u8,
+    },
+    CustomCondition {
+        description: String,
+        attestor: AccountId,
+    },
+}
+
+// -- Rate Adjustment --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateAdjustment {
+    pub loan_id: [u8; 32],
+    pub new_rate_bps: u32,
+    pub effective_date: u64,
+    pub rate_source_snapshot: String,    // what oracle showed on this date
+    pub lender_signature: DilithiumSignature,
+}
+
+// -- Loan Liquidation (MISAI-submitted) --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoanLiquidation {
+    pub loan_id: [u8; 32],
+    pub collateral_lock_id: [u8; 32],
+    pub trigger_reason: String,
+    pub collateral_value_chronos: u64,
+    pub outstanding_chronos: u64,
+    pub liquidated_at: u64,
+}
+
+// -- Loan Resolution --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoanResolution {
+    pub loan_id: [u8; 32],
+    pub resolution_type: ResolutionType,
+    pub legal_reference: Option<String>,
+    pub lender_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ResolutionType {
+    CollateralLiquidated {
+        proceeds_chronos: u64,
+        deficiency_waived: bool,
+        deficiency_chronos: Option<u64>,
+    },
+    CourtOrderedSettlement {
+        settlement_amount_chronos: u64,
+    },
+    DebtForgiven,
+    FullSatisfaction,
+}
+
+// -- Escrow Types --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscrowCreate {
+    pub escrow_id: [u8; 32],
+    pub loan_id: [u8; 32],
+    pub servicer: AccountId,
+    pub initial_monthly_chronos: u64,
+    pub lender_signature: DilithiumSignature,
+    pub borrower_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscrowDeposit {
+    pub escrow_id: [u8; 32],
+    pub loan_id: [u8; 32],
+    pub amount_chronos: u64,
+    pub period_month: u32,             // YYYYMM format
+    pub borrower_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscrowAdjustment {
+    pub escrow_id: [u8; 32],
+    pub loan_id: [u8; 32],
+    pub new_monthly_chronos: u64,
+    pub effective_month: u32,          // YYYYMM format
+    pub reason: String,                // "Property tax increase, County of X"
+    pub months_remaining: u32,
+    pub lender_signature: DilithiumSignature,   // lender only -- no borrower sig needed
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscrowDisbursement {
+    pub escrow_id: [u8; 32],
+    pub loan_id: [u8; 32],
+    pub amount_chronos: u64,
+    pub payee_description: String,     // "County Tax Authority Q2 2026"
+    pub disbursed_at: u64,
+    pub lender_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscrowReconciliation {
+    pub escrow_id: [u8; 32],
+    pub loan_id: [u8; 32],
+    pub period_year: u32,
+    pub collected_chronos: u64,
+    pub disbursed_chronos: u64,
+    pub surplus_chronos: i64,          // positive = return to borrower, negative = borrower owes
+    pub lender_signature: DilithiumSignature,
+}
+
+// -- Micro Loan (AI agents) --
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MicroLoanCreate {
+    pub loan_id: [u8; 32],
+    pub lender: AccountId,
+    pub borrower: AccountId,
+    pub principal_chronos: u64,
+    pub fee_chronos: u64,              // flat fee, not rate
+    pub duration_seconds: u64,
+    pub auto_liquidate: bool,          // collateral releases instantly on expiry
+    pub collateral_lock_id: Option<[u8; 32]>,
+    pub lender_signature: DilithiumSignature,
+    pub borrower_signature: DilithiumSignature,
+}

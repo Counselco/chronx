@@ -376,6 +376,11 @@ pub struct StateDb {
     loan_payments: sled::Tree,
     oracle_cache: sled::Tree,
     pub loan_memos: sled::Tree,
+
+    // Re-Genesis 10
+    pub escrow_accounts: sled::Tree,
+    pub escrow_deposits: sled::Tree,
+    pub micro_loans: sled::Tree,
     pub governance_params: sled::Tree,
 }
 
@@ -489,6 +494,15 @@ impl StateDb {
         let oracle_cache = db
             .open_tree("oracle_cache")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let escrow_accounts = db
+            .open_tree("escrow_accounts")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let escrow_deposits = db
+            .open_tree("escrow_deposits")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let micro_loans = db
+            .open_tree("micro_loans")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let loan_memos = db
             .open_tree("loan_memos")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
@@ -533,6 +547,9 @@ impl StateDb {
             loan_payments,
             oracle_cache,
             loan_memos,
+            escrow_accounts,
+            escrow_deposits,
+            micro_loans,
             governance_params,
         })
     }
