@@ -1845,7 +1845,36 @@ impl ChronxApiServer for RpcServer {
         Ok(history)
     }
 
-    /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
+
+    /// chronx_getLoanOffers -- pending offers for borrower.
+    async fn get_loan_offers(&self, wallet_b58: String) -> RpcResult<Vec<serde_json::Value>> {
+        let offers: Vec<serde_json::Value> = self.state.db.iter_loans_raw()
+            .filter(|(k, _)| !String::from_utf8_lossy(k).contains(':'))
+            .filter_map(|(_, v)| serde_json::from_slice::<serde_json::Value>(&v).ok())
+            .filter(|loan: &serde_json::Value| {
+                loan.get("borrower_wallet").and_then(|w| w.as_str()) == Some(&wallet_b58)
+                && loan.get("status").and_then(|s| s.as_str()) == Some("pending")
+            })
+            .collect();
+        Ok(offers)
+    }
+
+    /// chronx_getLoansByStatus -- loans by status for wallet.
+    async fn get_loans_by_status(&self, wallet_b58: String, status: String) -> RpcResult<Vec<serde_json::Value>> {
+        let loans: Vec<serde_json::Value> = self.state.db.iter_loans_raw()
+            .filter(|(k, _)| !String::from_utf8_lossy(k).contains(':'))
+            .filter_map(|(_, v)| serde_json::from_slice::<serde_json::Value>(&v).ok())
+            .filter(|loan: &serde_json::Value| {
+                let is_party = loan.get("lender_wallet").and_then(|w| w.as_str()) == Some(&wallet_b58)
+                    || loan.get("borrower_wallet").and_then(|w| w.as_str()) == Some(&wallet_b58);
+                let loan_status = loan.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
+                is_party && loan_status == status
+            })
+            .collect();
+        Ok(loans)
+    }
+
+        /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
     async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
         let key = hex::decode(&loan_id_hex).unwrap_or_default();
         match self.state.db.micro_loans.get(&key) {

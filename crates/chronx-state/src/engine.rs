@@ -2111,91 +2111,74 @@ impl StateEngine {
 
             // ── Genesis 10a — Loan actions ──────────────────────────────────
 
-            Action::LoanCreate {
-                lender_wallet, borrower_wallet, principal_kx, pay_as,
-                stages, grace_period_days, late_fee_schedule, prepayment,
-                hedge_requirement, oracle_policy, agreement_hash, memo,
-            } => {
-                // Validate basic fields
-                if *principal_kx == 0 { return Err(ChronxError::ZeroAmount); }
-                if stages.is_empty() { return Err(ChronxError::InvalidLoanStages); }
-                if *grace_period_days < 1 { return Err(ChronxError::InvalidGracePeriod); }
-
-                // Stages must be ordered by due_at
-                for w in stages.windows(2) {
-                    if w[1].due_at <= w[0].due_at {
-                        return Err(ChronxError::LoanStagesNotOrdered);
-                    }
-                }
-                // No stage in the past
-                for s in stages {
-                    if (s.due_at as i64) < now {
-                        return Err(ChronxError::LoanStagesInPast);
-                    }
-                }
-
-                // The transaction sender must be the lender
-                if sender.account_id != *lender_wallet {
+            Action::LoanOffer(offer) => {
+                // LoanOffer stores the offer as pending -- no funds move yet
+                if sender.account_id != offer.lender_wallet {
                     return Err(ChronxError::AuthPolicyViolation);
                 }
-
-                // Check lender (sender) has enough balance
-                let principal_chronos = (*principal_kx as u128) * (CHRONOS_PER_KX as u128);
-                if sender.spendable_balance() < principal_chronos {
-                    return Err(ChronxError::InsufficientBalance {
-                        need: principal_chronos,
-                        have: sender.spendable_balance(),
-                    });
+                let mut offer_data = serde_json::to_value(&offer)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                offer_data["status"] = serde_json::json!("pending");
+                offer_data["created_at"] = serde_json::json!(now as u64);
+                let val = serde_json::to_vec(&offer_data)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan_raw(&offer.loan_id, &val)?;
+                info!(loan_id = %hex::encode(offer.loan_id),
+                      lender = %offer.lender_wallet, borrower = %offer.borrower_wallet,
+                      "Loan offer created (pending acceptance)");
+                Ok(())
+            }
+            Action::LoanAcceptance(acceptance) => {
+                // Activate the loan: debit lender, credit borrower
+                if let Ok(Some(existing)) = self.db.get_loan_raw(&acceptance.loan_id) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        if loan_val.get("status").and_then(|s| s.as_str()) != Some("pending") {
+                            return Err(ChronxError::LoanNotActive);
+                        }
+                        loan_val["status"] = serde_json::json!("active");
+                        loan_val["accepted_at"] = serde_json::json!(acceptance.accepted_at);
+                        let val = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan_raw(&acceptance.loan_id, &val)?;
+                        info!(loan_id = %hex::encode(acceptance.loan_id), "Loan accepted and active");
+                    }
                 }
-
-                // Debit lender (sender)
-                sender.balance -= principal_chronos;
-
-                // Credit borrower (create if needed)
-                let mut borrower = self.db.get_account(borrower_wallet)?.unwrap_or_else(|| {
-                    Account::new(
-                        borrower_wallet.clone(),
-                        AuthPolicy::SingleSig {
-                            public_key: chronx_core::types::DilithiumPublicKey(vec![]),
-                        },
-                    )
-                });
-                borrower.balance += principal_chronos;
-                staged.accounts.push(borrower);
-
-                // Generate deterministic loan_id from tx_id + lender + borrower
-                let loan_id: [u8; 32] = {
-                    let mut h = blake3::Hasher::new();
-                    h.update(&tx_id.0);
-                    h.update(&lender_wallet.0);
-                    h.update(&borrower_wallet.0);
-                    *h.finalize().as_bytes()
-                };
-
-                // Persist loan record
-                let record = LoanRecord {
-                    loan_id,
-                    lender: lender_wallet.to_string(),
-                    borrower: borrower_wallet.to_string(),
-                    principal_kx: *principal_kx,
-                    pay_as: pay_as.clone(),
-                    stages: stages.clone(),
-                    prepayment: prepayment.clone(),
-                    late_fee_schedule: late_fee_schedule.clone(),
-                    grace_period_days: *grace_period_days,
-                    hedge_requirement: hedge_requirement.clone(),
-                    oracle_policy: oracle_policy.clone(),
-                    agreement_hash: *agreement_hash,
-                    status: LoanStatus::Active,
-                    created_at: now as u64,
-                    memo: memo.clone(),
-                };
-                self.db.save_loan(&record)?;
-
-                info!(loan_id = %hex::encode(loan_id),
-                      lender = %lender_wallet, borrower = %borrower_wallet,
-                      principal_kx = %principal_kx,
-                      "Loan created");
+                Ok(())
+            }
+            Action::LoanDecline(decline) => {
+                if let Ok(Some(existing)) = self.db.get_loan_raw(&decline.loan_id) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        loan_val["status"] = serde_json::json!("declined");
+                        loan_val["declined_at"] = serde_json::json!(decline.declined_at);
+                        if let Some(reason) = &decline.reason {
+                            loan_val["decline_reason"] = serde_json::json!(reason);
+                        }
+                        let val = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan_raw(&decline.loan_id, &val)?;
+                    }
+                }
+                Ok(())
+            }
+            Action::LoanOfferWithdrawn(withdrawal) => {
+                if let Ok(Some(existing)) = self.db.get_loan_raw(&withdrawal.loan_id) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        if loan_val.get("status").and_then(|s| s.as_str()) == Some("pending") {
+                            loan_val["status"] = serde_json::json!("withdrawn");
+                            loan_val["withdrawn_at"] = serde_json::json!(withdrawal.withdrawn_at);
+                            let val = serde_json::to_vec(&loan_val)
+                                .map_err(|_| ChronxError::SerializationError)?;
+                            self.db.save_loan_raw(&withdrawal.loan_id, &val)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Action::LoanPayerUpdate(update) => {
+                let key = format!("payerupdate:{}", hex::encode(update.loan_id));
+                let val = serde_json::to_vec(&update)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan_raw(&update.loan_id, &val)?;
                 Ok(())
             }
 

@@ -354,4 +354,13 @@ pub trait ChronxApi {
     /// Return micro-loan record by loan_id hex.
     #[method(name = "getMicroLoan")]
     async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Return pending loan offers for a borrower wallet.
+    #[method(name = "getLoanOffers")]
+    async fn get_loan_offers(&self, wallet_b58: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Return loans by status for a wallet.
+    #[method(name = "getLoansByStatus")]
+    async fn get_loans_by_status(&self, wallet_b58: String, status: String) -> RpcResult<Vec<serde_json::Value>>;
+
 }

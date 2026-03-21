@@ -745,21 +745,12 @@ pub enum Action {
 
     // ── Genesis 10a — Loan Primitives ──────────────────────────────────────
 
-    /// Loan agreement — requires lender + borrower signatures
-    LoanCreate {
-        lender_wallet: AccountId,
-        borrower_wallet: AccountId,
-        principal_kx: u64,
-        pay_as: PayAsDenomination,
-        stages: Vec<LoanPaymentStage>,
-        grace_period_days: u8,
-        late_fee_schedule: LateFeeSchedule,
-        prepayment: PrepaymentTerms,
-        hedge_requirement: Option<HedgeRequirement>,
-        oracle_policy: OraclePolicy,
-        agreement_hash: Option<[u8; 32]>,
-        memo: Option<String>,
-    },
+    // -- Loan Offer/Acceptance Protocol (replaces LoanCreate) --
+    LoanOffer(LoanOffer),
+    LoanAcceptance(LoanAcceptance),
+    LoanDecline(LoanDecline),
+    LoanOfferWithdrawn(LoanOfferWithdrawn),
+    LoanPayerUpdate(LoanPayerUpdate),
 
     /// MISAI publishes when payment missed > grace_period (MISAI-only, submitted once)
     DefaultRecord {
@@ -935,7 +926,7 @@ pub struct DeprecatedCurrency {
 // ================================================================
 
 // -- Interest Rate Types --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InterestRate {
     Fixed(u32),                          // basis points, immutable
     Variable {
@@ -947,7 +938,7 @@ pub enum InterestRate {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RateSource {
     ExternalOracle(String),   // URL or identifier parties agreed to
     LenderProvided,           // lender submits RateAdjustment each period
@@ -955,7 +946,7 @@ pub enum RateSource {
 }
 
 // -- Payment Match --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PaymentMatch {
     Exact,
     WithinBps(u16),
@@ -970,7 +961,7 @@ pub enum PaymentMatch {
 }
 
 // -- Default Triggers --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DefaultTrigger {
     MissedPayment {
         grace_period_seconds: u64,
@@ -989,7 +980,7 @@ pub enum DefaultTrigger {
 }
 
 // -- Rate Adjustment --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateAdjustment {
     pub loan_id: [u8; 32],
     pub new_rate_bps: u32,
@@ -999,7 +990,7 @@ pub struct RateAdjustment {
 }
 
 // -- Loan Liquidation (MISAI-submitted) --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoanLiquidation {
     pub loan_id: [u8; 32],
     pub collateral_lock_id: [u8; 32],
@@ -1010,7 +1001,7 @@ pub struct LoanLiquidation {
 }
 
 // -- Loan Resolution --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoanResolution {
     pub loan_id: [u8; 32],
     pub resolution_type: ResolutionType,
@@ -1018,7 +1009,7 @@ pub struct LoanResolution {
     pub lender_signature: DilithiumSignature,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ResolutionType {
     CollateralLiquidated {
         proceeds_chronos: u64,
@@ -1033,7 +1024,7 @@ pub enum ResolutionType {
 }
 
 // -- Escrow Types --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EscrowCreate {
     pub escrow_id: [u8; 32],
     pub loan_id: [u8; 32],
@@ -1043,7 +1034,7 @@ pub struct EscrowCreate {
     pub borrower_signature: DilithiumSignature,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EscrowDeposit {
     pub escrow_id: [u8; 32],
     pub loan_id: [u8; 32],
@@ -1052,7 +1043,7 @@ pub struct EscrowDeposit {
     pub borrower_signature: DilithiumSignature,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EscrowAdjustment {
     pub escrow_id: [u8; 32],
     pub loan_id: [u8; 32],
@@ -1063,7 +1054,7 @@ pub struct EscrowAdjustment {
     pub lender_signature: DilithiumSignature,   // lender only -- no borrower sig needed
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EscrowDisbursement {
     pub escrow_id: [u8; 32],
     pub loan_id: [u8; 32],
@@ -1073,7 +1064,7 @@ pub struct EscrowDisbursement {
     pub lender_signature: DilithiumSignature,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EscrowReconciliation {
     pub escrow_id: [u8; 32],
     pub loan_id: [u8; 32],
@@ -1085,7 +1076,7 @@ pub struct EscrowReconciliation {
 }
 
 // -- Micro Loan (AI agents) --
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MicroLoanCreate {
     pub loan_id: [u8; 32],
     pub lender: AccountId,
@@ -1105,7 +1096,7 @@ pub struct MicroLoanCreate {
 // ================================================================
 
 /// Who can exit a revolving loan and under what conditions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExitRights {
     /// Either party may exit with min_notice_seconds notice.
     EitherParty,
@@ -1123,7 +1114,7 @@ impl Default for ExitRights {
 
 /// Condition checked by MISAI at each renewal period.
 /// If condition fails, loan enters min_notice_seconds wind-down.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RevivalCondition {
     /// Always renews unconditionally. Default.
     Always,
@@ -1156,7 +1147,7 @@ impl Default for RevivalCondition {
 }
 
 /// The complete loan type field on LoanCreate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LoanType {
     /// Standard fixed payment schedule. Default.
     FixedSchedule,
@@ -1179,7 +1170,7 @@ impl Default for LoanType {
 }
 
 /// Filed by an eligible party to initiate exit from a revolving loan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoanExit {
     pub loan_id: [u8; 32],
     pub initiated_by: ExitInitiator,
@@ -1188,7 +1179,7 @@ pub struct LoanExit {
     pub signature: DilithiumSignature,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExitInitiator {
     Lender,
     Borrower,
@@ -1196,4 +1187,90 @@ pub enum ExitInitiator {
         lender_signature: DilithiumSignature,
         borrower_signature: DilithiumSignature,
     },
+}
+
+// ================================================================
+// LOAN OFFER / ACCEPTANCE PROTOCOL
+// Every loan requires offer + acceptance. No auto-acceptance.
+// ================================================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoanOffer {
+    pub loan_id: [u8; 32],
+    pub lender_wallet: AccountId,
+    pub borrower_wallet: AccountId,
+    pub principal_chronos: u64,
+    pub pay_as: Option<PayAsDenomination>,
+    pub interest_rate: InterestRate,
+    pub rate_source_description: Option<String>,
+    pub loan_type: LoanType,
+    pub payment_match: Option<PaymentMatch>,
+    pub default_triggers: Vec<DefaultTrigger>,
+    pub collateral_lock_id: Option<[u8; 32]>,
+    pub liquidation_threshold_pct: Option<u8>,
+    pub escrow_required: bool,
+    pub escrow_id: Option<[u8; 32]>,
+    pub servicer_portal_url: Option<String>,
+    pub authorized_payers: Vec<AuthorizedPayer>,
+    #[serde(default)]
+    pub payment_source_policy: PaymentSourcePolicy,
+    pub offer_expiry_seconds: Option<u64>,
+    pub memo: Option<String>,
+    pub lender_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoanAcceptance {
+    pub loan_id: [u8; 32],
+    pub accepted_at: u64,
+    pub borrower_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoanDecline {
+    pub loan_id: [u8; 32],
+    pub reason: Option<String>,
+    pub declined_at: u64,
+    pub borrower_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoanOfferWithdrawn {
+    pub loan_id: [u8; 32],
+    pub reason: Option<String>,
+    pub withdrawn_at: u64,
+    pub lender_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoanPayerUpdate {
+    pub loan_id: [u8; 32],
+    pub update: PayerUpdateAction,
+    pub reason: Option<String>,
+    pub lender_signature: DilithiumSignature,
+    pub borrower_signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PayerUpdateAction {
+    Add { wallet: AccountId, description: Option<String> },
+    Remove { wallet: AccountId },
+    Replace { old_wallet: AccountId, new_wallet: AccountId, description: Option<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuthorizedPayer {
+    pub wallet: AccountId,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PaymentSourcePolicy {
+    Open,
+    Restricted,
+    ExclusiveDelegate { payer: AccountId, description: String },
+}
+
+impl Default for PaymentSourcePolicy {
+    fn default() -> Self { PaymentSourcePolicy::Open }
 }

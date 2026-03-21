@@ -1843,7 +1843,30 @@ impl StateDb {
         Ok(())
     }
 
-    pub fn get_oracle_price(&self, pair: &str) -> Result<Option<OraclePriceRecord>, ChronxError> {
+    /// Store raw JSON loan data by loan_id (for LoanOffer protocol)
+    pub fn save_loan_raw(&self, loan_id: &[u8; 32], data: &[u8]) -> Result<(), ChronxError> {
+        self.loans.insert(loan_id.as_ref(), data)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get raw loan data by loan_id
+    pub fn get_loan_raw(&self, loan_id: &[u8; 32]) -> Result<Option<Vec<u8>>, ChronxError> {
+        match self.loans.get(loan_id.as_ref()) {
+            Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    /// Iterate all raw loan entries (for RPC scan)
+    pub fn iter_loans_raw(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        self.loans.iter()
+            .filter_map(|r| r.ok())
+            .map(|(k, v)| (k.to_vec(), v.to_vec()))
+    }
+
+        pub fn get_oracle_price(&self, pair: &str) -> Result<Option<OraclePriceRecord>, ChronxError> {
         match self.oracle_cache.get(pair.as_bytes()) {
             Ok(Some(bytes)) => {
                 let record: OraclePriceRecord = bincode::deserialize(&bytes)
