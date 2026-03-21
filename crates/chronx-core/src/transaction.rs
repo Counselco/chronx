@@ -20,7 +20,329 @@ pub enum AuthScheme {
     MultiSig { k: u32, n: u32 },
 }
 
+// ── Genesis 9 — AuthorizedSet (used by 6 payment types) ──────────────────
+
+/// A set of wallets authorized to interact with a payment instrument.
+/// Used by Invoice (payers), TimeLock (claimants), Credit (beneficiaries),
+/// Conditional (attestors), Succession, and AI Lock (backup executors).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum AuthorizedSet {
+    /// Short inline list of authorized public keys.
+    Wallets(Vec<DilithiumPublicKey>),
+    /// Reference a TYPE_G Wallet Group by its 32-byte ID.
+    Group([u8; 32]),
+}
+
+// ── Genesis 9 — TYPE_G Wallet Group structs ──────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreateGroupAction {
+    pub owner_pubkey: DilithiumPublicKey,
+    pub group_id: [u8; 32],
+    pub name_hash: [u8; 32],
+    pub members: Vec<DilithiumPublicKey>,
+    pub encrypted_meta: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AddGroupMemberAction {
+    pub owner_pubkey: DilithiumPublicKey,
+    pub group_id: [u8; 32],
+    pub new_member: DilithiumPublicKey,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RemoveGroupMemberAction {
+    pub owner_pubkey: DilithiumPublicKey,
+    pub group_id: [u8; 32],
+    pub member: DilithiumPublicKey,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DissolveGroupAction {
+    pub owner_pubkey: DilithiumPublicKey,
+    pub group_id: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TransferGroupOwnershipAction {
+    pub owner_pubkey: DilithiumPublicKey,
+    pub group_id: [u8; 32],
+    pub new_owner: DilithiumPublicKey,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum GroupStatus { Active, Dissolved }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GroupRecord {
+    pub group_id: [u8; 32],
+    pub owner_pubkey: DilithiumPublicKey,
+    pub name_hash: [u8; 32],
+    pub members: Vec<DilithiumPublicKey>,
+    pub member_count: u64,
+    pub created_at: u64,
+    pub status: GroupStatus,
+}
+
 // ── Action ────────────────────────────────────────────────────────────────────
+
+
+// ── Genesis 8 — New Action Structs ──────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreateInvoiceAction {
+    pub issuer_pubkey: DilithiumPublicKey,
+    pub payer_pubkey: Option<DilithiumPublicKey>,
+    pub amount_chronos: u64,
+    pub invoice_id: [u8; 32],
+    pub expiry: u64,
+    pub encrypted_memo: Option<Vec<u8>>,
+    pub memo_hash: Option<[u8; 32]>,
+    /// Genesis 9: Optional set of authorized payers (inline list or Group ref).
+    #[serde(default)]
+    pub authorized_payers: Option<AuthorizedSet>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FulfillInvoiceAction {
+    pub payer_pubkey: DilithiumPublicKey,
+    pub invoice_id: [u8; 32],
+    pub amount_chronos: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CancelInvoiceAction {
+    pub issuer_pubkey: DilithiumPublicKey,
+    pub invoice_id: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreateCreditAction {
+    pub grantor_pubkey: DilithiumPublicKey,
+    pub beneficiary_pubkey: DilithiumPublicKey,
+    pub ceiling_chronos: u64,
+    pub per_draw_max_chronos: Option<u64>,
+    pub expiry: u64,
+    pub credit_id: [u8; 32],
+    pub encrypted_terms: Option<Vec<u8>>,
+    /// Genesis 9: Optional group whose members may also draw.
+    #[serde(default)]
+    pub beneficiary_group: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DrawCreditAction {
+    pub beneficiary_pubkey: DilithiumPublicKey,
+    pub credit_id: [u8; 32],
+    pub amount_chronos: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RevokeCreditAction {
+    pub grantor_pubkey: DilithiumPublicKey,
+    pub credit_id: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Compounding {
+    Simple,
+    Daily,
+    Monthly,
+    Annually,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreateDepositAction {
+    pub depositor_pubkey: DilithiumPublicKey,
+    pub obligor_pubkey: DilithiumPublicKey,
+    pub principal_chronos: u64,
+    pub rate_basis_points: u64,
+    pub term_seconds: u64,
+    pub compounding: Compounding,
+    pub penalty_basis_points: Option<u64>,
+    pub deposit_id: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SettleDepositAction {
+    pub obligor_pubkey: DilithiumPublicKey,
+    pub deposit_id: [u8; 32],
+    pub amount_chronos: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum ConditionalFallback {
+    Void,
+    Return,
+    Escrow,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreateConditionalAction {
+    pub sender_pubkey: DilithiumPublicKey,
+    pub recipient_pubkey: DilithiumPublicKey,
+    pub amount_chronos: u64,
+    pub attestor_pubkeys: Vec<DilithiumPublicKey>,
+    pub min_attestors: u32,
+    pub attestation_memo: Option<String>,
+    pub valid_until: u64,
+    pub fallback: ConditionalFallback,
+    pub encrypted_terms: Option<Vec<u8>>,
+    pub type_v_id: [u8; 32],
+    /// Genesis 9: Optional group whose members may also attest.
+    #[serde(default)]
+    pub attestor_group: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AttestConditionalAction {
+    pub attestor_pubkey: DilithiumPublicKey,
+    pub type_v_id: [u8; 32],
+    pub attestation_memo: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum LedgerEntryType {
+    Decision,
+    Summary,
+    Audit,
+    Milestone,
+    SignOfLife,
+    GuardianTransition,
+    LifeUnconfirmed,
+    BeneficiaryIdentified,
+    IdentityVerified,
+    IdentityRevoked,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreateLedgerEntryAction {
+    pub author_pubkey: DilithiumPublicKey,
+    pub mandate_id: Option<[u8; 32]>,
+    pub promise_id: Option<[u8; 32]>,
+    pub entry_type: LedgerEntryType,
+    pub content_hash: [u8; 32],
+    pub content_summary: Vec<u8>,
+    pub promise_chain_hash: Option<[u8; 32]>,
+    pub external_ref: Option<String>,
+    pub entry_id: [u8; 32],
+}
+
+
+// ── Genesis 8 — Sign of Life types ─────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum SignOfLifeStatus {
+    Active,
+    GracePeriod,
+    Transitioned,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum SignOfLifeResponsible {
+    Grantor,
+    Guardian,
+}
+
+// ── Genesis 10a — PAY_AS DENOMINATION ──────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum PayAsDenomination {
+    FixedKX,
+    UsdEquivalentAtCreation { rate_microcents_per_kx: u64 },
+    UsdEquivalentAtMaturity,
+    EurEquivalentAtCreation { rate_microeuros_per_kx: u64 },
+    EurEquivalentAtMaturity,
+}
+
+// ── Genesis 10a — LOAN PAYMENT STAGE ───────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum LoanPaymentType {
+    InterestOnly,
+    PrincipalOnly,
+    PrincipalAndInterest,
+    BulletFinal,
+    Custom,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LoanPaymentStage {
+    pub due_at: u64,
+    pub amount_kx: u64,
+    pub pay_as: PayAsDenomination,
+    pub payment_type: LoanPaymentType,
+    pub stage_index: u32,
+}
+
+// ── Genesis 10a — LATE FEE SCHEDULE ────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LateFeeStage {
+    pub days_overdue: u32,
+    pub fee_pct: u8,
+    pub fee_minimum_kx: u64,
+    pub fee_maximum_kx: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum LateFeeSchedule {
+    None,
+    Flat { fee_kx: u64 },
+    Tiered { stages: Vec<LateFeeStage> },
+}
+
+// ── Genesis 10a — PREPAYMENT TERMS ─────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum PrepaymentTerms {
+    Prohibited,
+    AllowedAtPar,
+    AllowedWithPenalty { penalty_pct: u8, penalty_minimum_kx: u64 },
+    AllowedWithDiscount { discount_pct: u8, discount_maximum_kx: u64 },
+}
+
+// ── Genesis 10a — HEDGE REQUIREMENT ────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum HedgeCoverageType {
+    PrincipalOnly,
+    PrincipalAndInterest,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HedgeRequirement {
+    pub minimum_coverage_pct: u8,
+    pub coverage_type: HedgeCoverageType,
+    pub funding_deadline_days: u16,
+}
+
+// ── Genesis 10a — ORACLE POLICY ────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum OracleFallback {
+    UseLastKnownPrice,
+    SuspendAndNotify,
+    UseSevenDayAverage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct OraclePolicy {
+    pub retry_window_days: u8,
+    pub retry_interval_hours: u8,
+    pub fallback: OracleFallback,
+}
+
+impl Default for OraclePolicy {
+    fn default() -> Self {
+        OraclePolicy {
+            retry_window_days: 3,
+            retry_interval_hours: 6,
+            fallback: OracleFallback::UseSevenDayAverage,
+        }
+    }
+}
 
 /// Every state-changing operation in the ChronX DAG is one of these variants.
 // TimeLockCreate carries a full DilithiumPublicKey (1312 bytes for Dilithium2). Boxing it
@@ -106,6 +428,48 @@ pub enum Action {
         /// Free text grantor intent (max MISAI_LOAN_PACKAGE_MAX_INTENT_CHARS chars).
         #[serde(default)]
         grantor_intent: Option<String>,
+
+        // ── Genesis 8 — Sign of Life fields ────────────────────────────
+        /// Interval in days between required sign-of-life attestations.
+        #[serde(default)]
+        sign_of_life_interval_days: Option<u64>,
+        /// Grace period in days after missed sign-of-life before guardian transition.
+        #[serde(default)]
+        sign_of_life_grace_days: Option<u64>,
+        /// Guardian pubkey — receives funds if sign of life is missed.
+        #[serde(default)]
+        guardian_pubkey: Option<DilithiumPublicKey>,
+        /// Guardian authority expires at this Unix timestamp.
+        #[serde(default)]
+        guardian_until: Option<u64>,
+        /// Alternate guardian pubkey (backup).
+        #[serde(default)]
+        alt_guardian_pubkey: Option<DilithiumPublicKey>,
+        /// Human-readable beneficiary description (encrypted or plaintext).
+        #[serde(default)]
+        beneficiary_description: Option<String>,
+        /// BLAKE3 hash of the beneficiary description.
+        #[serde(default)]
+        beneficiary_description_hash: Option<[u8; 32]>,
+        /// Suggestion-only field: grantor's preferred conversion currency at maturity.
+        /// No protocol behavior — KX always releases as KX. Max 50 chars.
+        #[serde(default)]
+        convert_to: Option<String>,
+
+        // ── Genesis 9 — Wallet Group fields ────────────────────────────
+        /// Optional set of wallets/group authorized to claim this lock.
+        #[serde(default)]
+        authorized_claimants: Option<AuthorizedSet>,
+        /// Optional group for succession routing.
+        #[serde(default)]
+        succession_group: Option<[u8; 32]>,
+        /// Optional backup AI executors for Type M locks.
+        #[serde(default)]
+        backup_executors: Option<Vec<DilithiumPublicKey>>,
+        /// Minimum number of executors that must agree (threshold).
+        #[serde(default)]
+        executor_threshold: Option<u8>,
+// Genesis 10a: PAY_AS denomination for this lock        #[serde(default)]        pay_as: Option<PayAsDenomination>,
 
     },
 
@@ -300,6 +664,155 @@ pub enum Action {
         proposed_return_date: u64,
         agent_axiom_consent_hash: String,
     },
+
+    // ── MISAI ExecutorWithdraw ────────────────────────────────────────────────
+    /// The registered MISAI executor withdraws KX from a live Type M lock
+    /// before its maturity date, for the purpose of AI-managed trading.
+    ///
+    /// Validation:
+    ///   - lock must be Type M (lock_type == "M")
+    ///   - signer must be the registered MISAI executor
+    ///   - destination must match db.get_meta("misai_executor_wallet")
+    ///   - lock status must be Pending
+    ///   - lock_metadata must not be null
+    ///   - rate limit: max 3 per 24-hour window
+    ///
+    /// On acceptance, lock transitions to PendingExecutor for a configurable
+    /// delay (default 24 hours) before finalization.
+    ExecutorWithdraw {
+        lock_id: TimeLockId,
+        /// Where to send the KX (must match registered executor wallet).
+        destination: AccountId,
+        /// The executor's Dilithium2 public key hex (for verification).
+        executor_pubkey: String,
+    },
+
+    // ── Genesis 8 — TYPE I Invoice ──────────────────────────────────────────
+    /// Create a new invoice requesting payment.
+    CreateInvoice(CreateInvoiceAction),
+
+    /// Fulfill (pay) an existing invoice.
+    FulfillInvoice(FulfillInvoiceAction),
+
+    /// Cancel an open invoice (issuer only).
+    CancelInvoice(CancelInvoiceAction),
+
+    // ── Genesis 8 — TYPE C Credit Authorization ─────────────────────────────
+    /// Authorize a credit line for a beneficiary.
+    CreateCredit(CreateCreditAction),
+
+    /// Draw funds from an authorized credit line.
+    DrawCredit(DrawCreditAction),
+
+    /// Revoke an open credit line (grantor only).
+    RevokeCredit(RevokeCreditAction),
+
+    // ── Genesis 8 — TYPE Y Interest Bearing Deposit ─────────────────────────
+    /// Create a deposit with interest terms.
+    CreateDeposit(CreateDepositAction),
+
+    /// Settle a matured deposit (obligor pays back principal + interest).
+    SettleDeposit(SettleDepositAction),
+
+    // ── Genesis 8 — TYPE V Conditional Validity ─────────────────────────────
+    /// Create a conditional payment requiring attestor approval.
+    CreateConditional(CreateConditionalAction),
+
+    /// Attest (approve) a conditional payment.
+    AttestConditional(AttestConditionalAction),
+
+    // ── Genesis 8 — TYPE L Ledger Entry ─────────────────────────────────────
+    /// Create an immutable ledger entry (bonded agents only).
+    CreateLedgerEntry(CreateLedgerEntryAction),
+
+    // ── Genesis 9 — TYPE_G Wallet Group ─────────────────────────────────
+    /// Create a new on-chain wallet group.
+    CreateGroup(CreateGroupAction),
+    /// Add a member to an existing group.
+    AddGroupMember(AddGroupMemberAction),
+    /// Remove a member from a group.
+    RemoveGroupMember(RemoveGroupMemberAction),
+    /// Dissolve a group (record kept forever, status = Dissolved).
+    DissolveGroup(DissolveGroupAction),
+    /// Transfer group ownership to a new owner.
+    TransferGroupOwnership(TransferGroupOwnershipAction),
+
+    /// Reject an invoice (payer only). Sets status to Rejected, no KX cost.
+    RejectInvoice {
+        invoice_id: [u8; 32],
+        memo: Option<String>,
+    },
+
+    // ── Genesis 10a — Loan Primitives ──────────────────────────────────────
+
+    /// Loan agreement — requires lender + borrower signatures
+    LoanCreate {
+        lender_wallet: AccountId,
+        borrower_wallet: AccountId,
+        principal_kx: u64,
+        pay_as: PayAsDenomination,
+        stages: Vec<LoanPaymentStage>,
+        grace_period_days: u8,
+        late_fee_schedule: LateFeeSchedule,
+        prepayment: PrepaymentTerms,
+        hedge_requirement: Option<HedgeRequirement>,
+        oracle_policy: OraclePolicy,
+        agreement_hash: Option<[u8; 32]>,
+        memo: Option<String>,
+    },
+
+    /// MISAI publishes when payment missed > grace_period (MISAI-only, submitted once)
+    DefaultRecord {
+        loan_id: [u8; 32],
+        missed_stage_index: u32,
+        missed_amount_kx: u64,
+        late_fees_accrued_kx: u64,
+        days_overdue: u32,
+        outstanding_balance_kx: u64,
+        stages_remaining: u32,
+        defaulted_at: u64,
+        memo: String,
+    },
+
+    /// Both parties reinstate a defaulted loan (dual signature, no time limit)
+    LoanReinstatement {
+        loan_id: [u8; 32],
+        cure_amount_kx: u64,
+        new_stages: Vec<LoanPaymentStage>,
+        memo: Option<String>,
+    },
+
+    /// Lender writes off loan — unilateral, irrevocable (lender signature only)
+    LoanWriteOff {
+        loan_id: [u8; 32],
+        outstanding_balance_kx: u64,
+        write_off_date: u64,
+        memo: Option<String>,
+    },
+
+    /// Both parties agree to early payoff per prepayment terms (dual signature)
+    LoanEarlyPayoff {
+        loan_id: [u8; 32],
+        payoff_amount_kx: u64,
+        memo: Option<String>,
+    },
+
+    /// MISAI publishes when all stages paid (MISAI-only)
+    LoanCompletion {
+        loan_id: [u8; 32],
+        total_paid_kx: u64,
+        completion_date: u64,
+        stages_completed: u32,
+        memo: String,
+    },
+
+    /// Lender attaches a memo to a default record (one per default, max 512 chars).
+    LenderMemo {
+        loan_id: [u8; 32],
+        default_record_id: [u8; 32],
+        memo: String,
+        lender_signature: DilithiumSignature,
+    },
 }
 
 // ── Transaction ───────────────────────────────────────────────────────────────
@@ -397,4 +910,22 @@ impl Transaction {
     pub fn body_bytes(&self) -> Vec<u8> {
         bincode::serialize(&self.body()).expect("body serialization is infallible")
     }
+}
+
+
+// ── Genesis 10b — GOVERNANCE PARAMS ────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GovernanceParams {
+    pub min_loan_size_chronos: Option<u64>,
+    pub approved_currencies: Vec<String>,
+    pub deprecated_currencies: Vec<DeprecatedCurrency>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeprecatedCurrency {
+    pub currency_code: String,
+    pub successor_code: Option<String>,
+    pub conversion_rate_numerator: Option<u64>,
+    pub conversion_rate_denominator: Option<u64>,
 }

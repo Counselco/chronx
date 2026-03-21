@@ -10,13 +10,14 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::Context;
 use clap::Parser;
 use tracing::{info, warn};
 
 /// Current node software version. Compared against https://chronx.io/version.json at startup.
-const NODE_VERSION: &str = "1.1.0";
+const NODE_VERSION: &str = "9.0.1";
 
 use chronx_consensus::DifficultyConfig;
 use chronx_core::constants::POW_INITIAL_DIFFICULTY;
@@ -213,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
         pow_difficulty: args.pow_difficulty,
         tx_sender: Some(tx_sender),
         peer_multiaddr: Some(peer_multiaddr),
+        peer_count: p2p_handle.peer_count.clone(),
     });
     let _rpc_handle = RpcServer::new(rpc_state)
         .start(args.rpc_addr)

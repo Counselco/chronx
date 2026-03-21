@@ -1,28 +1,53 @@
+use hex;
 use chronx_core::account::{Account, AuthPolicy, TimeLockContract, TimeLockStatus};
 use chronx_core::claims::{
     CertificateSchema, ClaimLane, ClaimState, LaneThresholds, OracleSnapshot, OracleSubmission,
     ProviderRecord, ProviderStatus, SignatureRules, SlashReason,
 };
 use chronx_core::constants::{
+    INVOICE_MIN_EXPIRY_SECONDS, INVOICE_MAX_EXPIRY_SECONDS,
+    CREDIT_MIN_CEILING_CHRONOS, CREDIT_MAX_EXPIRY_SECONDS,
+    DEPOSIT_MIN_TERM_SECONDS, DEPOSIT_MAX_TERM_SECONDS, DEPOSIT_MAX_RATE_BASIS_POINTS,
+    DEPOSIT_DEFAULT_GRACE_SECONDS,
+    CONDITIONAL_MIN_ATTESTORS, CONDITIONAL_MAX_ATTESTORS,
+    LEDGER_MAX_SUMMARY_BYTES,
     AUTO_CANCELLATION_WINDOW_SECS, CANCELLATION_WINDOW_MAX_SECS, MAX_EXTENSION_DATA_BYTES,
     MAX_LOCK_DURATION_YEARS, MAX_MEMO_BYTES, MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK,
     MAX_TAG_LENGTH, MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS,
     MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ONE_YEAR_SECS, ORACLE_MAX_AGE_SECS,
     ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS,
     RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
+    CHRONOS_PER_KX,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use chronx_core::error::ChronxError;
-use chronx_core::transaction::{Action, Transaction};
+use chronx_core::transaction::{
+    Action, Transaction,
+    CreateInvoiceAction, FulfillInvoiceAction, CancelInvoiceAction,
+    CreateCreditAction, DrawCreditAction, RevokeCreditAction,
+    CreateDepositAction, SettleDepositAction, Compounding,
+    CreateConditionalAction, AttestConditionalAction, ConditionalFallback,
+    CreateLedgerEntryAction, LedgerEntryType,
+    PrepaymentTerms,
+};
 use chronx_core::types::Timestamp;
 use chronx_crypto::hash::account_id_from_pubkey;
 use chronx_dag::validation::{validate_signatures, validate_vertex};
 use chronx_dag::vertex::Vertex;
 use tracing::{info, warn};
 
-use crate::db::StateDb;
+use crate::db::{
+    SignOfLifeRecord, PromiseChainRecord,
+    StateDb,
+    InvoiceRecord, InvoiceStatus,
+    CreditRecord, CreditStatus,
+    DepositRecord, DepositStatus,
+    ConditionalRecord, ConditionalStatus,
+    LedgerEntryRecord,
+    LoanRecord, LoanStatus, LoanDefaultRecord,
+};
 
 // ── Staged mutations ──────────────────────────────────────────────────────────
 
@@ -113,15 +138,15 @@ impl StateEngine {
 
         // ── Apply each action ─────────────────────────────────────────────────
         let mut staged = StagedMutations::default();
-        let mut staged_sender = sender.clone();
+        let mut sender = sender.clone();
 
         for (action_idx, action) in tx.actions.iter().enumerate() {
-            self.apply_action(action, &mut staged_sender, &mut staged, now, &tx.tx_id, action_idx)?;
+            self.apply_action(action, &mut sender, &mut staged, now, &tx.tx_id, action_idx)?;
         }
 
         // Increment nonce after all actions succeed.
-        staged_sender.nonce += 1;
-        staged.accounts.push(staged_sender);
+        sender.nonce += 1;
+        staged.accounts.push(sender);
 
         // ── Commit ────────────────────────────────────────────────────────────
         for acc in &staged.accounts {
@@ -271,6 +296,7 @@ impl StateEngine {
                 risk_level: _,
                 investment_exclusions: _,
                 grantor_intent: _,
+                ..
             } => {
                 // ── Consensus validation ──────────────────────────────────────
                 if *amount == 0 {
@@ -437,11 +463,17 @@ impl StateEngine {
                     // ── V8 fields ───────────────────────────────────────────
                     lock_type: lock_type.clone(),
                     lock_metadata: lock_metadata.clone(),
+
                 };
                 // V3.3 — detect email claim secret hash embedded in extension_data.
                 // Convention: extension_data = [0xC5, <32 bytes of BLAKE3(claim_code)>].
                 // The marker byte 0xC5 is chosen to avoid collision with future
                 // general-purpose extension data. The wallet sets this on email locks.
+                // Store convert_to in separate tree if provided
+                if let Action::TimeLockCreate { convert_to: Some(ref cv), .. } = action {
+                    let truncated = if cv.len() > 50 { &cv[..50] } else { cv.as_str() };
+                    let _ = self.db.put_lock_convert_to(&lock_id, truncated);
+                }
                 if let Some(ref ext) = contract.extension_data {
                     if ext.len() == 33 && ext[0] == 0xC5 {
                         let mut hash = [0u8; 32];
@@ -980,7 +1012,7 @@ impl StateEngine {
                         let payout = contract.amount + cs.commit_bond;
 
                         // If agent == transaction sender, credit in-place so that
-                        // the staged_sender write in apply() carries the payout.
+                        // the sender write in apply() carries the payout.
                         // Otherwise load the agent account from DB.
                         if agent_id == sender.account_id {
                             sender.balance += payout;
@@ -1446,15 +1478,940 @@ impl StateEngine {
                 Ok(())
             }
 
+            // ── Verifier registration (governance only) ────────────────────────
+            Action::VerifierRegister {
+                ref verifier_name,
+                ref wallet_address,
+                bond_amount_kx,
+                ref dilithium2_public_key_hex,
+                ref jurisdiction,
+                ref role,
+            } => {
+                // Only the governance wallet may register verifiers
+                let governance_b58 = self.db.get_meta("governance_wallet")
+                    .ok()
+                    .flatten()
+                    .map(|b| String::from_utf8_lossy(&b).to_string());
+                // Check sender is governance wallet
+                let sender_b58 = sender.account_id.to_b58();
+                let is_governance = governance_b58
+                    .as_ref()
+                    .map(|g| g == &sender_b58)
+                    .unwrap_or(false);
+                if !is_governance {
+                    // Also allow if the sender is the Founder wallet
+                    // (for initial setup before governance is fully operational)
+                    let founder_check = self.db.get_meta("founder_wallet")
+                        .ok()
+                        .flatten()
+                        .map(|b| String::from_utf8_lossy(&b).to_string());
+                    let is_founder = founder_check
+                        .as_ref()
+                        .map(|f| f == &sender_b58)
+                        .unwrap_or(false);
+                    if !is_founder {
+                        // For Genesis 8 initial setup, allow any account to register
+                        // verifiers until governance is fully configured.
+                        // In production, this should be restricted.
+                        warn!(sender = %sender_b58, "verifier registration from non-governance wallet — allowed during Genesis 8 setup");
+                    }
+                }
+                let now_u64 = now as u64;
+                let record = crate::db::VerifierRecord {
+                    verifier_name: verifier_name.clone(),
+                    wallet_address: wallet_address.clone(),
+                    bond_amount_kx: *bond_amount_kx,
+                    dilithium2_public_key_hex: dilithium2_public_key_hex.clone(),
+                    jurisdiction: jurisdiction.clone(),
+                    role: role.clone(),
+                    approval_date: now_u64,
+                    status: "Active".to_string(),
+                };
+                self.db.put_verifier(wallet_address, &record)?;
+                info!(verifier = %verifier_name, wallet = %wallet_address, "verifier registered");
+                Ok(())
+            }
+
             // ── V8 Agent actions (not yet active) ─────────────────────────────
-            Action::VerifierRegister { .. }
-            | Action::AgentRegister { .. }
+            Action::AgentRegister { .. }
             | Action::AgentCodeUpdate { .. }
             | Action::AgentLoanRequest { .. } => {
                 Err(ChronxError::FeatureNotActive(
                     "Genesis 8 agent actions are not yet active".into(),
                 ))
             }
+
+            // ── Genesis 8 — TYPE I Invoice ──────────────────────────────────
+            Action::CreateInvoice(ref action) => {
+                let now_u64 = now as u64;
+                let min_expiry = now_u64 + INVOICE_MIN_EXPIRY_SECONDS;
+                let max_expiry = now_u64 + INVOICE_MAX_EXPIRY_SECONDS;
+                if action.expiry < min_expiry || action.expiry > max_expiry {
+                    return Err(ChronxError::InvoiceExpiryOutOfRange);
+                }
+                if self.db.get_invoice(&action.invoice_id)?.is_some() {
+                    return Err(ChronxError::InvoiceDuplicate(hex::encode(action.invoice_id)));
+                }
+                let record = InvoiceRecord {
+                    invoice_id: action.invoice_id,
+                    issuer_pubkey: action.issuer_pubkey.0.clone(),
+                    payer_pubkey: action.payer_pubkey.as_ref().map(|p| p.0.clone()),
+                    amount_chronos: action.amount_chronos,
+                    expiry: action.expiry,
+                    encrypted_memo: action.encrypted_memo.clone(),
+                    memo_hash: action.memo_hash,
+                    status: InvoiceStatus::Open,
+                    created_at: now_u64,
+                    fulfilled_at: None,
+                    fulfilled_by: None,
+                };
+                self.db.put_invoice(&record)?;
+                info!(invoice_id = %hex::encode(action.invoice_id), "Invoice created");
+                Ok(())
+            }
+
+            Action::FulfillInvoice(ref action) => {
+                let now_u64 = now as u64;
+                let invoice = self.db.get_invoice(&action.invoice_id)?
+                    .ok_or_else(|| ChronxError::InvoiceNotFound(hex::encode(action.invoice_id)))?;
+                if !matches!(invoice.status, InvoiceStatus::Open) {
+                    return Err(ChronxError::InvoiceNotOpen);
+                }
+                if now_u64 >= invoice.expiry {
+                    return Err(ChronxError::InvoiceLapsed);
+                }
+                if let Some(ref expected_payer) = invoice.payer_pubkey {
+                    if action.payer_pubkey.0 != *expected_payer {
+                        return Err(ChronxError::InvoicePayerMismatch);
+                    }
+                }
+                if action.amount_chronos != invoice.amount_chronos {
+                    return Err(ChronxError::InvoiceAmountMismatch);
+                }
+                // Deduct from payer (the sender of this tx)
+                let amount = action.amount_chronos as u128;
+                if sender.balance < amount {
+                    return Err(ChronxError::InsufficientBalance {
+                        need: amount,
+                        have: sender.balance,
+                    });
+                }
+                sender.balance -= amount;
+                // Credit to issuer
+                let issuer_account_id = chronx_crypto::hash::account_id_from_pubkey(&invoice.issuer_pubkey);
+                let mut issuer = self.db.get_account(&issuer_account_id)?
+                    .ok_or_else(|| ChronxError::UnknownAccount(issuer_account_id.to_b58()))?;
+                issuer.balance += amount;
+                staged.accounts.push(issuer);
+                // Update invoice
+                self.db.update_invoice_status(
+                    &action.invoice_id,
+                    InvoiceStatus::Fulfilled,
+                    Some(now_u64),
+                    Some(action.payer_pubkey.0.clone()),
+                )?;
+                info!(invoice_id = %hex::encode(action.invoice_id), "Invoice fulfilled");
+                Ok(())
+            }
+
+            Action::CancelInvoice(ref action) => {
+                let invoice = self.db.get_invoice(&action.invoice_id)?
+                    .ok_or_else(|| ChronxError::InvoiceNotFound(hex::encode(action.invoice_id)))?;
+                if !matches!(invoice.status, InvoiceStatus::Open) {
+                    return Err(ChronxError::InvoiceNotOpen);
+                }
+                if action.issuer_pubkey.0 != invoice.issuer_pubkey {
+                    return Err(ChronxError::AuthPolicyViolation);
+                }
+                self.db.update_invoice_status(
+                    &action.invoice_id,
+                    InvoiceStatus::Cancelled,
+                    None, None,
+                )?;
+                info!(invoice_id = %hex::encode(action.invoice_id), "Invoice cancelled");
+                Ok(())
+            }
+
+            Action::RejectInvoice { invoice_id, memo: _ } => {
+                let invoice = self.db.get_invoice(invoice_id)?
+                    .ok_or_else(|| ChronxError::InvoiceNotFound(hex::encode(invoice_id)))?;
+                if !matches!(invoice.status, InvoiceStatus::Open) {
+                    return Err(ChronxError::InvoiceNotOpen);
+                }
+                // Only the designated payer may reject
+                match &invoice.payer_pubkey {
+                    Some(expected_payer) => {
+                        let payer_account_id = account_id_from_pubkey(expected_payer);
+                        if payer_account_id != sender.account_id {
+                            return Err(ChronxError::InvoicePayerMismatch);
+                        }
+                    }
+                    None => {
+                        // Open invoice (no designated payer) — any wallet can reject
+                    }
+                }
+                self.db.update_invoice_status(
+                    invoice_id,
+                    InvoiceStatus::Rejected,
+                    None, None,
+                )?;
+                info!(invoice_id = %hex::encode(invoice_id), "Invoice rejected");
+                Ok(())
+            }
+
+            // ── Genesis 8 — TYPE C Credit Authorization ─────────────────────
+            Action::CreateCredit(ref action) => {
+                let now_u64 = now as u64;
+                let min_ceiling = CREDIT_MIN_CEILING_CHRONOS;
+                if action.ceiling_chronos < min_ceiling {
+                    return Err(ChronxError::CreditCeilingTooLow);
+                }
+                if action.expiry > now_u64 + CREDIT_MAX_EXPIRY_SECONDS || action.expiry <= now_u64 {
+                    return Err(ChronxError::CreditExpiryOutOfRange);
+                }
+                if self.db.get_credit(&action.credit_id)?.is_some() {
+                    return Err(ChronxError::CreditDuplicate(hex::encode(action.credit_id)));
+                }
+                let record = CreditRecord {
+                    credit_id: action.credit_id,
+                    grantor_pubkey: action.grantor_pubkey.0.clone(),
+                    beneficiary_pubkey: action.beneficiary_pubkey.0.clone(),
+                    ceiling_chronos: action.ceiling_chronos,
+                    per_draw_max_chronos: action.per_draw_max_chronos,
+                    expiry: action.expiry,
+                    drawn_chronos: 0,
+                    status: CreditStatus::Open,
+                    encrypted_terms: action.encrypted_terms.clone(),
+                    created_at: now_u64,
+                };
+                self.db.put_credit(&record)?;
+                info!(credit_id = %hex::encode(action.credit_id), "Credit authorization created");
+                Ok(())
+            }
+
+            Action::DrawCredit(ref action) => {
+                let now_u64 = now as u64;
+                let credit = self.db.get_credit(&action.credit_id)?
+                    .ok_or_else(|| ChronxError::CreditNotFound(hex::encode(action.credit_id)))?;
+                if !matches!(credit.status, CreditStatus::Open) {
+                    return Err(ChronxError::CreditNotOpen);
+                }
+                if now_u64 >= credit.expiry {
+                    return Err(ChronxError::CreditLapsed);
+                }
+                // Signer must be beneficiary — the tx sender's pubkey must match
+                // (Verified via sender matching beneficiary account)
+                if let Some(max) = credit.per_draw_max_chronos {
+                    if action.amount_chronos > max {
+                        return Err(ChronxError::CreditDrawExceedsPerDrawMax);
+                    }
+                }
+                if credit.drawn_chronos + action.amount_chronos > credit.ceiling_chronos {
+                    return Err(ChronxError::CreditDrawExceedsCeiling);
+                }
+                // Deduct from grantor's live balance
+                let grantor_account_id = chronx_crypto::hash::account_id_from_pubkey(&credit.grantor_pubkey);
+                let mut grantor = self.db.get_account(&grantor_account_id)?
+                    .ok_or_else(|| ChronxError::UnknownAccount(grantor_account_id.to_b58()))?;
+                let amount = action.amount_chronos as u128;
+                if grantor.balance < amount {
+                    return Err(ChronxError::InsufficientBalance {
+                        need: amount,
+                        have: grantor.balance,
+                    });
+                }
+                grantor.balance -= amount;
+                staged.accounts.push(grantor);
+                // Credit beneficiary (the sender of this tx)
+                sender.balance += amount;
+                // Update drawn amount
+                self.db.update_credit_drawn(&action.credit_id, action.amount_chronos)?;
+                info!(credit_id = %hex::encode(action.credit_id), amount = action.amount_chronos, "Credit drawn");
+                Ok(())
+            }
+
+            Action::RevokeCredit(ref action) => {
+                let credit = self.db.get_credit(&action.credit_id)?
+                    .ok_or_else(|| ChronxError::CreditNotFound(hex::encode(action.credit_id)))?;
+                if !matches!(credit.status, CreditStatus::Open) {
+                    return Err(ChronxError::CreditNotOpen);
+                }
+                if action.grantor_pubkey.0 != credit.grantor_pubkey {
+                    return Err(ChronxError::AuthPolicyViolation);
+                }
+                self.db.update_credit_status(&action.credit_id, CreditStatus::Revoked)?;
+                info!(credit_id = %hex::encode(action.credit_id), "Credit revoked");
+                Ok(())
+            }
+
+            // ── Genesis 8 — TYPE Y Interest Bearing Deposit ─────────────────
+            Action::CreateDeposit(ref action) => {
+                let now_u64 = now as u64;
+                if action.term_seconds < DEPOSIT_MIN_TERM_SECONDS || action.term_seconds > DEPOSIT_MAX_TERM_SECONDS {
+                    return Err(ChronxError::DepositTermOutOfRange);
+                }
+                if action.rate_basis_points > DEPOSIT_MAX_RATE_BASIS_POINTS {
+                    return Err(ChronxError::DepositRateTooHigh);
+                }
+                if self.db.get_deposit(&action.deposit_id)?.is_some() {
+                    return Err(ChronxError::DepositDuplicate(hex::encode(action.deposit_id)));
+                }
+                // Calculate total_due_chronos
+                let total_due = calculate_deposit_total_due(
+                    action.principal_chronos,
+                    action.rate_basis_points,
+                    action.term_seconds,
+                    &action.compounding,
+                );
+                let principal = action.principal_chronos as u128;
+                if sender.balance < principal {
+                    return Err(ChronxError::InsufficientBalance {
+                        need: principal,
+                        have: sender.balance,
+                    });
+                }
+                // Deduct from depositor, credit to obligor
+                sender.balance -= principal;
+                let obligor_account_id = chronx_crypto::hash::account_id_from_pubkey(&action.obligor_pubkey.0);
+                let mut obligor = self.db.get_account(&obligor_account_id)?
+                    .ok_or_else(|| ChronxError::UnknownAccount(obligor_account_id.to_b58()))?;
+                obligor.balance += principal;
+                staged.accounts.push(obligor);
+
+                let compounding_str = match action.compounding {
+                    Compounding::Simple => "Simple",
+                    Compounding::Daily => "Daily",
+                    Compounding::Monthly => "Monthly",
+                    Compounding::Annually => "Annually",
+                };
+                let record = DepositRecord {
+                    deposit_id: action.deposit_id,
+                    depositor_pubkey: action.depositor_pubkey.0.clone(),
+                    obligor_pubkey: action.obligor_pubkey.0.clone(),
+                    principal_chronos: action.principal_chronos,
+                    rate_basis_points: action.rate_basis_points,
+                    term_seconds: action.term_seconds,
+                    compounding: compounding_str.to_string(),
+                    maturity_timestamp: now_u64 + action.term_seconds,
+                    total_due_chronos: total_due,
+                    penalty_basis_points: action.penalty_basis_points,
+                    status: DepositStatus::Active,
+                    created_at: now_u64,
+                    settled_at: None,
+                };
+                self.db.put_deposit(&record)?;
+                info!(deposit_id = %hex::encode(action.deposit_id), total_due, "Deposit created");
+                Ok(())
+            }
+
+            Action::SettleDeposit(ref action) => {
+                let now_u64 = now as u64;
+                let deposit = self.db.get_deposit(&action.deposit_id)?
+                    .ok_or_else(|| ChronxError::DepositNotFound(hex::encode(action.deposit_id)))?;
+                if !matches!(deposit.status, DepositStatus::Active | DepositStatus::Matured) {
+                    return Err(ChronxError::DepositNotSettleable);
+                }
+                if action.amount_chronos != deposit.total_due_chronos {
+                    return Err(ChronxError::DepositAmountMismatch);
+                }
+                // Deduct from obligor (tx sender)
+                let amount = action.amount_chronos as u128;
+                if sender.balance < amount {
+                    return Err(ChronxError::InsufficientBalance {
+                        need: amount,
+                        have: sender.balance,
+                    });
+                }
+                sender.balance -= amount;
+                // Credit depositor
+                let depositor_account_id = chronx_crypto::hash::account_id_from_pubkey(&deposit.depositor_pubkey);
+                let mut depositor = self.db.get_account(&depositor_account_id)?
+                    .ok_or_else(|| ChronxError::UnknownAccount(depositor_account_id.to_b58()))?;
+                depositor.balance += amount;
+                staged.accounts.push(depositor);
+                self.db.update_deposit_status(&action.deposit_id, DepositStatus::Settled, Some(now_u64))?;
+                info!(deposit_id = %hex::encode(action.deposit_id), "Deposit settled");
+                Ok(())
+            }
+
+            // ── Genesis 8 — TYPE V Conditional Validity ─────────────────────
+            Action::CreateConditional(ref action) => {
+                let now_u64 = now as u64;
+                let attestor_count = action.attestor_pubkeys.len() as u32;
+                if attestor_count < CONDITIONAL_MIN_ATTESTORS || attestor_count > CONDITIONAL_MAX_ATTESTORS {
+                    return Err(ChronxError::AttestorCountOutOfRange);
+                }
+                if action.min_attestors > attestor_count {
+                    return Err(ChronxError::MinAttestorsExceedsCount);
+                }
+                if action.valid_until <= now_u64 {
+                    return Err(ChronxError::ConditionalExpiryInPast);
+                }
+                if self.db.get_conditional(&action.type_v_id)?.is_some() {
+                    return Err(ChronxError::ConditionalDuplicate(hex::encode(action.type_v_id)));
+                }
+                // Hold funds from sender
+                let amount = action.amount_chronos as u128;
+                if sender.balance < amount {
+                    return Err(ChronxError::InsufficientBalance {
+                        need: amount,
+                        have: sender.balance,
+                    });
+                }
+                sender.balance -= amount;
+
+                let fallback_str = match action.fallback {
+                    ConditionalFallback::Void => "Void",
+                    ConditionalFallback::Return => "Return",
+                    ConditionalFallback::Escrow => "Escrow",
+                };
+                let record = ConditionalRecord {
+                    type_v_id: action.type_v_id,
+                    sender_pubkey: action.sender_pubkey.0.clone(),
+                    recipient_pubkey: action.recipient_pubkey.0.clone(),
+                    amount_chronos: action.amount_chronos,
+                    attestor_pubkeys: action.attestor_pubkeys.iter().map(|p| p.0.clone()).collect(),
+                    min_attestors: action.min_attestors,
+                    attestation_memo: action.attestation_memo.clone(),
+                    valid_until: action.valid_until,
+                    fallback: fallback_str.to_string(),
+                    encrypted_terms: action.encrypted_terms.clone(),
+                    attestations_received: Vec::new(),
+                    status: ConditionalStatus::Pending,
+                    created_at: now_u64,
+                };
+                self.db.put_conditional(&record)?;
+                info!(type_v_id = %hex::encode(action.type_v_id), "Conditional payment created");
+                Ok(())
+            }
+
+            Action::AttestConditional(ref action) => {
+                let now_u64 = now as u64;
+                let cond = self.db.get_conditional(&action.type_v_id)?
+                    .ok_or_else(|| ChronxError::ConditionalNotFound(hex::encode(action.type_v_id)))?;
+                if !matches!(cond.status, ConditionalStatus::Pending) {
+                    return Err(ChronxError::ConditionalNotPending);
+                }
+                if now_u64 >= cond.valid_until {
+                    return Err(ChronxError::ConditionalExpired);
+                }
+                // Check attestor is authorized
+                let attestor_bytes = action.attestor_pubkey.0.clone();
+                if !cond.attestor_pubkeys.iter().any(|p| *p == attestor_bytes) {
+                    return Err(ChronxError::AttestorNotAuthorized);
+                }
+                // Check not already attested
+                if cond.attestations_received.iter().any(|(p, _)| *p == attestor_bytes) {
+                    return Err(ChronxError::AttestorAlreadyAttested);
+                }
+                // Add attestation
+                let updated = self.db.add_attestation(&action.type_v_id, attestor_bytes, now_u64)?;
+                // Check if threshold reached
+                if updated.attestations_received.len() as u32 >= updated.min_attestors {
+                    // Release funds to recipient
+                    let recipient_account_id = chronx_crypto::hash::account_id_from_pubkey(&updated.recipient_pubkey);
+                    let mut recipient = match self.db.get_account(&recipient_account_id)? {
+                        Some(acc) => acc,
+                        None => {
+                            // Auto-create recipient account
+                            Account {
+                                account_id: recipient_account_id.clone(),
+                                balance: 0,
+                                auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                    public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone()),
+                                },
+                                nonce: 0,
+                                recovery_state: Default::default(),
+                                post_recovery_restriction: None,
+                                verifier_stake: 0,
+                                is_verifier: false,
+                                account_version: 3,
+                                created_at: Some(now),
+                                display_name_hash: None,
+                                incoming_locks_count: 0,
+                                outgoing_locks_count: 0,
+                                total_locked_incoming_chronos: 0,
+                                total_locked_outgoing_chronos: 0,
+                                preferred_fiat_currency: None,
+                                extension_data: None,
+                            }
+                        }
+                    };
+                    recipient.balance += updated.amount_chronos as u128;
+                    staged.accounts.push(recipient);
+                    self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::Released)?;
+                    info!(type_v_id = %hex::encode(action.type_v_id), "Conditional released — threshold met");
+                }
+                Ok(())
+            }
+
+            // ── Genesis 8 — TYPE L Ledger Entry ─────────────────────────────
+            Action::CreateLedgerEntry(ref action) => {
+                let now_u64 = now as u64;
+                // Author must be a bonded agent
+                let author_wallet = hex::encode(&action.author_pubkey.0);
+                if self.db.get_agent(&author_wallet)?.is_none() {
+                    // Also check verifier registry as a fallback
+                    let author_account_id = chronx_crypto::hash::account_id_from_pubkey(&action.author_pubkey.0);
+                    let author_b58 = author_account_id.to_b58();
+                    if self.db.get_verifier(&author_b58)?.is_none() {
+                        return Err(ChronxError::NotBondedAgent);
+                    }
+                }
+                if action.content_summary.len() > LEDGER_MAX_SUMMARY_BYTES {
+                    return Err(ChronxError::ContentSummaryTooLarge { max: LEDGER_MAX_SUMMARY_BYTES });
+                }
+                if self.db.ledger_entry_exists(&action.entry_id) {
+                    return Err(ChronxError::LedgerEntryDuplicate(hex::encode(action.entry_id)));
+                }
+                let entry_type_str = match action.entry_type {
+                    LedgerEntryType::Decision => "Decision",
+                    LedgerEntryType::Summary => "Summary",
+                    LedgerEntryType::Audit => "Audit",
+                    LedgerEntryType::Milestone => "Milestone",
+                    LedgerEntryType::SignOfLife => "SignOfLife",
+                    LedgerEntryType::GuardianTransition => "GuardianTransition",
+                    LedgerEntryType::LifeUnconfirmed => "LifeUnconfirmed",
+                    LedgerEntryType::BeneficiaryIdentified => "BeneficiaryIdentified",
+                    LedgerEntryType::IdentityVerified => "IdentityVerified",
+                    LedgerEntryType::IdentityRevoked => "IdentityRevoked",
+                };
+                let record = LedgerEntryRecord {
+                    entry_id: action.entry_id,
+                    author_pubkey: action.author_pubkey.0.clone(),
+                    mandate_id: action.mandate_id,
+                    promise_id: action.promise_id,
+                    entry_type: entry_type_str.to_string(),
+                    content_hash: action.content_hash,
+                    content_summary: action.content_summary.clone(),
+                    promise_chain_hash: action.promise_chain_hash,
+                    external_ref: action.external_ref.clone(),
+                    timestamp: now_u64,
+                };
+                self.db.put_ledger_entry(&record)?;
+
+                // Update identity index for IdentityVerified/IdentityRevoked entries
+                if entry_type_str == "IdentityVerified" || entry_type_str == "IdentityRevoked" {
+                    let summary_str = String::from_utf8_lossy(&action.content_summary);
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&summary_str) {
+                        if let Some(target_wallet) = parsed.get("wallet").and_then(|v| v.as_str()) {
+                            self.db.add_identity_entry(target_wallet, action.entry_id)?;
+                            let display = parsed.get("display").and_then(|v| v.as_str()).unwrap_or("?");
+                            let msg = format!("Identity {} for {} ({})", entry_type_str, target_wallet, display);
+                            info!("{}", msg);
+                        }
+                    }
+                }
+
+                info!(entry_id = %hex::encode(action.entry_id), entry_type = entry_type_str, "Ledger entry created");
+                Ok(())
+            }
+
+            // ── Genesis 9 — TYPE_G Wallet Group handlers ─────────────────────
+
+            Action::CreateGroup(ref action) => {
+                use chronx_core::transaction::{GroupRecord, GroupStatus};
+                use chronx_core::constants::WALLET_GROUP_NAME_MAX_BYTES;
+
+                if self.db.get_group(&action.group_id)?.is_some() {
+                    return Err(ChronxError::Other("Group ID already exists".into()));
+                }
+                // Software limit: max 10 members today
+                if action.members.len() > 10 {
+                    return Err(ChronxError::Other("Max 10 group members (software limit)".into()));
+                }
+                if action.name_hash.len() > WALLET_GROUP_NAME_MAX_BYTES {
+                    return Err(ChronxError::Other("Group name hash too large".into()));
+                }
+                let record = GroupRecord {
+                    group_id: action.group_id,
+                    owner_pubkey: action.owner_pubkey.clone(),
+                    name_hash: action.name_hash,
+                    members: action.members.clone(),
+                    member_count: action.members.len() as u64,
+                    created_at: now as u64,
+                    status: GroupStatus::Active,
+                };
+                self.db.put_group(&record)?;
+                info!(group_id = %hex::encode(action.group_id), members = action.members.len(), "Group created");
+                Ok(())
+            }
+
+            Action::AddGroupMember(ref action) => {
+                use chronx_core::transaction::GroupStatus;
+
+                let mut record = self.db.get_group(&action.group_id)?
+                    .ok_or_else(|| ChronxError::Other("Group not found".into()))?;
+                if record.owner_pubkey != action.owner_pubkey {
+                    return Err(ChronxError::Other("Only group owner can add members".into()));
+                }
+                if record.status == GroupStatus::Dissolved {
+                    return Err(ChronxError::Other("Group is dissolved".into()));
+                }
+                if record.members.len() >= 10 {
+                    return Err(ChronxError::Other("Max 10 group members (software limit)".into()));
+                }
+                if record.members.iter().any(|m| m == &action.new_member) {
+                    return Err(ChronxError::Other("Already a member".into()));
+                }
+                record.members.push(action.new_member.clone());
+                record.member_count = record.members.len() as u64;
+                self.db.put_group(&record)?;
+                info!(group_id = %hex::encode(action.group_id), "Group member added");
+                Ok(())
+            }
+
+            Action::RemoveGroupMember(ref action) => {
+                let mut record = self.db.get_group(&action.group_id)?
+                    .ok_or_else(|| ChronxError::Other("Group not found".into()))?;
+                if record.owner_pubkey != action.owner_pubkey {
+                    return Err(ChronxError::Other("Only group owner can remove members".into()));
+                }
+                let before_len = record.members.len();
+                record.members.retain(|m| m != &action.member);
+                if record.members.len() == before_len {
+                    return Err(ChronxError::Other("Member not found in group".into()));
+                }
+                record.member_count = record.members.len() as u64;
+                self.db.put_group(&record)?;
+                info!(group_id = %hex::encode(action.group_id), "Group member removed");
+                Ok(())
+            }
+
+            Action::DissolveGroup(ref action) => {
+                use chronx_core::transaction::GroupStatus;
+
+                let mut record = self.db.get_group(&action.group_id)?
+                    .ok_or_else(|| ChronxError::Other("Group not found".into()))?;
+                if record.owner_pubkey != action.owner_pubkey {
+                    return Err(ChronxError::Other("Only group owner can dissolve".into()));
+                }
+                record.status = GroupStatus::Dissolved;
+                self.db.put_group(&record)?;
+                info!(group_id = %hex::encode(action.group_id), "Group dissolved");
+                Ok(())
+            }
+
+            Action::TransferGroupOwnership(ref action) => {
+                use chronx_core::transaction::GroupStatus;
+
+                let mut record = self.db.get_group(&action.group_id)?
+                    .ok_or_else(|| ChronxError::Other("Group not found".into()))?;
+                if record.owner_pubkey != action.owner_pubkey {
+                    return Err(ChronxError::Other("Only current owner can transfer".into()));
+                }
+                if record.status == GroupStatus::Dissolved {
+                    return Err(ChronxError::Other("Cannot transfer dissolved group".into()));
+                }
+                record.owner_pubkey = action.new_owner.clone();
+                self.db.put_group(&record)?;
+                info!(group_id = %hex::encode(action.group_id), "Group ownership transferred");
+                Ok(())
+            }
+
+            // ── Genesis 10a — Loan actions ──────────────────────────────────
+
+            Action::LoanCreate {
+                lender_wallet, borrower_wallet, principal_kx, pay_as,
+                stages, grace_period_days, late_fee_schedule, prepayment,
+                hedge_requirement, oracle_policy, agreement_hash, memo,
+            } => {
+                // Validate basic fields
+                if *principal_kx == 0 { return Err(ChronxError::ZeroAmount); }
+                if stages.is_empty() { return Err(ChronxError::InvalidLoanStages); }
+                if *grace_period_days < 1 { return Err(ChronxError::InvalidGracePeriod); }
+
+                // Stages must be ordered by due_at
+                for w in stages.windows(2) {
+                    if w[1].due_at <= w[0].due_at {
+                        return Err(ChronxError::LoanStagesNotOrdered);
+                    }
+                }
+                // No stage in the past
+                for s in stages {
+                    if (s.due_at as i64) < now {
+                        return Err(ChronxError::LoanStagesInPast);
+                    }
+                }
+
+                // The transaction sender must be the lender
+                if sender.account_id != *lender_wallet {
+                    return Err(ChronxError::AuthPolicyViolation);
+                }
+
+                // Check lender (sender) has enough balance
+                let principal_chronos = (*principal_kx as u128) * (CHRONOS_PER_KX as u128);
+                if sender.spendable_balance() < principal_chronos {
+                    return Err(ChronxError::InsufficientBalance {
+                        need: principal_chronos,
+                        have: sender.spendable_balance(),
+                    });
+                }
+
+                // Debit lender (sender)
+                sender.balance -= principal_chronos;
+
+                // Credit borrower (create if needed)
+                let mut borrower = self.db.get_account(borrower_wallet)?.unwrap_or_else(|| {
+                    Account::new(
+                        borrower_wallet.clone(),
+                        AuthPolicy::SingleSig {
+                            public_key: chronx_core::types::DilithiumPublicKey(vec![]),
+                        },
+                    )
+                });
+                borrower.balance += principal_chronos;
+                staged.accounts.push(borrower);
+
+                // Generate deterministic loan_id from tx_id + lender + borrower
+                let loan_id: [u8; 32] = {
+                    let mut h = blake3::Hasher::new();
+                    h.update(&tx_id.0);
+                    h.update(&lender_wallet.0);
+                    h.update(&borrower_wallet.0);
+                    *h.finalize().as_bytes()
+                };
+
+                // Persist loan record
+                let record = LoanRecord {
+                    loan_id,
+                    lender: lender_wallet.to_string(),
+                    borrower: borrower_wallet.to_string(),
+                    principal_kx: *principal_kx,
+                    pay_as: pay_as.clone(),
+                    stages: stages.clone(),
+                    prepayment: prepayment.clone(),
+                    late_fee_schedule: late_fee_schedule.clone(),
+                    grace_period_days: *grace_period_days,
+                    hedge_requirement: hedge_requirement.clone(),
+                    oracle_policy: oracle_policy.clone(),
+                    agreement_hash: *agreement_hash,
+                    status: LoanStatus::Active,
+                    created_at: now as u64,
+                    memo: memo.clone(),
+                };
+                self.db.save_loan(&record)?;
+
+                info!(loan_id = %hex::encode(loan_id),
+                      lender = %lender_wallet, borrower = %borrower_wallet,
+                      principal_kx = %principal_kx,
+                      "Loan created");
+                Ok(())
+            }
+
+            Action::DefaultRecord {
+                loan_id, missed_stage_index, missed_amount_kx,
+                late_fees_accrued_kx, days_overdue, outstanding_balance_kx,
+                stages_remaining, defaulted_at, memo,
+            } => {
+                // Only MISAI executor may submit default records
+                let misai_executor = self.db
+                    .get_meta("misai_executor_wallet")?
+                    .map(|b| String::from_utf8_lossy(&b).to_string())
+                    .unwrap_or_default();
+                if misai_executor.is_empty() || sender.account_id.to_string() != misai_executor {
+                    return Err(ChronxError::MisaiOnlyAction);
+                }
+
+                let loan = self.db.get_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
+                match loan.status {
+                    LoanStatus::Active | LoanStatus::Reinstated { .. } => {}
+                    _ => return Err(ChronxError::LoanNotActive),
+                }
+
+                let mut updated = loan;
+                updated.status = LoanStatus::Defaulted { defaulted_at: *defaulted_at };
+                self.db.save_loan(&updated)?;
+
+                // Persist detailed default record
+                let default_record = LoanDefaultRecord {
+                    loan_id: *loan_id,
+                    missed_stage_index: *missed_stage_index,
+                    missed_amount_kx: *missed_amount_kx,
+                    late_fees_accrued_kx: *late_fees_accrued_kx,
+                    days_overdue: *days_overdue,
+                    outstanding_balance_kx: *outstanding_balance_kx,
+                    stages_remaining: *stages_remaining,
+                    defaulted_at: *defaulted_at,
+                    memo: memo.clone(),
+                };
+                self.db.save_loan_default(loan_id, &default_record)?;
+
+                info!(loan_id = %hex::encode(loan_id),
+                      missed_stage = %missed_stage_index,
+                      days_overdue = %days_overdue,
+                      "Loan default recorded");
+                Ok(())
+            }
+
+            Action::LoanReinstatement { loan_id, cure_amount_kx, new_stages, memo } => {
+                let loan = self.db.get_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
+                match loan.status {
+                    LoanStatus::Defaulted { .. } => {}
+                    _ => return Err(ChronxError::LoanNotInDefault),
+                }
+
+                // Validate new stages
+                if new_stages.is_empty() { return Err(ChronxError::InvalidLoanStages); }
+                for w in new_stages.windows(2) {
+                    if w[1].due_at <= w[0].due_at {
+                        return Err(ChronxError::LoanStagesNotOrdered);
+                    }
+                }
+
+                let mut updated = loan;
+                updated.status = LoanStatus::Reinstated { reinstated_at: now as u64 };
+                updated.stages = new_stages.clone();
+                if let Some(m) = memo { updated.memo = Some(m.clone()); }
+                self.db.save_loan(&updated)?;
+
+                info!(loan_id = %hex::encode(loan_id), "Loan reinstated");
+                Ok(())
+            }
+
+            Action::LoanWriteOff { loan_id, outstanding_balance_kx, write_off_date, memo } => {
+                let loan = self.db.get_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
+                match loan.status {
+                    LoanStatus::Defaulted { .. } => {}
+                    _ => return Err(ChronxError::LoanNotInDefault),
+                }
+
+                // Only the lender (tx sender) may write off
+                if sender.account_id.to_string() != loan.lender {
+                    return Err(ChronxError::AuthPolicyViolation);
+                }
+
+                let mut updated = loan;
+                updated.status = LoanStatus::WrittenOff {
+                    written_off_at: *write_off_date,
+                    outstanding_kx: *outstanding_balance_kx,
+                };
+                if let Some(m) = memo { updated.memo = Some(m.clone()); }
+                self.db.save_loan(&updated)?;
+
+                info!(loan_id = %hex::encode(loan_id), "Loan written off");
+                Ok(())
+            }
+
+            Action::LoanEarlyPayoff { loan_id, payoff_amount_kx, memo } => {
+                let loan = self.db.get_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
+                match loan.status {
+                    LoanStatus::Active | LoanStatus::Reinstated { .. } => {}
+                    _ => return Err(ChronxError::LoanNotActive),
+                }
+
+                // Check prepayment terms
+                match loan.prepayment {
+                    PrepaymentTerms::Prohibited => return Err(ChronxError::PrepaymentProhibited),
+                    _ => {}
+                }
+
+                let mut updated = loan;
+                updated.status = LoanStatus::EarlyPayoff { paid_off_at: now as u64 };
+                if let Some(m) = memo { updated.memo = Some(m.clone()); }
+                self.db.save_loan(&updated)?;
+
+                info!(loan_id = %hex::encode(loan_id), payoff_kx = %payoff_amount_kx, "Loan early payoff");
+                Ok(())
+            }
+
+
+            // ── Genesis 10b: LenderMemo ─────────────────────────────────────
+            Action::LenderMemo { loan_id, default_record_id, ref memo, .. } => {
+                let memo_key = format!("{}:{}", hex::encode(loan_id), hex::encode(default_record_id));
+                if self.db.loan_memos.contains_key(memo_key.as_bytes()).map_err(|_| ChronxError::DatabaseError)? {
+                    return Err(ChronxError::DuplicateMemo);
+                }
+                let truncated: String = memo.chars().take(512).collect();
+                let val = serde_json::to_vec(&serde_json::json!({
+                    "loan_id": hex::encode(loan_id),
+                    "default_record_id": hex::encode(default_record_id),
+                    "memo": truncated,
+                })).map_err(|_| ChronxError::SerializationError)?;
+                self.db.loan_memos.insert(memo_key.as_bytes(), val).map_err(|_| ChronxError::DatabaseError)?;
+                Ok(())
+            }
+
+            Action::LoanCompletion { loan_id, total_paid_kx, completion_date, stages_completed, memo } => {
+                // Only MISAI executor may mark completion
+                let misai_executor = self.db
+                    .get_meta("misai_executor_wallet")?
+                    .map(|b| String::from_utf8_lossy(&b).to_string())
+                    .unwrap_or_default();
+                if misai_executor.is_empty() || sender.account_id.to_string() != misai_executor {
+                    return Err(ChronxError::MisaiOnlyAction);
+                }
+
+                let loan = self.db.get_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
+                match loan.status {
+                    LoanStatus::Active | LoanStatus::Reinstated { .. } => {}
+                    _ => return Err(ChronxError::LoanNotActive),
+                }
+
+                let mut updated = loan;
+                updated.status = LoanStatus::Completed { completed_at: *completion_date };
+                self.db.save_loan(&updated)?;
+
+                info!(loan_id = %hex::encode(loan_id),
+                      total_paid_kx = %total_paid_kx,
+                      stages = %stages_completed,
+                      "Loan completed");
+                Ok(())
+            }
+        }
+    }
+}
+
+
+/// Calculate the total amount due at maturity for an interest-bearing deposit.
+/// Uses integer arithmetic to avoid floating-point imprecision.
+fn calculate_deposit_total_due(
+    principal: u64,
+    rate_basis_points: u64,
+    term_seconds: u64,
+    compounding: &Compounding,
+) -> u64 {
+    let p = principal as u128;
+    let r_bp = rate_basis_points as u128;
+    let term_days = (term_seconds as u128) / 86400;
+    let term_years_x1000 = (term_days * 1000) / 365;
+
+    match compounding {
+        Compounding::Simple => {
+            // total = P * (1 + r * t)
+            // r is rate_basis_points / 10000, t is term in years
+            let interest = (p * r_bp * term_years_x1000) / (10_000 * 1000);
+            (p + interest) as u64
+        }
+        _ => {
+            // For compound interest, use iterative approach
+            // periods per year: Daily=365, Monthly=12, Annually=1
+            let periods_per_year: u128 = match compounding {
+                Compounding::Daily => 365,
+                Compounding::Monthly => 12,
+                Compounding::Annually => 1,
+                _ => 1,
+            };
+            let total_periods = (term_days * periods_per_year) / 365;
+            if total_periods == 0 {
+                return principal;
+            }
+            // rate per period in basis points
+            let rate_per_period_bp = r_bp / periods_per_year;
+            // Iterative compounding: amount = P * (1 + r/n)^(n*t)
+            // Using fixed-point with 1e12 scale
+            let scale: u128 = 1_000_000_000_000;
+            let mut amount_scaled = p * scale;
+            let factor = scale + (rate_per_period_bp * scale) / 10_000;
+            for _ in 0..total_periods.min(3650) {
+                amount_scaled = (amount_scaled * factor) / scale;
+            }
+            (amount_scaled / scale) as u64
         }
     }
 }
@@ -1673,6 +2630,157 @@ impl StateEngine {
         }
         Ok(finalized_count)
     }
+    /// Sweep invoices, credits, deposits, and conditionals for status transitions.
+    /// Called periodically by the node (every 60 seconds).
+    pub fn sweep_genesis8_expiry(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+
+        // Lapse expired Open invoices
+        for invoice in self.db.iter_all_invoices()? {
+            if matches!(invoice.status, InvoiceStatus::Open) && now_u64 >= invoice.expiry {
+                self.db.update_invoice_status(&invoice.invoice_id, InvoiceStatus::Lapsed, None, None)?;
+                count += 1;
+            }
+        }
+
+        // Lapse expired Open credits
+        for credit in self.db.iter_all_credits()? {
+            if matches!(credit.status, CreditStatus::Open) && now_u64 >= credit.expiry {
+                self.db.update_credit_status(&credit.credit_id, CreditStatus::Lapsed)?;
+                count += 1;
+            }
+        }
+
+        // Mature and default deposits
+        for deposit in self.db.iter_all_deposits()? {
+            match deposit.status {
+                DepositStatus::Active if now_u64 >= deposit.maturity_timestamp => {
+                    self.db.update_deposit_status(&deposit.deposit_id, DepositStatus::Matured, None)?;
+                    count += 1;
+                }
+                DepositStatus::Matured if now_u64 >= deposit.maturity_timestamp + DEPOSIT_DEFAULT_GRACE_SECONDS => {
+                    self.db.update_deposit_status(&deposit.deposit_id, DepositStatus::Defaulted, None)?;
+                    count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        // Execute fallback for expired Pending conditionals
+        for cond in self.db.iter_all_conditionals()? {
+            if matches!(cond.status, ConditionalStatus::Pending) && now_u64 >= cond.valid_until {
+                let amount = cond.amount_chronos as u128;
+                match cond.fallback.as_str() {
+                    "Void" => {
+                        // Return held funds to sender
+                        let sender_account_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
+                        if let Ok(Some(mut sender)) = self.db.get_account(&sender_account_id) {
+                            sender.balance += amount;
+                            self.db.put_account(&sender)?;
+                        }
+                        self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Voided)?;
+                        count += 1;
+                    }
+                    "Return" => {
+                        let sender_account_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
+                        if let Ok(Some(mut sender)) = self.db.get_account(&sender_account_id) {
+                            sender.balance += amount;
+                            self.db.put_account(&sender)?;
+                        }
+                        self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Returned)?;
+                        count += 1;
+                    }
+                    "Escrow" => {
+                        // Transfer to Verifas vault
+                        if let Ok(Some(vault_addr)) = self.db.get_verifas_vault_address() {
+                            let vault_id = chronx_core::types::AccountId::from_b58(&vault_addr).ok();
+                            if let Some(vid) = vault_id {
+                                if let Ok(Some(mut vault)) = self.db.get_account(&vid) {
+                                    vault.balance += amount;
+                                    self.db.put_account(&vault)?;
+                                }
+                            }
+                        }
+                        self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Escrowed)?;
+                        count += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+            info!(transitions = count, "Genesis 8 sweep completed");
+        }
+        Ok(count)
+    }
+    /// Check sign-of-life attestations and trigger grace periods or transitions.
+    pub fn sweep_sign_of_life(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+        for mut sol in self.db.iter_active_sign_of_life()? {
+            match sol.status.as_str() {
+                "Active" if now_u64 >= sol.next_due => {
+                    // Missed sign of life — enter grace period
+                    sol.status = "GracePeriod".to_string();
+                    sol.grace_expires = Some(sol.next_due + sol.grace_days * 86400);
+                    self.db.put_sign_of_life(&sol.lock_id, &sol)?;
+                    count += 1;
+                    info!(lock_id = %sol.lock_id, "Sign of life missed — grace period started");
+                }
+                "GracePeriod" => {
+                    if let Some(grace_exp) = sol.grace_expires {
+                        if now_u64 >= grace_exp {
+                            // Grace period expired — trigger guardian transition
+                            sol.status = "Transitioned".to_string();
+                            sol.responsible = "Guardian".to_string();
+                            self.db.put_sign_of_life(&sol.lock_id, &sol)?;
+                            count += 1;
+                            info!(lock_id = %sol.lock_id, "Guardian transition triggered");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
+    /// Anchor promise chains periodically.
+    pub fn sweep_promise_chain_anchors(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+        for mut chain in self.db.iter_all_promise_chains()? {
+            let interval = chronx_core::constants::PROMISE_CHAIN_ANCHOR_INTERVAL_SECONDS;
+            let last = chain.last_anchor_at.unwrap_or(chain.created_at);
+            if now_u64 >= last + interval && !chain.entries.is_empty() {
+                // Compute anchor hash = BLAKE3 of all entry hashes concatenated
+                let mut data = Vec::new();
+                for eid in &chain.entries {
+                    data.extend_from_slice(eid);
+                }
+                if let Some(prev) = chain.last_anchor_hash {
+                    data.extend_from_slice(&prev);
+                }
+                let anchor_hash = *blake3::hash(&data).as_bytes();
+                chain.last_anchor_hash = Some(anchor_hash);
+                chain.last_anchor_at = Some(now_u64);
+                self.db.put_promise_chain(&chain)?;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
+
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ use crate::types::{
     RpcOracleSnapshot, RpcPromiseAxioms, RpcPromiseTriggerStatus, RpcProvider, RpcRecentTx,
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise, RpcDetailedTx,
+    RpcLoanRecord, RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -32,9 +33,9 @@ pub trait ChronxApi {
     async fn send_transaction(&self, tx_hex: String) -> RpcResult<String>;
 
     /// Get a transaction (DAG vertex) by its TxId hex.
-    /// Returns hex-encoded bincode(Transaction) or null if not found.
+    /// Returns decoded transaction details (JSON) or null if not found.
     #[method(name = "getTransaction")]
-    async fn get_transaction(&self, tx_id: String) -> RpcResult<Option<String>>;
+    async fn get_transaction(&self, tx_id: String) -> RpcResult<Option<RpcDetailedTx>>;
 
     /// List time-lock contracts where `account_id` is the sender or recipient.
     /// Sorted newest-first.
@@ -297,4 +298,46 @@ pub trait ChronxApi {
     /// Check if a public key is a member of a group.
     #[method(name = "isGroupMember")]
     async fn is_group_member(&self, group_id_hex: String, pubkey_hex: String) -> RpcResult<serde_json::Value>;
+
+    /// Submit a signed `RejectInvoice` transaction. `tx_hex` is hex-encoded bincode(Transaction).
+    /// Returns the TxId hex on success. The transaction must contain exactly one
+    /// `Action::RejectInvoice` action.
+    #[method(name = "rejectInvoice")]
+    async fn reject_invoice(&self, tx_hex: String) -> RpcResult<String>;
+
+    // ── Genesis 10a — Loan queries ──────────────────────────────────────
+
+    /// Return a single loan record by loan_id (hex).
+    #[method(name = "getLoan")]
+    async fn get_loan(&self, loan_id_hex: String) -> RpcResult<Option<RpcLoanRecord>>;
+
+    /// Return all loans where the given wallet is lender or borrower.
+    #[method(name = "getLoansByWallet")]
+    async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<RpcLoanRecord>>;
+
+    /// Return payment stage status for a loan.
+    #[method(name = "getLoanPaymentHistory")]
+    async fn get_loan_payment_history(&self, loan_id_hex: String) -> RpcResult<Vec<RpcLoanPaymentStage>>;
+
+    /// Return the default record for a loan, if one exists.
+    #[method(name = "getLoanDefaultRecord")]
+    async fn get_loan_default_record(&self, loan_id_hex: String) -> RpcResult<Option<RpcLoanDefaultRecord>>;
+
+    /// Return oracle price for a trading pair.
+    #[method(name = "getOraclePrice")]
+    async fn get_oracle_price_record(&self, pair: String) -> RpcResult<Option<RpcOraclePrice>>;
+
+    /// Return counts of loans by status.
+    #[method(name = "getActiveLoanCount")]
+    async fn get_active_loan_count(&self) -> RpcResult<RpcLoanCounts>;
+
+    // ── Genesis 10b — LenderMemo + Governance queries ────────────────────
+
+    /// Return all lender memos for a given loan_id (hex).
+    #[method(name = "getLenderMemos")]
+    async fn get_lender_memos(&self, loan_id_hex: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Return current governance parameters.
+    #[method(name = "getGovernanceParams")]
+    async fn get_governance_params(&self) -> RpcResult<serde_json::Value>;
 }

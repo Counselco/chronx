@@ -1,4 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
@@ -34,6 +36,8 @@ pub struct P2pHandle {
     pub inbound_rx: mpsc::Receiver<P2pMessage>,
     /// Local libp2p peer identity.
     pub local_peer_id: PeerId,
+    /// Shared counter of currently connected peers.
+    pub peer_count: Arc<AtomicU64>,
 }
 
 /// Owns the libp2p Swarm. Pass to `tokio::spawn(network.run())`.
@@ -42,6 +46,7 @@ pub struct P2pNetwork {
     topic: gossipsub::IdentTopic,
     outbound_rx: mpsc::Receiver<P2pMessage>,
     inbound_tx: mpsc::Sender<P2pMessage>,
+    peer_count: Arc<AtomicU64>,
 }
 
 impl P2pNetwork {
@@ -72,6 +77,10 @@ impl P2pNetwork {
                     .heartbeat_interval(Duration::from_secs(1))
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .message_id_fn(message_id_fn)
+                    .mesh_n(2)
+                    .mesh_n_low(1)
+                    .mesh_n_high(4)
+                    .mesh_outbound_min(1)
                     .build()
                     .map_err(std::io::Error::other)?;
 
@@ -98,6 +107,7 @@ impl P2pNetwork {
                     ping,
                 })
             })?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(300)))
             .build();
 
         swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
@@ -123,17 +133,20 @@ impl P2pNetwork {
         let local_peer_id = *swarm.local_peer_id();
         let (outbound_tx, outbound_rx) = mpsc::channel(256);
         let (inbound_tx, inbound_rx) = mpsc::channel(256);
+        let peer_count = Arc::new(AtomicU64::new(0));
 
         let network = P2pNetwork {
             swarm,
             topic,
             outbound_rx,
             inbound_tx,
+            peer_count: Arc::clone(&peer_count),
         };
         let handle = P2pHandle {
             outbound_tx,
             inbound_rx,
             local_peer_id,
+            peer_count,
         };
 
         Ok((network, handle))
@@ -178,9 +191,11 @@ impl P2pNetwork {
                             }
                         }
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            self.peer_count.fetch_add(1, Ordering::Relaxed);
                             debug!(peer = %peer_id, "connection established");
                         }
                         SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                            self.peer_count.fetch_sub(1, Ordering::Relaxed);
                             debug!(peer = %peer_id, "connection closed");
                         }
                         _ => {}

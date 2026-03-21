@@ -12,6 +12,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jsonrpsee::core::{async_trait, RpcResult};
 use jsonrpsee::server::{Server, ServerHandle};
@@ -26,7 +27,7 @@ use chronx_core::constants::{CHRONOS_PER_KX, TOTAL_SUPPLY_CHRONOS};
 use chronx_core::transaction::{Action, Transaction};
 use chronx_core::types::{AccountId, TxId};
 use chronx_state::StateDb;
-use chronx_state::db::{InvoiceStatus, CreditStatus, DepositStatus, ConditionalStatus};
+use chronx_state::db::{InvoiceStatus, CreditStatus, DepositStatus, ConditionalStatus, LoanStatus};
 
 use crate::api::ChronxApiServer;
 use crate::types::{
@@ -40,6 +41,7 @@ use crate::types::{
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
     RpcDetailedTx, RpcActionSummary,
+    RpcLoanRecord, RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -57,6 +59,8 @@ pub struct RpcServerState {
     /// Full libp2p multiaddress of this node (e.g. `/ip4/127.0.0.1/tcp/7777/p2p/<PeerId>`).
     /// Used by peers to bootstrap; returned by `chronx_getNetworkInfo`.
     pub peer_multiaddr: Option<String>,
+    /// Shared counter of currently connected P2P peers.
+    pub peer_count: Arc<AtomicU64>,
 }
 
 /// The RPC server implementation.
@@ -273,7 +277,7 @@ impl ChronxApiServer for RpcServer {
 
     /// `chronx_getTransaction` — fetch a serialised DAG vertex by transaction ID (hex).
     /// Returns the bincode-encoded vertex as a hex string, or null if not found.
-    async fn get_transaction(&self, tx_id: String) -> RpcResult<Option<String>> {
+    async fn get_transaction(&self, tx_id: String) -> RpcResult<Option<RpcDetailedTx>> {
         let id =
             TxId::from_hex(&tx_id).map_err(|e| rpc_err(-32602, format!("invalid tx id: {e}")))?;
 
@@ -286,8 +290,98 @@ impl ChronxApiServer for RpcServer {
         match vertex {
             None => Ok(None),
             Some(v) => {
-                let bytes = bincode::serialize(&v).map_err(|e| rpc_err(-32603, e.to_string()))?;
-                Ok(Some(hex::encode(bytes)))
+                let actions: Vec<RpcActionSummary> = v.transaction.actions.iter().map(|action| {
+                    match action {
+                        Action::Transfer { to, amount } => RpcActionSummary {
+                            action_type: "Transfer".to_string(),
+                            to_address: Some(to.to_b58()),
+                            amount_chronos: Some(amount.to_string()),
+                            amount_kx: Some((amount / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                        Action::TimeLockCreate {
+                            amount, unlock_at, memo, recipient_email_hash, ..
+                        } => {
+                            let email_hash_hex = recipient_email_hash.map(|h| hex::encode(h));
+                            let atype = if email_hash_hex.is_some() { "EmailLock" } else { "TimeLock" };
+                            RpcActionSummary {
+                                action_type: atype.to_string(),
+                                to_address: None,
+                                amount_chronos: Some(amount.to_string()),
+                                amount_kx: Some((amount / CHRONOS_PER_KX).to_string()),
+                                lock_until: Some(*unlock_at),
+                                memo: memo.clone(),
+                                email_hash: email_hash_hex,
+                                lock_id: None,
+                            }
+                        },
+                        Action::TimeLockClaim { lock_id } => RpcActionSummary {
+                            action_type: "Claim".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        Action::TimeLockClaimWithSecret { lock_id, .. } => RpcActionSummary {
+                            action_type: "EmailClaim".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        Action::CancelTimeLock { lock_id } => RpcActionSummary {
+                            action_type: "Cancel".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        Action::ReclaimExpiredLock { lock_id } => RpcActionSummary {
+                            action_type: "Reclaim".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(lock_id.0.to_hex()),
+                        },
+                        _ => RpcActionSummary {
+                            action_type: "Other".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                    }
+                }).collect();
+
+                let memo = actions.iter().find_map(|a| a.memo.clone());
+
+                Ok(Some(RpcDetailedTx {
+                    tx_id: v.transaction.tx_id.to_hex(),
+                    timestamp: v.transaction.timestamp,
+                    from: v.transaction.from.to_b58(),
+                    action_count: v.transaction.actions.len(),
+                    depth: v.depth,
+                    actions,
+                    memo,
+                }))
             }
         }
     }
@@ -348,6 +442,7 @@ impl ChronxApiServer for RpcServer {
     async fn get_network_info(&self) -> RpcResult<RpcNetworkInfo> {
         Ok(RpcNetworkInfo {
             peer_multiaddr: self.state.peer_multiaddr.clone().unwrap_or_default(),
+            peer_count: self.state.peer_count.load(Ordering::Relaxed),
         })
     }
 
@@ -1556,6 +1651,176 @@ impl ChronxApiServer for RpcServer {
             Err(e) => Err(ErrorObject::owned(-32603, format!("{}", e), None::<String>)),
         }
     }
+
+    /// `chronx_rejectInvoice` — submit a `RejectInvoice` transaction (must contain exactly
+    /// one `Action::RejectInvoice` action). Returns the transaction ID.
+    async fn reject_invoice(&self, tx_hex: String) -> RpcResult<String> {
+        let tx_bytes =
+            hex::decode(&tx_hex).map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
+
+        let tx: Transaction = bincode::deserialize(&tx_bytes)
+            .map_err(|e| rpc_err(-32602, format!("invalid transaction encoding: {e}")))?;
+
+        // Validate: must contain exactly one RejectInvoice action.
+        let has_reject =
+            tx.actions.len() == 1 && matches!(&tx.actions[0], Action::RejectInvoice { .. });
+        if !has_reject {
+            return Err(rpc_err(
+                -32602,
+                "rejectInvoice requires exactly one RejectInvoice action",
+            ));
+        }
+
+        let tx_id = tx.tx_id.to_hex();
+
+        if let Some(sender) = &self.state.tx_sender {
+            sender
+                .send(tx)
+                .await
+                .map_err(|_| rpc_err(-32603, "transaction queue full"))?;
+        } else {
+            warn!("RPC: rejectInvoice called but no tx pipeline configured");
+            return Err(rpc_err(-32603, "node tx pipeline not connected"));
+        }
+
+        Ok(tx_id)
+    }
+
+    // ── Genesis 10a — Loan queries ──────────────────────────────────────
+
+    /// `chronx_getLoan` — fetch a single loan by its loan_id hex.
+    async fn get_loan(&self, loan_id_hex: String) -> RpcResult<Option<RpcLoanRecord>> {
+        let bytes = hex::decode(&loan_id_hex)
+            .map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(rpc_err(-32602, "loan_id must be 32 bytes (64 hex chars)"));
+        }
+        let mut loan_id = [0u8; 32];
+        loan_id.copy_from_slice(&bytes);
+        let record = self.state.db.get_loan(&loan_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| loan_to_rpc(&r)))
+    }
+
+    /// `chronx_getLoansByWallet` — all loans for a given wallet (as lender or borrower).
+    async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<RpcLoanRecord>> {
+        let records = self.state.db.get_loans_by_wallet(&wallet_address)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.iter().map(|r| loan_to_rpc(r)).collect())
+    }
+
+    /// `chronx_getLoanPaymentHistory` — return the payment stages for a loan.
+    async fn get_loan_payment_history(&self, loan_id_hex: String) -> RpcResult<Vec<RpcLoanPaymentStage>> {
+        let bytes = hex::decode(&loan_id_hex)
+            .map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(rpc_err(-32602, "loan_id must be 32 bytes (64 hex chars)"));
+        }
+        let mut loan_id = [0u8; 32];
+        loan_id.copy_from_slice(&bytes);
+        let record = self.state.db.get_loan(&loan_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        match record {
+            Some(r) => Ok(r.stages.iter().map(|s| stage_to_rpc(s)).collect()),
+            None => Err(rpc_err(-32602, format!("loan not found: {loan_id_hex}"))),
+        }
+    }
+
+    /// `chronx_getLoanDefaultRecord` — return default record details for a loan.
+    async fn get_loan_default_record(&self, loan_id_hex: String) -> RpcResult<Option<RpcLoanDefaultRecord>> {
+        let bytes = hex::decode(&loan_id_hex)
+            .map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(rpc_err(-32602, "loan_id must be 32 bytes (64 hex chars)"));
+        }
+        let mut loan_id = [0u8; 32];
+        loan_id.copy_from_slice(&bytes);
+        let record = self.state.db.get_loan_default(&loan_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcLoanDefaultRecord {
+            loan_id: hex::encode(r.loan_id),
+            missed_stage_index: r.missed_stage_index,
+            missed_amount_kx: r.missed_amount_kx,
+            late_fees_accrued_kx: r.late_fees_accrued_kx,
+            days_overdue: r.days_overdue,
+            outstanding_balance_kx: r.outstanding_balance_kx,
+            stages_remaining: r.stages_remaining,
+            defaulted_at: r.defaulted_at,
+            memo: r.memo,
+        }))
+    }
+
+    /// `chronx_getOraclePrice` — return oracle price for a trading pair.
+    async fn get_oracle_price_record(&self, pair: String) -> RpcResult<Option<RpcOraclePrice>> {
+        let record = self.state.db.get_oracle_price(&pair)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcOraclePrice {
+            pair: r.pair,
+            spot_price_micro: r.spot_price_micro,
+            seven_day_avg_micro: r.seven_day_avg_micro,
+            last_updated: r.last_updated,
+            source: r.source,
+        }))
+    }
+
+    /// `chronx_getActiveLoanCount` — aggregate loan counts by status.
+    async fn get_active_loan_count(&self) -> RpcResult<RpcLoanCounts> {
+        let all_loans = self.state.db.get_all_loans()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let mut active: u64 = 0;
+        let mut defaulted: u64 = 0;
+        let mut completed: u64 = 0;
+        let mut written_off: u64 = 0;
+        let mut early_payoff: u64 = 0;
+        let mut reinstated: u64 = 0;
+
+        for loan in &all_loans {
+            match loan.status {
+                LoanStatus::Active => active += 1,
+                LoanStatus::Defaulted { .. } => defaulted += 1,
+                LoanStatus::Completed { .. } => completed += 1,
+                LoanStatus::WrittenOff { .. } => written_off += 1,
+                LoanStatus::EarlyPayoff { .. } => early_payoff += 1,
+                LoanStatus::Reinstated { .. } => reinstated += 1,
+            }
+        }
+
+        Ok(RpcLoanCounts {
+            active,
+            defaulted,
+            completed,
+            written_off,
+            early_payoff,
+            reinstated,
+        })
+    }
+
+
+    // ── Genesis 10b: LenderMemo + Governance queries ─────────────────────
+
+    /// `chronx_getLenderMemos` — all lender memos for a given loan_id (hex).
+    async fn get_lender_memos(&self, loan_id_hex: String) -> RpcResult<Vec<serde_json::Value>> {
+        let prefix = format!("{}:", loan_id_hex);
+        let memos: Vec<serde_json::Value> = self.state.db.loan_memos.scan_prefix(prefix.as_bytes())
+            .filter_map(|r| r.ok())
+            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
+            .collect();
+        Ok(memos)
+    }
+
+    /// `chronx_getGovernanceParams` — current governance parameters.
+    async fn get_governance_params(&self) -> RpcResult<serde_json::Value> {
+        let params_val = self.state.db.governance_params.get(b"current")
+            .ok().flatten()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_else(|| serde_json::json!({
+                "min_loan_size_chronos": null,
+                "approved_currencies": ["USD","EUR","BTC","ETH"],
+                "deprecated_currencies": []
+            }));
+        Ok(params_val)
+    }
 }
 
 
@@ -1567,6 +1832,7 @@ fn invoice_to_rpc(r: &chronx_state::db::InvoiceRecord) -> RpcInvoiceRecord {
         InvoiceStatus::Fulfilled => "Fulfilled",
         InvoiceStatus::Lapsed => "Lapsed",
         InvoiceStatus::Cancelled => "Cancelled",
+        InvoiceStatus::Rejected => "Rejected",
     };
     RpcInvoiceRecord {
         invoice_id: hex::encode(r.invoice_id),
@@ -1660,5 +1926,105 @@ fn ledger_entry_to_rpc(r: &chronx_state::db::LedgerEntryRecord) -> RpcLedgerEntr
         content_hash: hex::encode(r.content_hash),
         content_summary: String::from_utf8_lossy(&r.content_summary).to_string(),
         timestamp: r.timestamp,
+    }
+}
+
+
+// ── Genesis 10a — Loan RPC conversion helpers ───────────────────────────────
+
+fn loan_to_rpc(r: &chronx_state::db::LoanRecord) -> RpcLoanRecord {
+    use chronx_core::transaction::{PayAsDenomination, PrepaymentTerms, LateFeeSchedule};
+
+    let status = match &r.status {
+        LoanStatus::Active => "Active".to_string(),
+        LoanStatus::Defaulted { defaulted_at } => format!("Defaulted({})", defaulted_at),
+        LoanStatus::Reinstated { reinstated_at } => format!("Reinstated({})", reinstated_at),
+        LoanStatus::WrittenOff { written_off_at, outstanding_kx } =>
+            format!("WrittenOff({},{}KX)", written_off_at, outstanding_kx),
+        LoanStatus::Completed { completed_at } => format!("Completed({})", completed_at),
+        LoanStatus::EarlyPayoff { paid_off_at } => format!("EarlyPayoff({})", paid_off_at),
+    };
+
+    let pay_as_str = match &r.pay_as {
+        PayAsDenomination::FixedKX => "FixedKX".to_string(),
+        PayAsDenomination::UsdEquivalentAtCreation { rate_microcents_per_kx } =>
+            format!("UsdEquivalentAtCreation({})", rate_microcents_per_kx),
+        PayAsDenomination::UsdEquivalentAtMaturity => "UsdEquivalentAtMaturity".to_string(),
+        PayAsDenomination::EurEquivalentAtCreation { rate_microeuros_per_kx } =>
+            format!("EurEquivalentAtCreation({})", rate_microeuros_per_kx),
+        PayAsDenomination::EurEquivalentAtMaturity => "EurEquivalentAtMaturity".to_string(),
+    };
+
+    let prepayment_str = match &r.prepayment {
+        PrepaymentTerms::Prohibited => "Prohibited".to_string(),
+        PrepaymentTerms::AllowedAtPar => "AllowedAtPar".to_string(),
+        PrepaymentTerms::AllowedWithPenalty { penalty_pct, penalty_minimum_kx } =>
+            format!("AllowedWithPenalty({}%,{}KX)", penalty_pct, penalty_minimum_kx),
+        PrepaymentTerms::AllowedWithDiscount { discount_pct, discount_maximum_kx } =>
+            format!("AllowedWithDiscount({}%,{}KX)", discount_pct, discount_maximum_kx),
+    };
+
+    let late_fee_str = match &r.late_fee_schedule {
+        LateFeeSchedule::None => "None".to_string(),
+        LateFeeSchedule::Flat { fee_kx } => format!("Flat({}KX)", fee_kx),
+        LateFeeSchedule::Tiered { stages } => format!("Tiered({} stages)", stages.len()),
+    };
+
+    let hedge_str = r.hedge_requirement.as_ref().map(|h| {
+        format!("{}% {:?} in {}d", h.minimum_coverage_pct, h.coverage_type, h.funding_deadline_days)
+    });
+
+    let oracle_str = format!("retry_{}d_{}h_{:?}",
+        r.oracle_policy.retry_window_days,
+        r.oracle_policy.retry_interval_hours,
+        r.oracle_policy.fallback,
+    );
+
+    RpcLoanRecord {
+        loan_id: hex::encode(r.loan_id),
+        lender: r.lender.clone(),
+        borrower: r.borrower.clone(),
+        principal_kx: r.principal_kx,
+        pay_as: pay_as_str,
+        stages: r.stages.iter().map(|s| stage_to_rpc(s)).collect(),
+        prepayment: prepayment_str,
+        late_fee_schedule: late_fee_str,
+        grace_period_days: r.grace_period_days,
+        hedge_requirement: hedge_str,
+        oracle_policy: oracle_str,
+        agreement_hash: r.agreement_hash.map(|h| hex::encode(h)),
+        status,
+        created_at: r.created_at,
+        memo: r.memo.clone(),
+    }
+}
+
+fn stage_to_rpc(s: &chronx_core::transaction::LoanPaymentStage) -> RpcLoanPaymentStage {
+    use chronx_core::transaction::{PayAsDenomination, LoanPaymentType};
+
+    let pay_as_str = match &s.pay_as {
+        PayAsDenomination::FixedKX => "FixedKX".to_string(),
+        PayAsDenomination::UsdEquivalentAtCreation { rate_microcents_per_kx } =>
+            format!("UsdEquivalentAtCreation({})", rate_microcents_per_kx),
+        PayAsDenomination::UsdEquivalentAtMaturity => "UsdEquivalentAtMaturity".to_string(),
+        PayAsDenomination::EurEquivalentAtCreation { rate_microeuros_per_kx } =>
+            format!("EurEquivalentAtCreation({})", rate_microeuros_per_kx),
+        PayAsDenomination::EurEquivalentAtMaturity => "EurEquivalentAtMaturity".to_string(),
+    };
+
+    let payment_type_str = match &s.payment_type {
+        LoanPaymentType::InterestOnly => "InterestOnly",
+        LoanPaymentType::PrincipalOnly => "PrincipalOnly",
+        LoanPaymentType::PrincipalAndInterest => "PrincipalAndInterest",
+        LoanPaymentType::BulletFinal => "BulletFinal",
+        LoanPaymentType::Custom => "Custom",
+    };
+
+    RpcLoanPaymentStage {
+        stage_index: s.stage_index,
+        due_at: s.due_at,
+        amount_kx: s.amount_kx,
+        pay_as: pay_as_str,
+        payment_type: payment_type_str.to_string(),
     }
 }

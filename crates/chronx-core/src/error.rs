@@ -347,6 +347,86 @@ pub enum ChronxError {
     #[error("ledger entry already exists: {0}")]
     LedgerEntryDuplicate(String),
 
+    // ── Genesis 10a — Loan errors ──────────────────────────────────────────
+    #[error("loan not found: {0}")]
+    LoanNotFound(String),
+
+    #[error("loan is not active")]
+    LoanNotActive,
+
+    #[error("loan is not in default")]
+    LoanNotInDefault,
+
+    #[error("loan already completed")]
+    LoanAlreadyCompleted,
+
+    #[error("loan already written off")]
+    LoanAlreadyWrittenOff,
+
+    #[error("loan already defaulted")]
+    LoanAlreadyDefaulted,
+
+    #[error("dual signature required: both lender and borrower must sign")]
+    DualSignatureRequired,
+
+    #[error("invalid lender signature")]
+    InvalidLenderSignature,
+
+    #[error("invalid borrower signature")]
+    InvalidBorrowerSignature,
+
+    #[error("prepayment prohibited on this loan")]
+    PrepaymentProhibited,
+
+    #[error("prepayment amount insufficient")]
+    PrepaymentAmountInsufficient,
+
+    #[error("prepayment penalty not met")]
+    PrepaymentPenaltyNotMet,
+
+    #[error("hedge requirement not met")]
+    HedgeRequirementNotMet,
+
+    #[error("hedge funding deadline expired")]
+    HedgeDeadlineExpired,
+
+    #[error("oracle unavailable for price pair")]
+    OracleUnavailable,
+
+    #[error("oracle retry window exhausted")]
+    OracleRetryExhausted,
+
+    #[error("invalid loan stages")]
+    InvalidLoanStages,
+
+    #[error("loan stages not ordered by due_at")]
+    LoanStagesNotOrdered,
+
+    #[error("loan stages contain past dates")]
+    LoanStagesInPast,
+
+    #[error("loan transaction exceeds 1MB size limit")]
+    LoanTransactionTooLarge,
+
+    #[error("invalid grace period: must be >= 1 day")]
+    InvalidGracePeriod,
+
+    #[error("cure payment not found on-chain")]
+    CurePaymentNotFound,
+
+    #[error("action restricted to MISAI executor wallet")]
+    MisaiOnlyAction,
+
     #[error("{0}")]
     Other(String),
+
+    // Genesis 10b
+    #[error("duplicate lender memo for this default record")]
+    DuplicateMemo,
+
+    #[error("serialization error")]
+    SerializationError,
+
+    #[error("database error")]
+    DatabaseError,
 }

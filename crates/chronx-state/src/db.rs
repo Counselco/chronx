@@ -149,6 +149,7 @@ pub enum InvoiceStatus {
     Fulfilled,
     Lapsed,
     Cancelled,
+    Rejected,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -367,6 +368,15 @@ pub struct StateDb {
 
     /// Genesis 9: TYPE_G Wallet Groups — maps group_id [u8;32] -> bincode(GroupRecord).
     groups: sled::Tree,
+
+    // Genesis 10a — Loan Protocol trees
+    loans: sled::Tree,
+    loan_stages: sled::Tree,
+    loan_defaults: sled::Tree,
+    loan_payments: sled::Tree,
+    oracle_cache: sled::Tree,
+    pub loan_memos: sled::Tree,
+    pub governance_params: sled::Tree,
 }
 
 impl StateDb {
@@ -464,6 +474,27 @@ impl StateDb {
         let groups = db
             .open_tree("groups")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let loans = db
+            .open_tree("loans")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let loan_stages = db
+            .open_tree("loan_stages")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let loan_defaults = db
+            .open_tree("loan_defaults")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let loan_payments = db
+            .open_tree("loan_payments")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let oracle_cache = db
+            .open_tree("oracle_cache")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let loan_memos = db
+            .open_tree("loan_memos")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let governance_params = db
+            .open_tree("governance_params")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(Self {
             _db: db,
             accounts,
@@ -496,6 +527,13 @@ impl StateDb {
             ledger_promise_index,
             executor_withdrawals,
             groups,
+            loans,
+            loan_stages,
+            loan_defaults,
+            loan_payments,
+            oracle_cache,
+            loan_memos,
+            governance_params,
         })
     }
 
@@ -1706,4 +1744,167 @@ impl StateDb {
         }
     }
 
+}
+
+// ── Genesis 10a — Loan storage types ───────────────────────────────────────
+
+use chronx_core::transaction::{
+    PayAsDenomination, LoanPaymentStage, LateFeeSchedule,
+    PrepaymentTerms, HedgeRequirement, OraclePolicy,
+};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum LoanStatus {
+    Active,
+    Defaulted { defaulted_at: u64 },
+    Reinstated { reinstated_at: u64 },
+    WrittenOff { written_off_at: u64, outstanding_kx: u64 },
+    Completed { completed_at: u64 },
+    EarlyPayoff { paid_off_at: u64 },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LoanRecord {
+    pub loan_id: [u8; 32],
+    pub lender: String,
+    pub borrower: String,
+    pub principal_kx: u64,
+    pub pay_as: PayAsDenomination,
+    pub stages: Vec<LoanPaymentStage>,
+    pub prepayment: PrepaymentTerms,
+    pub late_fee_schedule: LateFeeSchedule,
+    pub grace_period_days: u8,
+    pub hedge_requirement: Option<HedgeRequirement>,
+    pub oracle_policy: OraclePolicy,
+    pub agreement_hash: Option<[u8; 32]>,
+    pub status: LoanStatus,
+    pub created_at: u64,
+    pub memo: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LoanDefaultRecord {
+    pub loan_id: [u8; 32],
+    pub missed_stage_index: u32,
+    pub missed_amount_kx: u64,
+    pub late_fees_accrued_kx: u64,
+    pub days_overdue: u32,
+    pub outstanding_balance_kx: u64,
+    pub stages_remaining: u32,
+    pub defaulted_at: u64,
+    pub memo: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OraclePriceRecord {
+    pub pair: String,
+    pub spot_price_micro: u64,
+    pub seven_day_avg_micro: u64,
+    pub last_updated: u64,
+    pub source: String,
+    pub retry_count: u8,
+}
+
+impl StateDb {
+    pub fn get_loan(&self, loan_id: &[u8; 32]) -> Result<Option<LoanRecord>, ChronxError> {
+        match self.loans.get(loan_id) {
+            Ok(Some(bytes)) => {
+                let record: LoanRecord = bincode::deserialize(&bytes)
+                    .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn save_loan(&self, loan: &LoanRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(loan)
+            .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.loans.insert(&loan.loan_id, bytes)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_oracle_price(&self, pair: &str) -> Result<Option<OraclePriceRecord>, ChronxError> {
+        match self.oracle_cache.get(pair.as_bytes()) {
+            Ok(Some(bytes)) => {
+                let record: OraclePriceRecord = bincode::deserialize(&bytes)
+                    .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn save_oracle_price(&self, record: &OraclePriceRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record)
+            .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.oracle_cache.insert(record.pair.as_bytes(), bytes)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_active_loans(&self) -> Result<Vec<LoanRecord>, ChronxError> {
+        let mut loans = Vec::new();
+        for item in self.loans.iter() {
+            let (_, bytes) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: LoanRecord = bincode::deserialize(&bytes)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            match record.status {
+                LoanStatus::Active | LoanStatus::Reinstated { .. } => loans.push(record),
+                _ => {}
+            }
+        }
+        Ok(loans)
+    }
+
+    /// Return all loans where the given wallet is either lender or borrower.
+    pub fn get_loans_by_wallet(&self, wallet: &str) -> Result<Vec<LoanRecord>, ChronxError> {
+        let mut loans = Vec::new();
+        for item in self.loans.iter() {
+            let (_, bytes) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: LoanRecord = bincode::deserialize(&bytes)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.lender == wallet || record.borrower == wallet {
+                loans.push(record);
+            }
+        }
+        Ok(loans)
+    }
+
+    /// Return all loans in the database.
+    pub fn get_all_loans(&self) -> Result<Vec<LoanRecord>, ChronxError> {
+        let mut loans = Vec::new();
+        for item in self.loans.iter() {
+            let (_, bytes) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: LoanRecord = bincode::deserialize(&bytes)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            loans.push(record);
+        }
+        Ok(loans)
+    }
+
+    /// Save a default record for a loan into the loan_defaults tree.
+    pub fn save_loan_default(&self, loan_id: &[u8; 32], record: &LoanDefaultRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record)
+            .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.loan_defaults.insert(loan_id, bytes)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get the default record for a loan.
+    pub fn get_loan_default(&self, loan_id: &[u8; 32]) -> Result<Option<LoanDefaultRecord>, ChronxError> {
+        match self.loan_defaults.get(loan_id) {
+            Ok(Some(bytes)) => {
+                let record: LoanDefaultRecord = bincode::deserialize(&bytes)
+                    .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
 }

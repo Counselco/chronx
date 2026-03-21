@@ -88,6 +88,18 @@ impl<'a> TimeLockQuery<'a> {
             TimeLockStatus::Reverted { reverted_at } => {
                 format!("Reverted at Unix timestamp {}", reverted_at)
             }
+            TimeLockStatus::PendingExecutor {
+                submitted_at,
+                finalize_at,
+            } => {
+                format!(
+                    "PendingExecutor — submitted at {}, finalizes at {}",
+                    submitted_at, finalize_at
+                )
+            }
+            TimeLockStatus::ExecutorWithdrawn { withdrawn_at } => {
+                format!("ExecutorWithdrawn at Unix timestamp {}", withdrawn_at)
+            }
         };
 
         Ok(format!(
