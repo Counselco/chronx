@@ -1098,3 +1098,102 @@ pub struct MicroLoanCreate {
     pub lender_signature: DilithiumSignature,
     pub borrower_signature: DilithiumSignature,
 }
+
+// ================================================================
+// GENESIS 10 TRULY FINAL
+// LoanType, RevivalCondition, ExitRights, LoanExit
+// ================================================================
+
+/// Who can exit a revolving loan and under what conditions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExitRights {
+    /// Either party may exit with min_notice_seconds notice.
+    EitherParty,
+    /// Only the lender may call the loan.
+    LenderOnly,
+    /// Only the borrower may exit early.
+    BorrowerOnly,
+    /// Neither party may exit without the other's signed agreement.
+    MutualConsent,
+}
+
+impl Default for ExitRights {
+    fn default() -> Self { ExitRights::EitherParty }
+}
+
+/// Condition checked by MISAI at each renewal period.
+/// If condition fails, loan enters min_notice_seconds wind-down.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RevivalCondition {
+    /// Always renews unconditionally. Default.
+    Always,
+    /// Renews only if oracle reading is strictly below threshold_bps.
+    OracleBelow {
+        oracle_source: String,
+        threshold_bps: u32,
+    },
+    /// Renews only if oracle reading is strictly above threshold_bps.
+    OracleAbove {
+        oracle_source: String,
+        threshold_bps: u32,
+    },
+    /// Renews only if oracle reading falls within floor_bps..ceiling_bps.
+    OracleBetween {
+        oracle_source: String,
+        floor_bps: u32,
+        ceiling_bps: u32,
+    },
+    /// Renews only if a bonded attestor submits a signed confirmation.
+    CustomAttestation {
+        attestor: AccountId,
+        description: String,
+        attestation_window_seconds: u64,
+    },
+}
+
+impl Default for RevivalCondition {
+    fn default() -> Self { RevivalCondition::Always }
+}
+
+/// The complete loan type field on LoanCreate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoanType {
+    /// Standard fixed payment schedule. Default.
+    FixedSchedule,
+    /// Revolving credit line.
+    Revolving {
+        renewal_period_seconds: u64,
+        rate_cap_per_period_bps: u32,
+        renewal_fee_bps: u32,
+        min_notice_seconds: u64,
+        #[serde(default)]
+        exit_rights: ExitRights,
+        max_term_seconds: Option<u64>,
+        #[serde(default)]
+        revival_condition: RevivalCondition,
+    },
+}
+
+impl Default for LoanType {
+    fn default() -> Self { LoanType::FixedSchedule }
+}
+
+/// Filed by an eligible party to initiate exit from a revolving loan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoanExit {
+    pub loan_id: [u8; 32],
+    pub initiated_by: ExitInitiator,
+    pub effective_at: u64,
+    pub memo: Option<String>,
+    pub signature: DilithiumSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExitInitiator {
+    Lender,
+    Borrower,
+    MutualAgreement {
+        lender_signature: DilithiumSignature,
+        borrower_signature: DilithiumSignature,
+    },
+}
