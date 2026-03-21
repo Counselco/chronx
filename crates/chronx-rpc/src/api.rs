@@ -309,11 +309,11 @@ pub trait ChronxApi {
 
     /// Return a single loan record by loan_id (hex).
     #[method(name = "getLoan")]
-    async fn get_loan(&self, loan_id_hex: String) -> RpcResult<Option<RpcLoanRecord>>;
+    async fn get_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
 
     /// Return all loans where the given wallet is lender or borrower.
     #[method(name = "getLoansByWallet")]
-    async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<RpcLoanRecord>>;
+    async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<serde_json::Value>>;
 
     /// Return payment stage status for a loan.
     #[method(name = "getLoanPaymentHistory")]

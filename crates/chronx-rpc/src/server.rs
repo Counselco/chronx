@@ -1689,7 +1689,7 @@ impl ChronxApiServer for RpcServer {
     // ── Genesis 10a — Loan queries ──────────────────────────────────────
 
     /// `chronx_getLoan` — fetch a single loan by its loan_id hex.
-    async fn get_loan(&self, loan_id_hex: String) -> RpcResult<Option<RpcLoanRecord>> {
+    async fn get_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
         let bytes = hex::decode(&loan_id_hex)
             .map_err(|e| rpc_err(-32602, format!("invalid hex: {e}")))?;
         if bytes.len() != 32 {
@@ -1697,16 +1697,35 @@ impl ChronxApiServer for RpcServer {
         }
         let mut loan_id = [0u8; 32];
         loan_id.copy_from_slice(&bytes);
-        let record = self.state.db.get_loan(&loan_id)
-            .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        Ok(record.map(|r| loan_to_rpc(&r)))
+        // Try JSON path first (LoanOffer protocol)
+        if let Ok(Some(raw)) = self.state.db.get_loan_raw(&loan_id) {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&raw) {
+                return Ok(Some(val));
+            }
+        }
+        // Fall back to bincode LoanRecord
+        if let Ok(Some(record)) = self.state.db.get_loan(&loan_id) {
+            return Ok(Some(serde_json::to_value(loan_to_rpc(&record)).unwrap_or_default()));
+        }
+        Ok(None)
     }
 
     /// `chronx_getLoansByWallet` — all loans for a given wallet (as lender or borrower).
-    async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<RpcLoanRecord>> {
-        let records = self.state.db.get_loans_by_wallet(&wallet_address)
-            .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        Ok(records.iter().map(|r| loan_to_rpc(r)).collect())
+    async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<serde_json::Value>> {
+        let mut loans: Vec<serde_json::Value> = Vec::new();
+        for (key, val) in self.state.db.iter_loans_raw() {
+            if String::from_utf8_lossy(&key).contains(':') { continue; }
+            if let Ok(loan) = serde_json::from_slice::<serde_json::Value>(&val) {
+                let is_lender = loan.get("lender_wallet")
+                    .and_then(|w| w.as_str()) == Some(&wallet_address);
+                let is_borrower = loan.get("borrower_wallet")
+                    .and_then(|w| w.as_str()) == Some(&wallet_address);
+                if is_lender || is_borrower {
+                    loans.push(loan);
+                }
+            }
+        }
+        Ok(loans)
     }
 
     /// `chronx_getLoanPaymentHistory` — return the payment stages for a loan.

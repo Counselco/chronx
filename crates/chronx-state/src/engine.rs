@@ -2120,6 +2120,11 @@ impl StateEngine {
                     .map_err(|_| ChronxError::SerializationError)?;
                 offer_data["status"] = serde_json::json!("pending");
                 offer_data["created_at"] = serde_json::json!(now as u64);
+                offer_data["loan_id_hex"] = serde_json::json!(hex::encode(offer.loan_id));
+                // Ensure wallet addresses are stored as queryable strings
+                offer_data["lender_wallet"] = serde_json::json!(offer.lender_wallet.to_string());
+                offer_data["borrower_wallet"] = serde_json::json!(offer.borrower_wallet.to_string());
+                offer_data["principal_kx"] = serde_json::json!(offer.principal_chronos / 1_000_000);
                 let val = serde_json::to_vec(&offer_data)
                     .map_err(|_| ChronxError::SerializationError)?;
                 self.db.save_loan_raw(&offer.loan_id, &val)?;
