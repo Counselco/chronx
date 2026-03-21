@@ -1821,6 +1821,41 @@ impl ChronxApiServer for RpcServer {
             }));
         Ok(params_val)
     }
+
+    /// chronx_getEscrow -- fetch escrow account by ID.
+    async fn get_escrow(&self, escrow_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
+        let key = hex::decode(&escrow_id_hex).unwrap_or_default();
+        match self.state.db.escrow_accounts.get(&key) {
+            Ok(Some(val)) => {
+                let v: serde_json::Value = serde_json::from_slice(&val).unwrap_or(serde_json::Value::Null);
+                Ok(Some(v))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// chronx_getEscrowHistory -- deposit history for an escrow.
+    async fn get_escrow_history(&self, escrow_id_hex: String) -> RpcResult<Vec<serde_json::Value>> {
+        let prefix = format!("{}:", escrow_id_hex);
+        let history: Vec<serde_json::Value> = self.state.db.escrow_deposits
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|r| r.ok())
+            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
+            .collect();
+        Ok(history)
+    }
+
+    /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
+    async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
+        let key = hex::decode(&loan_id_hex).unwrap_or_default();
+        match self.state.db.micro_loans.get(&key) {
+            Ok(Some(val)) => {
+                let v: serde_json::Value = serde_json::from_slice(&val).unwrap_or(serde_json::Value::Null);
+                Ok(Some(v))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 

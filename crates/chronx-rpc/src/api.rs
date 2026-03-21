@@ -340,4 +340,18 @@ pub trait ChronxApi {
     /// Return current governance parameters.
     #[method(name = "getGovernanceParams")]
     async fn get_governance_params(&self) -> RpcResult<serde_json::Value>;
+
+    // -- RE-GENESIS 10: Escrow + MicroLoan queries --
+
+    /// Return escrow account details by escrow_id hex.
+    #[method(name = "getEscrow")]
+    async fn get_escrow(&self, escrow_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Return escrow deposit history by escrow_id hex.
+    #[method(name = "getEscrowHistory")]
+    async fn get_escrow_history(&self, escrow_id_hex: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Return micro-loan record by loan_id hex.
+    #[method(name = "getMicroLoan")]
+    async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
 }
