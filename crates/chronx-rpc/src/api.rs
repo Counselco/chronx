@@ -11,7 +11,7 @@ use crate::types::{
     RpcOracleSnapshot, RpcPromiseAxioms, RpcPromiseTriggerStatus, RpcProvider, RpcRecentTx,
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise, RpcDetailedTx,
-    RpcLoanRecord, RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
+    RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -39,8 +39,8 @@ pub trait ChronxApi {
 
     /// List time-lock contracts where `account_id` is the sender or recipient.
     /// Sorted newest-first.
-    #[method(name = "getTimeLockContracts")]
-    async fn get_timelock_contracts(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>>;
+    #[method(name = "getLocks")]
+    async fn get_locks(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>>;
 
     /// Return the current DAG tip TxIds (as hex strings).
     #[method(name = "getDagTips")]
@@ -80,8 +80,8 @@ pub trait ChronxApi {
     // ── V3 New methods ────────────────────────────────────────────────────────
 
     /// Return a single time-lock contract by its TxId hex.
-    #[method(name = "getTimeLockById")]
-    async fn get_timelock_by_id(&self, lock_id: String) -> RpcResult<Option<RpcTimeLock>>;
+    #[method(name = "getLockById")]
+    async fn get_lock_by_id(&self, lock_id: String) -> RpcResult<Option<RpcTimeLock>>;
 
     /// Return all **Pending** time-lock contracts where `account_id` is the recipient.
     /// Results are sorted by `unlock_at` ascending.
@@ -90,8 +90,8 @@ pub trait ChronxApi {
 
     /// Return paginated time-lock contracts for an account (sender or recipient).
     /// `offset` is the number of records to skip; `limit` is the page size (max 200).
-    #[method(name = "getTimeLockContractsPaged")]
-    async fn get_timelock_contracts_paged(
+    #[method(name = "getLocksPaged")]
+    async fn get_locks_paged(
         &self,
         account_id: String,
         offset: u32,
@@ -130,10 +130,10 @@ pub trait ChronxApi {
 
     /// Return aggregate statistics across all active (Pending) timelocks.
     /// Lightweight alternative to fetching all contracts — designed for the public stats bar.
-    #[method(name = "getGlobalLockStats")]
-    async fn get_global_lock_stats(&self) -> RpcResult<RpcGlobalLockStats>;
+    #[method(name = "getLockStats")]
+    async fn get_lock_stats(&self) -> RpcResult<RpcGlobalLockStats>;
 
-    /// Return all time-lock contracts whose `recipient_email_hash` matches `email_hash_hex`.
+    /// Return all time-lock contracts whose `email_recipient_hash` matches `email_hash_hex`.
     /// `email_hash_hex` is the 64-character hex encoding of the 32-byte BLAKE3 hash of the
     /// recipient's email address (lowercase, trimmed, no trailing newline).
     /// Returns only Pending locks sorted newest-first.
@@ -158,10 +158,10 @@ pub trait ChronxApi {
     /// Create a cascade of email time-locks in a single transaction.
     /// All locks share one claim_secret_hash. The sender's wallet signs it.
     /// `tx_hex` is hex-encoded bincode(Transaction) containing multiple
-    /// TimeLockCreate actions with the same extension_data (0xC5 + hash).
+    /// TimeLockCreate actions with the same lock_marker (0xC5 + hash).
     /// Returns the TxId hex on success.
-    #[method(name = "sendCascade")]
-    async fn send_cascade(&self, tx_hex: String) -> RpcResult<String>;
+    #[method(name = "submitCascade")]
+    async fn submit_cascade(&self, tx_hex: String) -> RpcResult<String>;
 
     /// Return details of a cascade by its claim_secret_hash (hex).
     /// Returns all locks sharing that hash, plus aggregate statistics.
@@ -169,7 +169,7 @@ pub trait ChronxApi {
     async fn get_cascade_details(&self, claim_secret_hash: String) -> RpcResult<RpcCascadeDetails>;
 
 
-    // ── Genesis 7 — Verified Delivery Protocol ────────────────────────────
+    // ── Verified Delivery Protocol ────────────────────────────
 
     /// Return all Active verifiers in the on-chain registry.
     #[method(name = "getVerifierRegistry")]
@@ -180,7 +180,7 @@ pub trait ChronxApi {
     #[method(name = "getPromiseTriggerStatus")]
     async fn get_promise_trigger_status(&self, lock_id: String) -> RpcResult<Option<RpcPromiseTriggerStatus>>;
 
-    /// Return all Genesis 7 protocol constants from genesis metadata.
+    /// Return protocol delivery constants from genesis metadata.
     #[method(name = "getGenesis7Constants")]
     async fn get_genesis7_constants(&self) -> RpcResult<serde_json::Value>;
 
@@ -193,7 +193,7 @@ pub trait ChronxApi {
     async fn get_promise_axioms(&self) -> RpcResult<RpcPromiseAxioms>;
 
 
-    // ── Genesis 8 — AI Agent Architecture ──────────────────────────────
+    // ── AI Agent Architecture ──────────────────────────────
 
     /// Return all Active agents in the on-chain registry.
     #[method(name = "getAgentRegistry")]
@@ -219,7 +219,7 @@ pub trait ChronxApi {
     #[method(name = "getInvestablePromises")]
     async fn get_investable_promises(&self) -> RpcResult<Vec<RpcInvestablePromise>>;
 
-    /// Return Genesis 8 constants from genesis metadata as JSON.
+    /// Return agent architecture constants from genesis metadata as JSON.
     #[method(name = "getGenesis8Constants")]
     async fn get_genesis8_constants(&self) -> RpcResult<serde_json::Value>;
 
@@ -231,7 +231,7 @@ pub trait ChronxApi {
     #[method(name = "getRecentTransactionsDetailed")]
     async fn get_recent_transactions_detailed(&self, limit: u32) -> RpcResult<Vec<RpcDetailedTx>>;
 
-    // ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger queries ───
+    // ── Invoice/Credit/Deposit/Conditional/Ledger queries ───
 
     /// Return an invoice by its ID (hex).
     #[method(name = "getInvoice")]
@@ -265,7 +265,7 @@ pub trait ChronxApi {
     #[method(name = "getLedgerEntries")]
     async fn get_ledger_entries(&self, promise_id_hex: String) -> RpcResult<Vec<RpcLedgerEntryRecord>>;
 
-    // ── Genesis 8 — Sign of Life and Promise Chain queries ──────────
+    // ── Sign of Life and Promise Chain queries ──────────
 
     /// Return sign-of-life status for a lock.
     #[method(name = "getSignOfLifeStatus")]
@@ -289,7 +289,7 @@ pub trait ChronxApi {
     #[method(name = "getIdentityHistory")]
     async fn get_identity_history(&self, wallet_b58: String) -> RpcResult<Vec<RpcLedgerEntryRecord>>;
 
-    // ── Genesis 9 — TYPE_G Wallet Group queries ─────────────────────────
+    // ── Wallet Group queries ─────────────────────────
 
     /// Return a wallet group by its group_id (hex).
     #[method(name = "getGroup")]
@@ -362,5 +362,10 @@ pub trait ChronxApi {
     /// Return loans by status for a wallet.
     #[method(name = "getLoansByStatus")]
     async fn get_loans_by_status(&self, wallet_b58: String, status: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Return channel info by channel_id hex.
+    #[method(name = "getChannelInfo")]
+    async fn get_channel_info(&self, channel_id_hex: String) -> RpcResult<serde_json::Value>;
+
 
 }

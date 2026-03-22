@@ -10,7 +10,6 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use anyhow::Context;
 use clap::Parser;
@@ -221,11 +220,36 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("starting RPC server")?;
 
+
+    // ── Read sweep intervals from genesis-params.json ─────────────────────────
+    let sweep_intervals = {
+        let gp_content = args.genesis_params.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_default())
+            .unwrap_or_default();
+        let gp: serde_json::Value = serde_json::from_str(&gp_content)
+            .unwrap_or(serde_json::Value::Null);
+        (
+            gp.get("sweep_email_lock_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(300),
+            gp.get("sweep_matured_timelock_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(60),
+            gp.get("sweep_executor_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(60),
+            gp.get("sweep_humanity_stake_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(86400),
+            gp.get("sweep_guardian_transition_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(3600),
+            gp.get("sweep_promise_chain_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(86400),
+            gp.get("sweep_loan_interval_seconds").and_then(|v| v.as_u64()).unwrap_or(3600),
+            gp.get("loan_min_settlement_chronos").and_then(|v| v.as_u64()).unwrap_or(1000),
+        )
+    };
+    let (sweep_email_secs, sweep_timelock_secs, sweep_executor_secs,
+         sweep_humanity_secs, sweep_guardian_secs, sweep_promise_secs,
+         sweep_loan_secs, loan_min_settlement) = sweep_intervals;
+    info!(email=sweep_email_secs, timelock=sweep_timelock_secs, executor=sweep_executor_secs,
+          humanity=sweep_humanity_secs, guardian=sweep_guardian_secs, promise=sweep_promise_secs,
+          loan=sweep_loan_secs, "sweep intervals loaded from genesis-params");
+
     // ── Background sweep: revert expired email locks every 5 minutes ──────────
     {
         let sweep_engine = Arc::clone(&engine);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_email_secs));
             interval.tick().await; // skip the immediate first tick
             loop {
                 interval.tick().await;
@@ -235,21 +259,21 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => warn!(error = %e, "sweep: failed to process expired locks"),
                 }
 
-                // ── Genesis 7: Day 91 trigger sweep ──────────────────────────
+                // ── Day 91 activation trigger sweep ──────────────────────────
                 match sweep_engine.sweep_genesis7_triggers(chrono::Utc::now().timestamp()) {
                     Ok(0) => {}
-                    Ok(n) => info!(count = n, "sweep: Genesis 7 triggers fired"),
-                    Err(e) => warn!(error = %e, "sweep: Genesis 7 trigger sweep failed"),
+                    Ok(n) => info!(count = n, "sweep: activation triggers fired"),
+                    Err(e) => warn!(error = %e, "sweep: activation trigger sweep failed"),
                 }
 
-                // ── Genesis 7: 100-year expiry sweep ─────────────────────────
+                // ── 100-year humanity stake expiry sweep ─────────────────────────
                 // Read the Humanity Stake Pool address from genesis metadata.
                 if let Ok(Some(pool_bytes)) = sweep_engine.db.get_meta("genesis_7_humanity_stake_pool") {
                     let pool_address = String::from_utf8_lossy(&pool_bytes).to_string();
                     match sweep_engine.sweep_genesis7_expiry(chrono::Utc::now().timestamp(), &pool_address) {
                         Ok(0) => {}
-                        Ok(n) => info!(count = n, "sweep: Genesis 7 expiry transfers"),
-                        Err(e) => warn!(error = %e, "sweep: Genesis 7 expiry sweep failed"),
+                        Ok(n) => info!(count = n, "sweep: humanity stake expiry transfers"),
+                        Err(e) => warn!(error = %e, "sweep: humanity stake expiry sweep failed"),
                     }
                 }
             }
@@ -261,7 +285,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let executor_sweep_engine = Arc::clone(&engine);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_executor_secs));
             interval.tick().await; // skip the immediate first tick
             loop {
                 interval.tick().await;
@@ -279,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let wallet_sweep_engine = Arc::clone(&engine);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_timelock_secs));
             interval.tick().await; // skip the immediate first tick
             loop {
                 interval.tick().await;
@@ -291,6 +315,80 @@ async fn main() -> anyhow::Result<()> {
             }
         });
         info!("wallet-to-wallet auto-delivery sweep started (every 60 seconds)");
+    }
+
+    
+
+    // ── Background sweep: humanity stake 100-year expiry (daily) ──────────────
+    {
+        let expiry_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_humanity_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match expiry_engine.sweep_genesis8_expiry(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {}
+                    Ok(n) => info!(count = n, "sweep: humanity stake expiry transfers"),
+                    Err(e) => warn!(error = %e, "sweep: humanity stake expiry failed"),
+                }
+            }
+        });
+        info!("humanity stake expiry sweep started (daily)");
+    }
+
+    // ── Background sweep: guardian transitions / sign of life (hourly) ────────
+    {
+        let sol_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_guardian_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match sol_engine.sweep_sign_of_life(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {}
+                    Ok(n) => info!(count = n, "sweep: guardian transitions processed"),
+                    Err(e) => warn!(error = %e, "sweep: guardian transition check failed"),
+                }
+            }
+        });
+        info!("guardian transition sweep started (hourly)");
+    }
+
+    // ── Background sweep: promise chain anchors (daily) ───────────────────────
+    {
+        let anchor_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_promise_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match anchor_engine.sweep_promise_chain_anchors(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {}
+                    Ok(n) => info!(count = n, "sweep: promise chain anchors written"),
+                    Err(e) => warn!(error = %e, "sweep: promise chain anchor failed"),
+                }
+            }
+        });
+        info!("promise chain anchor sweep started (daily)");
+    }
+
+    // ── Background sweep: settle loan payments every hour ─────────────────────
+    {
+        let loan_sweep_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_loan_secs));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                match loan_sweep_engine.sweep_loan_payments(chrono::Utc::now().timestamp(), loan_min_settlement) {
+                    Ok(0) => {} // nothing to settle — silent
+                    Ok(n) => info!(count = n, "sweep: settled loan interest payments"),
+                    Err(e) => warn!(error = %e, "sweep: failed to settle loan payments"),
+                }
+            }
+        });
+        info!("loan payment sweep task started (every 3600 seconds)");
     }
 
     // ── Main loop: validate & apply ───────────────────────────────────────────
@@ -381,6 +479,20 @@ fn load_or_generate_genesis_params(
         reserve_key: re.public_key.clone(),
         faucet_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
         axioms: None,
+        rate_limit_tx_per_wallet_per_minute: 10,
+        rate_limit_loan_actions_per_wallet_per_day: 100,
+        channel_threshold_daily_tx: 1000,
+        channel_open_min_lock_kx: 1,
+        sweep_loan_interval_seconds: 3600,
+        sweep_email_lock_interval_seconds: 300,
+        sweep_matured_timelock_interval_seconds: 60,
+        loan_min_settlement_chronos: 1000,
+        sweep_humanity_stake_interval_seconds: 86400,
+        sweep_guardian_transition_interval_seconds: 3600,
+        sweep_promise_chain_interval_seconds: 86400,
+        sweep_executor_interval_seconds: 60,
+        pay_as_max_usd: 100.0,
+        pay_as_enabled: true,
     })
 }
 

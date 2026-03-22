@@ -340,6 +340,9 @@ async fn p2p_gossip_propagation() {
         vec![Action::Transfer {
             to: alice.account_id.clone(),
             amount: 500 * CHRONOS_PER_KX,
+            memo: None,
+            memo_encrypted: true,
+            memo_public: false,
         }],
     );
     let tx_id_hex = send_tx(&http, &url_a, &tx).await;

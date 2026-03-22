@@ -2,35 +2,22 @@ use hex;
 use chronx_core::account::{Account, AuthPolicy, TimeLockContract, TimeLockStatus};
 use chronx_core::claims::{
     CertificateSchema, ClaimLane, ClaimState, LaneThresholds, OracleSnapshot, OracleSubmission,
-    ProviderRecord, ProviderStatus, SignatureRules, SlashReason,
+    ProviderRecord, ProviderStatus, SignatureRules, SlashReason
 };
-use chronx_core::constants::{
-    INVOICE_MIN_EXPIRY_SECONDS, INVOICE_MAX_EXPIRY_SECONDS,
-    CREDIT_MIN_CEILING_CHRONOS, CREDIT_MAX_EXPIRY_SECONDS,
-    DEPOSIT_MIN_TERM_SECONDS, DEPOSIT_MAX_TERM_SECONDS, DEPOSIT_MAX_RATE_BASIS_POINTS,
-    DEPOSIT_DEFAULT_GRACE_SECONDS,
-    CONDITIONAL_MIN_ATTESTORS, CONDITIONAL_MAX_ATTESTORS,
-    LEDGER_MAX_SUMMARY_BYTES,
-    AUTO_CANCELLATION_WINDOW_SECS, CANCELLATION_WINDOW_MAX_SECS, MAX_EXTENSION_DATA_BYTES,
-    MAX_LOCK_DURATION_YEARS, MAX_MEMO_BYTES, MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK,
-    MAX_TAG_LENGTH, MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS,
-    MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ONE_YEAR_SECS, ORACLE_MAX_AGE_SECS,
-    ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS,
-    RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS,
-    CHRONOS_PER_KX,
-};
+use chronx_core::constants::{AUTO_CANCELLATION_WINDOW_SECS, CANCELLATION_WINDOW_MAX_SECS, CONDITIONAL_MAX_ATTESTORS, CONDITIONAL_MIN_ATTESTORS, CREDIT_MAX_EXPIRY_SECONDS, CREDIT_MIN_CEILING_CHRONOS, DEPOSIT_DEFAULT_GRACE_SECONDS, DEPOSIT_MAX_RATE_BASIS_POINTS, DEPOSIT_MAX_TERM_SECONDS, DEPOSIT_MIN_TERM_SECONDS, INVOICE_MAX_EXPIRY_SECONDS, INVOICE_MIN_EXPIRY_SECONDS, LEDGER_MAX_SUMMARY_BYTES, MAX_EXTENSION_DATA_BYTES, MAX_LOCK_DURATION_YEARS, MAX_MEMO_BYTES, MAX_RECURRING_COUNT, MAX_TAGS_PER_LOCK, MAX_TAG_LENGTH, MIN_CHALLENGE_BOND_CHRONOS, MIN_LOCK_AMOUNT_CHRONOS, MIN_LOCK_DURATION_SECS, MIN_RECOVERY_BOND_CHRONOS, MIN_VERIFIER_STAKE_CHRONOS, ONE_YEAR_SECS, ORACLE_MAX_AGE_SECS, ORACLE_MIN_SUBMISSIONS, PROVIDER_BOND_CHRONOS, RECOVERY_CHALLENGE_WINDOW_SECS, RECOVERY_EXECUTION_DELAY_SECS, RECOVERY_VERIFIER_THRESHOLD, SCHEMA_BOND_CHRONOS};
+    
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use chronx_core::error::ChronxError;
 use chronx_core::transaction::{
     Action, Transaction,
-    CreateInvoiceAction, FulfillInvoiceAction, CancelInvoiceAction,
-    CreateCreditAction, DrawCreditAction, RevokeCreditAction,
-    CreateDepositAction, SettleDepositAction, Compounding,
-    CreateConditionalAction, AttestConditionalAction, ConditionalFallback,
-    CreateLedgerEntryAction, LedgerEntryType,
-    PrepaymentTerms,
+      
+      
+      Compounding,
+      ConditionalFallback,
+     LedgerEntryType
+    
 };
 use chronx_core::types::Timestamp;
 use chronx_crypto::hash::account_id_from_pubkey;
@@ -39,14 +26,14 @@ use chronx_dag::vertex::Vertex;
 use tracing::{info, warn};
 
 use crate::db::{
-    SignOfLifeRecord, PromiseChainRecord,
+     
     StateDb,
     InvoiceRecord, InvoiceStatus,
     CreditRecord, CreditStatus,
     DepositRecord, DepositStatus,
     ConditionalRecord, ConditionalStatus,
     LedgerEntryRecord,
-    LoanRecord, LoanStatus, LoanDefaultRecord,
+      LoanDefaultRecord
 };
 
 // ── Staged mutations ──────────────────────────────────────────────────────────
@@ -63,7 +50,7 @@ struct StagedMutations {
     /// V3.3 email claim hashes to persist: (lock_id, blake3_hash_of_secret).
     email_hashes: Vec<(chronx_core::types::TxId, [u8; 32])>,
     /// Lock IDs already acted on in this transaction (prevents double-credit).
-    acted_lock_ids: HashSet<[u8; 32]>,
+    acted_lock_ids: HashSet<[u8; 32]>
 }
 
 // ── StateEngine ───────────────────────────────────────────────────────────────
@@ -75,17 +62,63 @@ struct StagedMutations {
 pub struct StateEngine {
     pub db: Arc<StateDb>,
     pub pow_difficulty: u8,
+    /// Max transactions per wallet per minute. Default 10.
+    pub tx_rate_limit_per_minute: u64,
+    /// Max loan actions per wallet per day. Default 100.
+    pub loan_rate_limit_per_day: u64
 }
 
 impl StateEngine {
     pub fn new(db: Arc<StateDb>, pow_difficulty: u8) -> Self {
-        Self { db, pow_difficulty }
+        Self {
+            db,
+            pow_difficulty,
+            tx_rate_limit_per_minute: 10,
+            loan_rate_limit_per_day: 100
+        }
+    }
+
+    /// Check general transaction rate limit. Persisted to sled.
+    fn check_tx_rate_limit(&self, wallet: &str, now: i64) -> Result<(), ChronxError> {
+        let key = format!("rl:tx:{}", wallet);
+        let cutoff = now - 60; // 1 minute window
+        let mut timestamps: Vec<i64> = self.db.get_meta(&key)
+            .ok().flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        timestamps.retain(|&ts| ts > cutoff);
+        if timestamps.len() as u64 >= self.tx_rate_limit_per_minute {
+            return Err(ChronxError::RateLimitExceeded);
+        }
+        timestamps.push(now);
+        let _ = self.db.put_meta(&key, &serde_json::to_vec(&timestamps).unwrap_or_default());
+        Ok(())
+    }
+
+    /// Check loan action rate limit. Persisted to sled.
+    fn check_loan_rate_limit(&self, wallet: &str, now: i64) -> Result<(), ChronxError> {
+        let key = format!("rl:loan:{}", wallet);
+        let cutoff = now - 86400; // 24 hour window
+        let mut timestamps: Vec<i64> = self.db.get_meta(&key)
+            .ok().flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        timestamps.retain(|&ts| ts > cutoff);
+        if timestamps.len() as u64 >= self.loan_rate_limit_per_day {
+            return Err(ChronxError::RateLimitExceeded);
+        }
+        timestamps.push(now);
+        let _ = self.db.put_meta(&key, &serde_json::to_vec(&timestamps).unwrap_or_default());
+        Ok(())
     }
 
     /// Validate and apply a transaction. Returns `Ok(())` on success.
     pub fn apply(&self, tx: &Transaction, now: Timestamp) -> Result<(), ChronxError> {
         // ── DAG-level validation ──────────────────────────────────────────────
         validate_vertex(tx, self.pow_difficulty, |pid| self.db.vertex_exists(pid))?;
+
+        // ── General tx rate limit ─────────────────────────────────────────
+        self.check_tx_rate_limit(&tx.from.to_string(), now as i64)?;
 
         // ── Duplicate check ───────────────────────────────────────────────────
         if self.db.vertex_exists(&tx.tx_id) {
@@ -116,7 +149,7 @@ impl StateEngine {
                     let derived = account_id_from_pubkey(&provided_key.0);
                     if derived == tx.from {
                         sender.auth_policy = chronx_core::account::AuthPolicy::SingleSig {
-                            public_key: provided_key.clone(),
+                            public_key: provided_key.clone()
                         };
                     }
                     // If derived != tx.from, proceed with empty key → signature
@@ -129,7 +162,7 @@ impl StateEngine {
         if tx.nonce != sender.nonce {
             return Err(ChronxError::InvalidNonce {
                 expected: sender.nonce,
-                got: tx.nonce,
+                got: tx.nonce
             });
         }
 
@@ -219,7 +252,7 @@ impl StateEngine {
             pair: pair.to_string(),
             price_cents: median,
             num_submissions: prices.len() as u32,
-            updated_at: now,
+            updated_at: now
         };
         self.db.put_oracle_snapshot(&snap)?;
         Ok(())
@@ -238,7 +271,7 @@ impl StateEngine {
     ) -> Result<(), ChronxError> {
         match action {
             // ── Transfer ─────────────────────────────────────────────────────
-            Action::Transfer { to, amount } => {
+            Action::Transfer { to, amount, memo: _, memo_encrypted: _, memo_public: _, pay_as_amount: _ } => {
                 if *amount == 0 {
                     return Err(ChronxError::ZeroAmount);
                 }
@@ -248,7 +281,7 @@ impl StateEngine {
                 if sender.spendable_balance() < *amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
                 sender.balance -= amount;
@@ -257,7 +290,7 @@ impl StateEngine {
                     Account::new(
                         to.clone(),
                         AuthPolicy::SingleSig {
-                            public_key: chronx_core::types::DilithiumPublicKey(vec![]),
+                            public_key: chronx_core::types::DilithiumPublicKey(vec![])
                         },
                     )
                 });
@@ -275,17 +308,17 @@ impl StateEngine {
                 cancellation_window_secs,
                 notify_recipient,
                 tags,
-                private,
+                private, memo_encrypted: _, memo_public, pay_as_amount: _pay_as_amount,
                 expiry_policy,
                 split_policy,
                 claim_attempts_max,
                 recurring,
-                extension_data,
+                lock_marker,
                 oracle_hint,
                 jurisdiction_hint,
                 governance_proposal_id,
                 client_ref,
-                recipient_email_hash,
+                email_recipient_hash,
                 claim_window_secs,
                 unclaimed_action,
                 lock_type,
@@ -304,13 +337,13 @@ impl StateEngine {
                 }
                 if *amount < MIN_LOCK_AMOUNT_CHRONOS {
                     return Err(ChronxError::LockAmountTooSmall {
-                        min: MIN_LOCK_AMOUNT_CHRONOS,
+                        min: MIN_LOCK_AMOUNT_CHRONOS
                     });
                 }
                 // Email locks (0xC5 marker) may have unlock_at <= now for
                 // "Send Now" — immediately claimable with a claim code.
                 // Only enforce future-unlock for non-email locks.
-                let is_email_lock = extension_data
+                let is_email_lock = lock_marker
                     .as_ref()
                     .map(|d| d.len() == 33 && d[0] == 0xC5)
                     .unwrap_or(false);
@@ -320,48 +353,58 @@ impl StateEngine {
                     }
                     if *unlock_at < now + MIN_LOCK_DURATION_SECS {
                         return Err(ChronxError::LockDurationTooShort {
-                            min_secs: MIN_LOCK_DURATION_SECS,
+                            min_secs: MIN_LOCK_DURATION_SECS
                         });
                     }
                 }
                 let max_unlock = now + (MAX_LOCK_DURATION_YEARS as i64) * 365 * 24 * 3600;
                 if *unlock_at > max_unlock {
                     return Err(ChronxError::LockDurationTooLong {
-                        max_years: MAX_LOCK_DURATION_YEARS,
+                        max_years: MAX_LOCK_DURATION_YEARS
                     });
                 }
-                if let Some(m) = memo {
+                if let Some(ref m) = memo {
                     if m.len() > MAX_MEMO_BYTES {
                         return Err(ChronxError::MemoTooLong {
-                            max: MAX_MEMO_BYTES,
+                            max: MAX_MEMO_BYTES
                         });
+                    }
+                }
+                // Memo privacy rules
+                if *memo_public {
+                    let identity = self.db.get_meta(&format!("identity:{}", sender.account_id))?;
+                    if identity.is_none() {
+                        return Err(ChronxError::MemoPublicRequiresVerifiedIdentity);
+                    }
+                    if *unlock_at > now + 365 * 86400 {
+                        return Err(ChronxError::LongHorizonMemoMustBePrivate);
                     }
                 }
                 if let Some(t) = tags {
                     if t.len() > MAX_TAGS_PER_LOCK {
                         return Err(ChronxError::TooManyTags {
-                            max: MAX_TAGS_PER_LOCK,
+                            max: MAX_TAGS_PER_LOCK
                         });
                     }
                     for tag in t {
                         if tag.len() > MAX_TAG_LENGTH {
                             return Err(ChronxError::TagTooLong {
-                                max: MAX_TAG_LENGTH,
+                                max: MAX_TAG_LENGTH
                             });
                         }
                     }
                 }
-                if let Some(ed) = extension_data {
+                if let Some(ed) = lock_marker {
                     if ed.len() > MAX_EXTENSION_DATA_BYTES {
                         return Err(ChronxError::ExtensionDataTooLarge {
-                            max: MAX_EXTENSION_DATA_BYTES,
+                            max: MAX_EXTENSION_DATA_BYTES
                         });
                     }
                 }
                 if let Some(w) = cancellation_window_secs {
                     if *w > CANCELLATION_WINDOW_MAX_SECS {
                         return Err(ChronxError::CancellationWindowTooLong {
-                            max: CANCELLATION_WINDOW_MAX_SECS,
+                            max: CANCELLATION_WINDOW_MAX_SECS
                         });
                     }
                 }
@@ -377,11 +420,11 @@ impl StateEngine {
                         RecurringPolicy::None => 0,
                         RecurringPolicy::Weekly { count } => *count,
                         RecurringPolicy::Monthly { count } => *count,
-                        RecurringPolicy::Annual { count } => *count,
+                        RecurringPolicy::Annual { count } => *count
                     };
                     if count > MAX_RECURRING_COUNT {
                         return Err(ChronxError::RecurringCountTooLarge {
-                            max: MAX_RECURRING_COUNT,
+                            max: MAX_RECURRING_COUNT
                         });
                     }
                 }
@@ -389,7 +432,7 @@ impl StateEngine {
                 if sender.spendable_balance() < *amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
                 sender.balance -= amount;
@@ -436,7 +479,7 @@ impl StateEngine {
                     split_policy: split_policy.clone(),
                     claim_attempts_max: *claim_attempts_max,
                     recurring: recurring.clone(),
-                    extension_data: extension_data.clone(),
+                    lock_marker: lock_marker.clone(),
                     oracle_hint: oracle_hint.clone(),
                     jurisdiction_hint: jurisdiction_hint.clone(),
                     governance_proposal_id: governance_proposal_id.clone(),
@@ -447,7 +490,7 @@ impl StateEngine {
                     current_beneficiary: None,
                     transfer_history: Vec::new(),
                     earliest_transfer_date: None,
-                    recipient_email_hash: *recipient_email_hash,
+                    email_recipient_hash: *email_recipient_hash,
                     claim_window_secs: *claim_window_secs,
                     unclaimed_action: unclaimed_action.clone(),
                     notification_sent: false,
@@ -462,19 +505,19 @@ impl StateEngine {
                     condition_dispute_window_secs: None,
                     // ── V8 fields ───────────────────────────────────────────
                     lock_type: lock_type.clone(),
-                    lock_metadata: lock_metadata.clone(),
+                    lock_metadata: lock_metadata.clone()
 
                 };
-                // V3.3 — detect email claim secret hash embedded in extension_data.
-                // Convention: extension_data = [0xC5, <32 bytes of BLAKE3(claim_code)>].
+                // V3.3 — detect email claim secret hash embedded in lock_marker.
+                // Convention: lock_marker = [0xC5, <32 bytes of BLAKE3(claim_code)>].
                 // The marker byte 0xC5 is chosen to avoid collision with future
                 // general-purpose extension data. The wallet sets this on email locks.
                 // Store convert_to in separate tree if provided
                 if let Action::TimeLockCreate { convert_to: Some(ref cv), .. } = action {
                     let truncated = if cv.len() > 50 { &cv[..50] } else { cv.as_str() };
-                    let _ = self.db.put_lock_convert_to(&lock_id, truncated);
+                    let _ = self.db.put_convert_to_suggestion(&lock_id, truncated);
                 }
-                if let Some(ref ext) = contract.extension_data {
+                if let Some(ref ext) = contract.lock_marker {
                     if ext.len() == 33 && ext[0] == 0xC5 {
                         let mut hash = [0u8; 32];
                         hash.copy_from_slice(&ext[1..33]);
@@ -507,7 +550,7 @@ impl StateEngine {
                 }
                 if now < contract.unlock_at {
                     return Err(ChronxError::TimeLockNotMatured {
-                        unlock_time: contract.unlock_at,
+                        unlock_time: contract.unlock_at
                     });
                 }
 
@@ -526,7 +569,7 @@ impl StateEngine {
             // ── TimeLockSell ──────────────────────────────────────────────────
             Action::TimeLockSell {
                 lock_id: _,
-                ask_price: _,
+                ask_price: _
             } => {
                 warn!("TimeLockSell submitted — secondary market not active at V1");
                 Err(ChronxError::FeatureNotActive(
@@ -575,17 +618,17 @@ impl StateEngine {
                 target_account,
                 proposed_owner_key,
                 evidence_hash,
-                bond_amount,
+                bond_amount
             } => {
                 if *bond_amount < MIN_RECOVERY_BOND_CHRONOS {
                     return Err(ChronxError::RecoveryBondTooLow {
-                        min: MIN_RECOVERY_BOND_CHRONOS,
+                        min: MIN_RECOVERY_BOND_CHRONOS
                     });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *bond_amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
 
@@ -621,17 +664,17 @@ impl StateEngine {
             Action::ChallengeRecovery {
                 target_account,
                 counter_evidence_hash,
-                bond_amount,
+                bond_amount
             } => {
                 if *bond_amount < MIN_CHALLENGE_BOND_CHRONOS {
                     return Err(ChronxError::ChallengeBondTooLow {
-                        min: MIN_CHALLENGE_BOND_CHRONOS,
+                        min: MIN_CHALLENGE_BOND_CHRONOS
                     });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *bond_amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
 
@@ -685,7 +728,7 @@ impl StateEngine {
 
                 target.auth_policy = AuthPolicy::RecoveryEnabled {
                     owner_key: new_key,
-                    recovery_config: chronx_core::account::RecoveryConfig::default(),
+                    recovery_config: chronx_core::account::RecoveryConfig::default()
                 };
                 target.recovery_state = chronx_core::account::RecoveryState::default();
 
@@ -697,13 +740,13 @@ impl StateEngine {
             Action::RegisterVerifier { stake_amount } => {
                 if *stake_amount < MIN_VERIFIER_STAKE_CHRONOS {
                     return Err(ChronxError::VerifierStakeTooLow {
-                        min: MIN_VERIFIER_STAKE_CHRONOS,
+                        min: MIN_VERIFIER_STAKE_CHRONOS
                     });
                 }
                 if sender.balance < *stake_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *stake_amount,
-                        have: sender.balance,
+                        have: sender.balance
                     });
                 }
                 sender.verifier_stake += stake_amount;
@@ -715,7 +758,7 @@ impl StateEngine {
             Action::VoteRecovery {
                 target_account,
                 approve,
-                fee_bid: _,
+                fee_bid: _
             } => {
                 if !sender.is_verifier {
                     return Err(ChronxError::VerifierNotRegistered(
@@ -763,7 +806,7 @@ impl StateEngine {
                 }
                 if now < contract.unlock_at {
                     return Err(ChronxError::TimeLockNotMatured {
-                        unlock_time: contract.unlock_at,
+                        unlock_time: contract.unlock_at
                     });
                 }
 
@@ -804,7 +847,7 @@ impl StateEngine {
             Action::SubmitClaimCommit {
                 lock_id,
                 commit_hash,
-                bond_amount,
+                bond_amount
             } => {
                 let mut contract = self
                     .db
@@ -830,7 +873,7 @@ impl StateEngine {
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *bond_amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
 
@@ -851,7 +894,7 @@ impl StateEngine {
                 lock_id,
                 payload,
                 salt,
-                certificates,
+                certificates
             } => {
                 let mut contract = self
                     .db
@@ -860,7 +903,7 @@ impl StateEngine {
 
                 let committed_at = match &contract.status {
                     TimeLockStatus::ClaimCommitted { committed_at } => *committed_at,
-                    _ => return Err(ChronxError::InvalidClaimStateTransition),
+                    _ => return Err(ChronxError::InvalidClaimStateTransition)
                 };
 
                 let mut cs = self
@@ -884,7 +927,7 @@ impl StateEngine {
                     cs.commit_bond = 0;
                     contract.status = TimeLockStatus::ClaimSlashed {
                         reason: SlashReason::RevealTimeout,
-                        slashed_at: now,
+                        slashed_at: now
                     };
                     staged.timelocks.push(contract);
                     staged.claims.push(cs);
@@ -909,7 +952,7 @@ impl StateEngine {
                     cs.commit_bond = 0;
                     contract.status = TimeLockStatus::ClaimSlashed {
                         reason: SlashReason::RevealHashMismatch,
-                        slashed_at: now,
+                        slashed_at: now
                     };
                     staged.timelocks.push(contract);
                     staged.claims.push(cs);
@@ -932,7 +975,7 @@ impl StateEngine {
             Action::ChallengeClaimReveal {
                 lock_id,
                 evidence_hash,
-                bond_amount,
+                bond_amount
             } => {
                 let mut contract = self
                     .db
@@ -941,7 +984,7 @@ impl StateEngine {
 
                 let revealed_at = match &contract.status {
                     TimeLockStatus::ClaimRevealed { revealed_at } => *revealed_at,
-                    _ => return Err(ChronxError::InvalidClaimStateTransition),
+                    _ => return Err(ChronxError::InvalidClaimStateTransition)
                 };
 
                 let mut cs = self
@@ -960,13 +1003,13 @@ impl StateEngine {
                 // Challenger must post at least the same bond as the agent.
                 if *bond_amount < cs.commit_bond {
                     return Err(ChronxError::ClaimBondTooLow {
-                        min: cs.commit_bond,
+                        min: cs.commit_bond
                     });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *bond_amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
 
@@ -1028,7 +1071,7 @@ impl StateEngine {
 
                         contract.status = TimeLockStatus::ClaimFinalized {
                             paid_to: agent_id.clone(),
-                            finalized_at: now,
+                            finalized_at: now
                         };
                         staged.timelocks.push(contract);
                         staged.claims.push(cs);
@@ -1065,7 +1108,7 @@ impl StateEngine {
 
                         contract.status = TimeLockStatus::ClaimSlashed {
                             reason: SlashReason::SuccessfulChallenge,
-                            slashed_at: now,
+                            slashed_at: now
                         };
                         staged.accounts.push(challenger_acc);
                         staged.accounts.push(lock_sender);
@@ -1074,7 +1117,7 @@ impl StateEngine {
                         Ok(())
                     }
 
-                    _ => Err(ChronxError::InvalidClaimStateTransition),
+                    _ => Err(ChronxError::InvalidClaimStateTransition)
                 }
             }
 
@@ -1082,17 +1125,17 @@ impl StateEngine {
             Action::RegisterProvider {
                 provider_class,
                 jurisdictions,
-                bond_amount,
+                bond_amount
             } => {
                 if *bond_amount < PROVIDER_BOND_CHRONOS {
                     return Err(ChronxError::ProviderBondTooLow {
-                        min: PROVIDER_BOND_CHRONOS,
+                        min: PROVIDER_BOND_CHRONOS
                     });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *bond_amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
                 if self.db.get_provider(&sender.account_id)?.is_some() {
@@ -1108,7 +1151,7 @@ impl StateEngine {
                     AuthPolicy::MultiSig { public_keys, .. } => public_keys
                         .first()
                         .cloned()
-                        .unwrap_or_else(|| chronx_core::types::DilithiumPublicKey(vec![])),
+                        .unwrap_or_else(|| chronx_core::types::DilithiumPublicKey(vec![]))
                 };
 
                 let record = ProviderRecord {
@@ -1118,7 +1161,7 @@ impl StateEngine {
                     jurisdictions: jurisdictions.clone(),
                     status: ProviderStatus::Active,
                     registration_bond: *bond_amount,
-                    registered_at: now,
+                    registered_at: now
                 };
                 staged.providers.push(record);
                 Ok(())
@@ -1168,17 +1211,17 @@ impl StateEngine {
                 provider_class_thresholds,
                 min_providers,
                 max_cert_age_secs,
-                bond_amount,
+                bond_amount
             } => {
                 if *bond_amount < SCHEMA_BOND_CHRONOS {
                     return Err(ChronxError::SchemaBondTooLow {
-                        min: SCHEMA_BOND_CHRONOS,
+                        min: SCHEMA_BOND_CHRONOS
                     });
                 }
                 if sender.spendable_balance() < *bond_amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: *bond_amount,
-                        have: sender.spendable_balance(),
+                        have: sender.spendable_balance()
                     });
                 }
 
@@ -1193,11 +1236,11 @@ impl StateEngine {
                     provider_class_thresholds: provider_class_thresholds.clone(),
                     signature_rules: SignatureRules {
                         min_providers: *min_providers,
-                        max_cert_age_secs: *max_cert_age_secs,
+                        max_cert_age_secs: *max_cert_age_secs
                     },
                     active: true,
                     registered_by: sender.account_id.clone(),
-                    registered_at: now,
+                    registered_at: now
                 };
                 staged.schemas.push(schema);
                 Ok(())
@@ -1239,7 +1282,7 @@ impl StateEngine {
                     submitter: sender.account_id.clone(),
                     pair: pair.clone(),
                     price_cents: *price_cents,
-                    submitted_at: now,
+                    submitted_at: now
                 };
                 staged.oracle_submissions.push(sub);
                 Ok(())
@@ -1298,7 +1341,7 @@ impl StateEngine {
                     }
                     let mut c = match self.db.get_timelock(cascade_id)? {
                         Some(c) => c,
-                        None => continue,
+                        None => continue
                     };
                     if c.status != TimeLockStatus::Pending {
                         continue;
@@ -1325,7 +1368,7 @@ impl StateEngine {
                     // or claim window expired).
                     if now < contract.unlock_at {
                         return Err(ChronxError::TimeLockNotMatured {
-                            unlock_time: contract.unlock_at,
+                            unlock_time: contract.unlock_at
                         });
                     }
                     return Err(ChronxError::ClaimWindowExpired);
@@ -1365,7 +1408,7 @@ impl StateEngine {
                 // Must have RevertToSender action.
                 match &contract.unclaimed_action {
                     Some(chronx_core::account::UnclaimedAction::RevertToSender) => {}
-                    _ => return Err(ChronxError::NotRevertToSender),
+                    _ => return Err(ChronxError::NotRevertToSender)
                 }
 
                 // Return funds to sender.
@@ -1383,7 +1426,7 @@ impl StateEngine {
             Action::ExecutorWithdraw {
                 lock_id,
                 destination,
-                executor_pubkey,
+                executor_pubkey
             } => {
                 // Prevent double-action on same lock within one transaction.
                 if staged.acted_lock_ids.contains(&lock_id.0.0) {
@@ -1398,7 +1441,7 @@ impl StateEngine {
                 // 1. lock_type must be "M" — reject all non-M locks.
                 match &contract.lock_type {
                     Some(lt) if lt == "M" => {}
-                    _ => return Err(ChronxError::NotTypeMlock),
+                    _ => return Err(ChronxError::NotTypeMlock)
                 }
 
                 // 2. Signer must match the registered MISAI executor pubkey.
@@ -1452,7 +1495,7 @@ impl StateEngine {
                 // 7. Set lock to PendingExecutor — KX stays locked until sweep finalizes.
                 contract.status = TimeLockStatus::PendingExecutor {
                     submitted_at: now,
-                    finalize_at,
+                    finalize_at
                 };
                 staged.acted_lock_ids.insert(lock_id.0.0);
                 staged.timelocks.push(contract.clone());
@@ -1464,7 +1507,7 @@ impl StateEngine {
                     amount_chronos: contract.amount as u64,
                     submitted_at: now,
                     finalize_at,
-                    status: "PendingExecutor".to_string(),
+                    status: "PendingExecutor".to_string()
                 };
                 self.db.put_executor_withdrawal(&lock_id.to_string(), &record)?;
 
@@ -1485,7 +1528,7 @@ impl StateEngine {
                 bond_amount_kx,
                 ref dilithium2_public_key_hex,
                 ref jurisdiction,
-                ref role,
+                ref role
             } => {
                 // Only the governance wallet may register verifiers
                 let governance_b58 = self.db.get_meta("governance_wallet")
@@ -1510,10 +1553,10 @@ impl StateEngine {
                         .map(|f| f == &sender_b58)
                         .unwrap_or(false);
                     if !is_founder {
-                        // For Genesis 8 initial setup, allow any account to register
+                        // For protocol initial setup, allow any account to register
                         // verifiers until governance is fully configured.
                         // In production, this should be restricted.
-                        warn!(sender = %sender_b58, "verifier registration from non-governance wallet — allowed during Genesis 8 setup");
+                        warn!(sender = %sender_b58, "verifier registration from non-governance wallet — allowed during  setup");
                     }
                 }
                 let now_u64 = now as u64;
@@ -1525,7 +1568,7 @@ impl StateEngine {
                     jurisdiction: jurisdiction.clone(),
                     role: role.clone(),
                     approval_date: now_u64,
-                    status: "Active".to_string(),
+                    status: "Active".to_string()
                 };
                 self.db.put_verifier(wallet_address, &record)?;
                 info!(verifier = %verifier_name, wallet = %wallet_address, "verifier registered");
@@ -1537,11 +1580,11 @@ impl StateEngine {
             | Action::AgentCodeUpdate { .. }
             | Action::AgentLoanRequest { .. } => {
                 Err(ChronxError::FeatureNotActive(
-                    "Genesis 8 agent actions are not yet active".into(),
+                    "Agent actions are not yet active".into(),
                 ))
             }
 
-            // ── Genesis 8 — TYPE I Invoice ──────────────────────────────────
+            // ── protocol — TYPE I Invoice ──────────────────────────────────
             Action::CreateInvoice(ref action) => {
                 let now_u64 = now as u64;
                 let min_expiry = now_u64 + INVOICE_MIN_EXPIRY_SECONDS;
@@ -1563,7 +1606,7 @@ impl StateEngine {
                     status: InvoiceStatus::Open,
                     created_at: now_u64,
                     fulfilled_at: None,
-                    fulfilled_by: None,
+                    fulfilled_by: None
                 };
                 self.db.put_invoice(&record)?;
                 info!(invoice_id = %hex::encode(action.invoice_id), "Invoice created");
@@ -1593,7 +1636,7 @@ impl StateEngine {
                 if sender.balance < amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: amount,
-                        have: sender.balance,
+                        have: sender.balance
                     });
                 }
                 sender.balance -= amount;
@@ -1659,7 +1702,7 @@ impl StateEngine {
                 Ok(())
             }
 
-            // ── Genesis 8 — TYPE C Credit Authorization ─────────────────────
+            // ── protocol — TYPE C Credit Authorization ─────────────────────
             Action::CreateCredit(ref action) => {
                 let now_u64 = now as u64;
                 let min_ceiling = CREDIT_MIN_CEILING_CHRONOS;
@@ -1682,7 +1725,7 @@ impl StateEngine {
                     drawn_chronos: 0,
                     status: CreditStatus::Open,
                     encrypted_terms: action.encrypted_terms.clone(),
-                    created_at: now_u64,
+                    created_at: now_u64
                 };
                 self.db.put_credit(&record)?;
                 info!(credit_id = %hex::encode(action.credit_id), "Credit authorization created");
@@ -1717,7 +1760,7 @@ impl StateEngine {
                 if grantor.balance < amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: amount,
-                        have: grantor.balance,
+                        have: grantor.balance
                     });
                 }
                 grantor.balance -= amount;
@@ -1744,7 +1787,7 @@ impl StateEngine {
                 Ok(())
             }
 
-            // ── Genesis 8 — TYPE Y Interest Bearing Deposit ─────────────────
+            // ── protocol — TYPE Y Interest Bearing Deposit ─────────────────
             Action::CreateDeposit(ref action) => {
                 let now_u64 = now as u64;
                 if action.term_seconds < DEPOSIT_MIN_TERM_SECONDS || action.term_seconds > DEPOSIT_MAX_TERM_SECONDS {
@@ -1767,7 +1810,7 @@ impl StateEngine {
                 if sender.balance < principal {
                     return Err(ChronxError::InsufficientBalance {
                         need: principal,
-                        have: sender.balance,
+                        have: sender.balance
                     });
                 }
                 // Deduct from depositor, credit to obligor
@@ -1782,7 +1825,7 @@ impl StateEngine {
                     Compounding::Simple => "Simple",
                     Compounding::Daily => "Daily",
                     Compounding::Monthly => "Monthly",
-                    Compounding::Annually => "Annually",
+                    Compounding::Annually => "Annually"
                 };
                 let record = DepositRecord {
                     deposit_id: action.deposit_id,
@@ -1797,7 +1840,7 @@ impl StateEngine {
                     penalty_basis_points: action.penalty_basis_points,
                     status: DepositStatus::Active,
                     created_at: now_u64,
-                    settled_at: None,
+                    settled_at: None
                 };
                 self.db.put_deposit(&record)?;
                 info!(deposit_id = %hex::encode(action.deposit_id), total_due, "Deposit created");
@@ -1819,7 +1862,7 @@ impl StateEngine {
                 if sender.balance < amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: amount,
-                        have: sender.balance,
+                        have: sender.balance
                     });
                 }
                 sender.balance -= amount;
@@ -1834,7 +1877,7 @@ impl StateEngine {
                 Ok(())
             }
 
-            // ── Genesis 8 — TYPE V Conditional Validity ─────────────────────
+            // ── protocol — TYPE V Conditional Validity ─────────────────────
             Action::CreateConditional(ref action) => {
                 let now_u64 = now as u64;
                 let attestor_count = action.attestor_pubkeys.len() as u32;
@@ -1855,7 +1898,7 @@ impl StateEngine {
                 if sender.balance < amount {
                     return Err(ChronxError::InsufficientBalance {
                         need: amount,
-                        have: sender.balance,
+                        have: sender.balance
                     });
                 }
                 sender.balance -= amount;
@@ -1863,7 +1906,7 @@ impl StateEngine {
                 let fallback_str = match action.fallback {
                     ConditionalFallback::Void => "Void",
                     ConditionalFallback::Return => "Return",
-                    ConditionalFallback::Escrow => "Escrow",
+                    ConditionalFallback::Escrow => "Escrow"
                 };
                 let record = ConditionalRecord {
                     type_v_id: action.type_v_id,
@@ -1878,7 +1921,7 @@ impl StateEngine {
                     encrypted_terms: action.encrypted_terms.clone(),
                     attestations_received: Vec::new(),
                     status: ConditionalStatus::Pending,
-                    created_at: now_u64,
+                    created_at: now_u64
                 };
                 self.db.put_conditional(&record)?;
                 info!(type_v_id = %hex::encode(action.type_v_id), "Conditional payment created");
@@ -1918,7 +1961,7 @@ impl StateEngine {
                                 account_id: recipient_account_id.clone(),
                                 balance: 0,
                                 auth_policy: chronx_core::account::AuthPolicy::SingleSig {
-                                    public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone()),
+                                    public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone())
                                 },
                                 nonce: 0,
                                 recovery_state: Default::default(),
@@ -1933,7 +1976,7 @@ impl StateEngine {
                                 total_locked_incoming_chronos: 0,
                                 total_locked_outgoing_chronos: 0,
                                 preferred_fiat_currency: None,
-                                extension_data: None,
+                                lock_marker: None
                             }
                         }
                     };
@@ -1945,7 +1988,7 @@ impl StateEngine {
                 Ok(())
             }
 
-            // ── Genesis 8 — TYPE L Ledger Entry ─────────────────────────────
+            // ── protocol — TYPE L Ledger Entry ─────────────────────────────
             Action::CreateLedgerEntry(ref action) => {
                 let now_u64 = now as u64;
                 // Author must be a bonded agent
@@ -1974,7 +2017,7 @@ impl StateEngine {
                     LedgerEntryType::LifeUnconfirmed => "LifeUnconfirmed",
                     LedgerEntryType::BeneficiaryIdentified => "BeneficiaryIdentified",
                     LedgerEntryType::IdentityVerified => "IdentityVerified",
-                    LedgerEntryType::IdentityRevoked => "IdentityRevoked",
+                    LedgerEntryType::IdentityRevoked => "IdentityRevoked"
                 };
                 let record = LedgerEntryRecord {
                     entry_id: action.entry_id,
@@ -1986,7 +2029,7 @@ impl StateEngine {
                     content_summary: action.content_summary.clone(),
                     promise_chain_hash: action.promise_chain_hash,
                     external_ref: action.external_ref.clone(),
-                    timestamp: now_u64,
+                    timestamp: now_u64
                 };
                 self.db.put_ledger_entry(&record)?;
 
@@ -2007,7 +2050,7 @@ impl StateEngine {
                 Ok(())
             }
 
-            // ── Genesis 9 — TYPE_G Wallet Group handlers ─────────────────────
+            // ── Wallet Group handlers ─────────────────────
 
             Action::CreateGroup(ref action) => {
                 use chronx_core::transaction::{GroupRecord, GroupStatus};
@@ -2030,7 +2073,7 @@ impl StateEngine {
                     members: action.members.clone(),
                     member_count: action.members.len() as u64,
                     created_at: now as u64,
-                    status: GroupStatus::Active,
+                    status: GroupStatus::Active
                 };
                 self.db.put_group(&record)?;
                 info!(group_id = %hex::encode(action.group_id), members = action.members.len(), "Group created");
@@ -2112,6 +2155,8 @@ impl StateEngine {
             // ── Genesis 10a — Loan actions ──────────────────────────────────
 
             Action::LoanOffer(offer) => {
+                // Loan action rate limit
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
                 // LoanOffer stores the offer as pending -- no funds move yet
                 if sender.account_id != offer.lender_wallet {
                     return Err(ChronxError::AuthPolicyViolation);
@@ -2127,35 +2172,38 @@ impl StateEngine {
                 offer_data["principal_kx"] = serde_json::json!(offer.principal_chronos / 1_000_000);
                 let val = serde_json::to_vec(&offer_data)
                     .map_err(|_| ChronxError::SerializationError)?;
-                self.db.save_loan_raw(&offer.loan_id, &val)?;
+                self.db.save_loan(&offer.loan_id, &val)?;
                 info!(loan_id = %hex::encode(offer.loan_id),
                       lender = %offer.lender_wallet, borrower = %offer.borrower_wallet,
                       "Loan offer created (pending acceptance)");
                 Ok(())
             }
             Action::LoanAcceptance(acceptance) => {
+                // Loan action rate limit
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
                 // Activate the loan: debit lender, credit borrower
-                if let Ok(Some(existing)) = self.db.get_loan_raw(&acceptance.loan_id) {
+                if let Ok(Some(existing)) = self.db.get_loan(&acceptance.loan_id) {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
                         if loan_val.get("status").and_then(|s| s.as_str()) != Some("pending") {
                             return Err(ChronxError::LoanNotActive);
                         }
                         // Store requires_autopay in the active loan record
-                        let requires_ap = loan_val.get("requires_autopay")
+                        let _requires_ap = loan_val.get("requires_autopay")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         loan_val["status"] = serde_json::json!("active");
                         loan_val["accepted_at"] = serde_json::json!(acceptance.accepted_at);
                         let val = serde_json::to_vec(&loan_val)
                             .map_err(|_| ChronxError::SerializationError)?;
-                        self.db.save_loan_raw(&acceptance.loan_id, &val)?;
+                        self.db.save_loan(&acceptance.loan_id, &val)?;
                         info!(loan_id = %hex::encode(acceptance.loan_id), "Loan accepted and active");
                     }
                 }
                 Ok(())
             }
             Action::LoanDecline(decline) => {
-                if let Ok(Some(existing)) = self.db.get_loan_raw(&decline.loan_id) {
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                if let Ok(Some(existing)) = self.db.get_loan(&decline.loan_id) {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
                         loan_val["status"] = serde_json::json!("declined");
                         loan_val["declined_at"] = serde_json::json!(decline.declined_at);
@@ -2164,37 +2212,38 @@ impl StateEngine {
                         }
                         let val = serde_json::to_vec(&loan_val)
                             .map_err(|_| ChronxError::SerializationError)?;
-                        self.db.save_loan_raw(&decline.loan_id, &val)?;
+                        self.db.save_loan(&decline.loan_id, &val)?;
                     }
                 }
                 Ok(())
             }
             Action::LoanOfferWithdrawn(withdrawal) => {
-                if let Ok(Some(existing)) = self.db.get_loan_raw(&withdrawal.loan_id) {
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                if let Ok(Some(existing)) = self.db.get_loan(&withdrawal.loan_id) {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
                         if loan_val.get("status").and_then(|s| s.as_str()) == Some("pending") {
                             loan_val["status"] = serde_json::json!("withdrawn");
                             loan_val["withdrawn_at"] = serde_json::json!(withdrawal.withdrawn_at);
                             let val = serde_json::to_vec(&loan_val)
                                 .map_err(|_| ChronxError::SerializationError)?;
-                            self.db.save_loan_raw(&withdrawal.loan_id, &val)?;
+                            self.db.save_loan(&withdrawal.loan_id, &val)?;
                         }
                     }
                 }
                 Ok(())
             }
             Action::LoanPayerUpdate(update) => {
-                let key = format!("payerupdate:{}", hex::encode(update.loan_id));
+                let _key = format!("payerupdate:{}", hex::encode(update.loan_id));
                 let val = serde_json::to_vec(&update)
                     .map_err(|_| ChronxError::SerializationError)?;
-                self.db.save_loan_raw(&update.loan_id, &val)?;
+                self.db.save_loan(&update.loan_id, &val)?;
                 Ok(())
             }
 
             Action::DefaultRecord {
                 loan_id, missed_stage_index, missed_amount_kx,
                 late_fees_accrued_kx, days_overdue, outstanding_balance_kx,
-                stages_remaining, defaulted_at, memo,
+                stages_remaining, defaulted_at, memo
             } => {
                 // Only MISAI executor may submit default records
                 let misai_executor = self.db
@@ -2205,16 +2254,18 @@ impl StateEngine {
                     return Err(ChronxError::MisaiOnlyAction);
                 }
 
-                let loan = self.db.get_loan(loan_id)?
+                let raw = self.db.get_loan(loan_id)?
                     .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
-                match loan.status {
-                    LoanStatus::Active | LoanStatus::Reinstated { .. } => {}
-                    _ => return Err(ChronxError::LoanNotActive),
+                let mut loan_val: serde_json::Value = serde_json::from_slice(&raw)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                if status != "active" && !status.starts_with("reinstated") {
+                    return Err(ChronxError::LoanNotActive);
                 }
-
-                let mut updated = loan;
-                updated.status = LoanStatus::Defaulted { defaulted_at: *defaulted_at };
-                self.db.save_loan(&updated)?;
+                loan_val["status"] = serde_json::json!({"Defaulted": {"defaulted_at": *defaulted_at}});
+                let updated_bytes = serde_json::to_vec(&loan_val)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan(loan_id, &updated_bytes)?;
 
                 // Persist detailed default record
                 let default_record = LoanDefaultRecord {
@@ -2226,7 +2277,7 @@ impl StateEngine {
                     outstanding_balance_kx: *outstanding_balance_kx,
                     stages_remaining: *stages_remaining,
                     defaulted_at: *defaulted_at,
-                    memo: memo.clone(),
+                    memo: memo.clone()
                 };
                 self.db.save_loan_default(loan_id, &default_record)?;
 
@@ -2237,12 +2288,16 @@ impl StateEngine {
                 Ok(())
             }
 
-            Action::LoanReinstatement { loan_id, cure_amount_kx, new_stages, memo } => {
-                let loan = self.db.get_loan(loan_id)?
+            Action::LoanReinstatement { loan_id, cure_amount_kx: _, new_stages, memo } => {
+                let raw = self.db.get_loan(loan_id)?
                     .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
-                match loan.status {
-                    LoanStatus::Defaulted { .. } => {}
-                    _ => return Err(ChronxError::LoanNotInDefault),
+                let mut loan_val: serde_json::Value = serde_json::from_slice(&raw)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                let is_defaulted = loan_val.get("status").map(|s| {
+                    s.as_str() == Some("defaulted") || s.to_string().contains("Defaulted")
+                }).unwrap_or(false);
+                if !is_defaulted {
+                    return Err(ChronxError::LoanNotInDefault);
                 }
 
                 // Validate new stages
@@ -2253,66 +2308,76 @@ impl StateEngine {
                     }
                 }
 
-                let mut updated = loan;
-                updated.status = LoanStatus::Reinstated { reinstated_at: now as u64 };
-                updated.stages = new_stages.clone();
-                if let Some(m) = memo { updated.memo = Some(m.clone()); }
-                self.db.save_loan(&updated)?;
+                loan_val["status"] = serde_json::json!({"Reinstated": {"reinstated_at": now as u64}});
+                loan_val["stages"] = serde_json::to_value(&new_stages).unwrap_or(serde_json::Value::Null);
+                if let Some(m) = memo { loan_val["memo"] = serde_json::json!(m); }
+                let updated_bytes = serde_json::to_vec(&loan_val)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan(loan_id, &updated_bytes)?;
 
                 info!(loan_id = %hex::encode(loan_id), "Loan reinstated");
                 Ok(())
             }
 
             Action::LoanWriteOff { loan_id, outstanding_balance_kx, write_off_date, memo } => {
-                let loan = self.db.get_loan(loan_id)?
+                let raw = self.db.get_loan(loan_id)?
                     .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
-                match loan.status {
-                    LoanStatus::Defaulted { .. } => {}
-                    _ => return Err(ChronxError::LoanNotInDefault),
+                let mut loan_val: serde_json::Value = serde_json::from_slice(&raw)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                let is_defaulted = loan_val.get("status").map(|s| {
+                    s.as_str() == Some("defaulted") || s.to_string().contains("Defaulted")
+                }).unwrap_or(false);
+                if !is_defaulted {
+                    return Err(ChronxError::LoanNotInDefault);
                 }
 
                 // Only the lender (tx sender) may write off
-                if sender.account_id.to_string() != loan.lender {
+                let lender_str = loan_val.get("lender_wallet")
+                    .or_else(|| loan_val.get("lender"))
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                if sender.account_id.to_string() != lender_str {
                     return Err(ChronxError::AuthPolicyViolation);
                 }
 
-                let mut updated = loan;
-                updated.status = LoanStatus::WrittenOff {
-                    written_off_at: *write_off_date,
-                    outstanding_kx: *outstanding_balance_kx,
-                };
-                if let Some(m) = memo { updated.memo = Some(m.clone()); }
-                self.db.save_loan(&updated)?;
+                loan_val["status"] = serde_json::json!({"WrittenOff": {"written_off_at": *write_off_date, "outstanding_kx": *outstanding_balance_kx}});
+                if let Some(m) = memo { loan_val["memo"] = serde_json::json!(m); }
+                let updated_bytes = serde_json::to_vec(&loan_val)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan(loan_id, &updated_bytes)?;
 
                 info!(loan_id = %hex::encode(loan_id), "Loan written off");
                 Ok(())
             }
 
             Action::LoanEarlyPayoff { loan_id, payoff_amount_kx, memo } => {
-                let loan = self.db.get_loan(loan_id)?
+                let raw = self.db.get_loan(loan_id)?
                     .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
-                match loan.status {
-                    LoanStatus::Active | LoanStatus::Reinstated { .. } => {}
-                    _ => return Err(ChronxError::LoanNotActive),
+                let mut loan_val: serde_json::Value = serde_json::from_slice(&raw)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                let is_active = status == "active" || loan_val.get("status").map(|s| s.to_string().contains("Reinstated")).unwrap_or(false);
+                if !is_active {
+                    return Err(ChronxError::LoanNotActive);
                 }
 
                 // Check prepayment terms
-                match loan.prepayment {
-                    PrepaymentTerms::Prohibited => return Err(ChronxError::PrepaymentProhibited),
-                    _ => {}
+                let prepayment = loan_val.get("prepayment").and_then(|v| v.as_str()).unwrap_or("");
+                if prepayment == "Prohibited" {
+                    return Err(ChronxError::PrepaymentProhibited);
                 }
 
-                let mut updated = loan;
-                updated.status = LoanStatus::EarlyPayoff { paid_off_at: now as u64 };
-                if let Some(m) = memo { updated.memo = Some(m.clone()); }
-                self.db.save_loan(&updated)?;
+                loan_val["status"] = serde_json::json!({"EarlyPayoff": {"paid_off_at": now as u64}});
+                if let Some(m) = memo { loan_val["memo"] = serde_json::json!(m); }
+                let updated_bytes = serde_json::to_vec(&loan_val)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan(loan_id, &updated_bytes)?;
 
                 info!(loan_id = %hex::encode(loan_id), payoff_kx = %payoff_amount_kx, "Loan early payoff");
                 Ok(())
             }
 
 
-            // ── Genesis 10b: LenderMemo ─────────────────────────────────────
+            // ── LenderMemo ─────────────────────────────────────
             Action::LenderMemo { loan_id, default_record_id, ref memo, .. } => {
                 let memo_key = format!("{}:{}", hex::encode(loan_id), hex::encode(default_record_id));
                 if self.db.loan_memos.contains_key(memo_key.as_bytes()).map_err(|_| ChronxError::DatabaseError)? {
@@ -2322,13 +2387,13 @@ impl StateEngine {
                 let val = serde_json::to_vec(&serde_json::json!({
                     "loan_id": hex::encode(loan_id),
                     "default_record_id": hex::encode(default_record_id),
-                    "memo": truncated,
+                    "memo": truncated
                 })).map_err(|_| ChronxError::SerializationError)?;
                 self.db.loan_memos.insert(memo_key.as_bytes(), val).map_err(|_| ChronxError::DatabaseError)?;
                 Ok(())
             }
 
-            Action::LoanCompletion { loan_id, total_paid_kx, completion_date, stages_completed, memo } => {
+            Action::LoanCompletion { loan_id, total_paid_kx, completion_date, stages_completed, memo: _ } => {
                 // Only MISAI executor may mark completion
                 let misai_executor = self.db
                     .get_meta("misai_executor_wallet")?
@@ -2338,22 +2403,121 @@ impl StateEngine {
                     return Err(ChronxError::MisaiOnlyAction);
                 }
 
-                let loan = self.db.get_loan(loan_id)?
+                let raw = self.db.get_loan(loan_id)?
                     .ok_or_else(|| ChronxError::LoanNotFound(hex::encode(loan_id)))?;
-                match loan.status {
-                    LoanStatus::Active | LoanStatus::Reinstated { .. } => {}
-                    _ => return Err(ChronxError::LoanNotActive),
+                let mut loan_val: serde_json::Value = serde_json::from_slice(&raw)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                if status != "active" && !status.starts_with("reinstated") && !loan_val.get("status").map(|s| s.to_string().contains("Reinstated")).unwrap_or(false) {
+                    return Err(ChronxError::LoanNotActive);
                 }
-
-                let mut updated = loan;
-                updated.status = LoanStatus::Completed { completed_at: *completion_date };
-                self.db.save_loan(&updated)?;
+                loan_val["status"] = serde_json::json!({"Completed": {"completed_at": *completion_date}});
+                let updated_bytes = serde_json::to_vec(&loan_val)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_loan(loan_id, &updated_bytes)?;
 
                 info!(loan_id = %hex::encode(loan_id),
                       total_paid_kx = %total_paid_kx,
                       stages = %stages_completed,
                       "Loan completed");
                 Ok(())
+            }
+
+            // ── Payment Channels (scaffolding) ──────────────────
+            Action::ChannelOpen { channel_id, counterparty, locked_chronos, metadata: _ } => {
+                if *locked_chronos == 0 {
+                    return Err(ChronxError::ZeroAmount);
+                }
+                info!(channel_id = %hex::encode(channel_id),
+                      opener = %sender.account_id, counterparty = %counterparty,
+                      locked = locked_chronos,
+                      "[CHANNEL] opened");
+                Ok(())
+            }
+
+            Action::ChannelClose { channel_id, net_settlement_chronos, payment_count, final_state_hash: _ } => {
+                // Apply net settlement to balances
+                // net_settlement_chronos: positive = opener pays counterparty, negative = counterparty pays opener
+                info!(channel_id = %hex::encode(channel_id),
+                      payments = payment_count,
+                      net = net_settlement_chronos,
+                      "[CHANNEL] closed");
+                Ok(())
+            }
+
+            // ── LoanExit (with pro-rata settlement) ─────────────
+            Action::LoanExit { ref loan_id, .. } => {
+                // Rate limit
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+
+                // Load raw loan JSON
+                if let Ok(Some(existing)) = self.db.get_loan(loan_id) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        if status != "active" {
+                            return Err(ChronxError::LoanNotActive);
+                        }
+
+                        // A5: Pro-rata settlement before closing
+                        let rate_bps = loan_val.get("interest_rate")
+                            .and_then(|v| v.get("Fixed"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let principal_kx = loan_val.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let principal_chronos = loan_val.get("principal_chronos").and_then(|v| v.as_u64())
+                            .unwrap_or(principal_kx * 1_000_000);
+                        let last_at = loan_val.get("last_settlement_at").and_then(|v| v.as_i64())
+                            .or_else(|| loan_val.get("accepted_at").and_then(|v| v.as_i64()))
+                            .or_else(|| loan_val.get("created_at").and_then(|v| v.as_i64()))
+                            .unwrap_or(0);
+                        let elapsed = (now as i64 - last_at).max(0) as u64;
+
+                        if rate_bps > 0 && principal_chronos > 0 && elapsed > 0 {
+                            let accrued = (principal_chronos as u128)
+                                .checked_mul(rate_bps as u128).unwrap_or(0)
+                                .checked_mul(elapsed as u128).unwrap_or(0)
+                                / (10_000u128 * 31_536_000u128);
+                            let accrued = accrued as u64;
+
+                            if accrued >= 1 {
+                                let borrower_str = loan_val.get("borrower_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let lender_str = loan_val.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                if let (Ok(bid), Ok(lid)) = (
+                                    chronx_core::types::AccountId::from_b58(&borrower_str),
+                                    chronx_core::types::AccountId::from_b58(&lender_str),
+                                ) {
+                                    if let (Ok(Some(mut bacc)), Ok(Some(mut lacc))) = (
+                                        self.db.get_account(&bid),
+                                        self.db.get_account(&lid),
+                                    ) {
+                                        if bacc.balance >= accrued as u128 {
+                                            bacc.balance -= accrued as u128;
+                                            lacc.balance += accrued as u128;
+                                            self.db.put_account(&bacc)?;
+                                            self.db.put_account(&lacc)?;
+                                            info!(accrued_chronos = accrued,
+                                                  loan_id = %hex::encode(loan_id),
+                                                  "[LOAN EXIT] final settlement");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Close the loan
+                        loan_val["status"] = serde_json::json!("closed");
+                        loan_val["closed_at"] = serde_json::json!(now as u64);
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(loan_id, &updated)?;
+                        info!(loan_id = %hex::encode(loan_id), "[LOAN EXIT] closed");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::LoanNotFound(hex::encode(loan_id)))
+                }
             }
         }
     }
@@ -2387,7 +2551,7 @@ fn calculate_deposit_total_due(
                 Compounding::Daily => 365,
                 Compounding::Monthly => 12,
                 Compounding::Annually => 1,
-                _ => 1,
+                _ => 1
             };
             let total_periods = (term_days * periods_per_year) / 365;
             if total_periods == 0 {
@@ -2416,13 +2580,13 @@ impl StateEngine {
     ///
     /// Called periodically by the node (every 5 minutes). This is NOT a
     /// transaction — it directly modifies the DB. Each revert credits the
-    /// Genesis 7: fire Day 91 triggers on unclaimed matured locks.
+    /// protocol: fire Day 91 triggers on unclaimed matured locks.
     /// Currently a no-op stub — no locks are old enough to trigger yet.
     pub fn sweep_genesis7_triggers(&self, _now: i64) -> Result<u32, ChronxError> {
         Ok(0)
     }
 
-    /// Genesis 7: sweep unclaimed locks past the 100-year expiry window and
+    /// protocol: sweep unclaimed locks past the 100-year expiry window and
     /// route them to the Humanity Stake Pool. Currently a no-op stub — no locks
     /// are old enough to trigger (earliest maturity is 2036).
     pub fn sweep_genesis7_expiry(&self, _now: i64, _pool_address: &str) -> Result<u32, ChronxError> {
@@ -2433,8 +2597,8 @@ impl StateEngine {
     /// Auto-deliver matured wallet-to-wallet locks.
     ///
     /// Finds all Pending locks where:
-    ///   - NOT an email lock (no 0xC5 marker in extension_data)
-    ///   - unlock_at <= now
+    /// - NOT an email lock (no 0xC5 marker in lock_marker)
+    /// - unlock_at <= now
     /// For each: credits recipient balance, sets status to Claimed.
     ///
     /// Returns the number of locks auto-delivered.
@@ -2448,7 +2612,7 @@ impl StateEngine {
             }
             // Skip email locks (0xC5 marker).
             let is_email = lock
-                .extension_data
+                .lock_marker
                 .as_ref()
                 .map(|d| d.len() == 33 && d[0] == 0xC5)
                 .unwrap_or(false);
@@ -2460,12 +2624,36 @@ impl StateEngine {
                 continue;
             }
 
-            // Credit recipient balance.
+            // Check for PAY_AS delivery
+            let convert_to = self.db.get_convert_to_suggestion(&lock.id)
+                .ok().flatten().unwrap_or_default();
+            let is_pay_as = !convert_to.is_empty()
+                && (convert_to.eq_ignore_ascii_case("usdc") || convert_to.eq_ignore_ascii_case("usd"));
+
+            if is_pay_as {
+                // PAY_AS delivery: query oracle for KX/USDC rate
+                // The pay_as_amount is stored alongside the lock.
+                // For now, we check the convert_to_suggestion sled tree.
+                // If oracle is unreachable, skip and retry next sweep.
+                // TODO: integrate with XChan oracle endpoint at runtime
+                // For Phase 1, PAY_AS locks deliver full amount (same as plain KX)
+                // with a log noting the PAY_AS intent. Full oracle integration is Phase 2.
+                info!(
+                    lock_id = %lock.id,
+                    convert_to = %convert_to,
+                    amount_chronos = lock.amount,
+                    "[PAY_AS] delivering lock with PAY_AS intent — full amount (oracle integration pending)"
+                );
+            }
+
+            // Credit recipient balance
             let mut recipient = match self.db.get_account(&lock.recipient_account_id)? {
                 Some(a) => a,
-                None => continue, // recipient account doesn't exist — skip
+                None => continue,
             };
-            recipient.balance += lock.amount;
+
+            let delivery_amount = lock.amount; // Full amount for now; PAY_AS oracle adjusts in Phase 2
+            recipient.balance += delivery_amount;
             self.db.put_account(&recipient)?;
 
             let mut delivered_lock = lock.clone();
@@ -2473,7 +2661,7 @@ impl StateEngine {
             self.db.put_timelock(&delivered_lock)?;
 
             info!(
-                amount_kx = lock.amount / 1_000_000,
+                amount_kx = delivery_amount / 1_000_000,
                 lock_id = %lock.id,
                 recipient = %lock.recipient_account_id,
                 "Auto-delivered wallet-to-wallet lock"
@@ -2502,7 +2690,7 @@ impl StateEngine {
             }
             // Must be an email lock (0xC5 marker).
             let is_email = lock
-                .extension_data
+                .lock_marker
                 .as_ref()
                 .map(|d| d.len() == 33 && d[0] == 0xC5)
                 .unwrap_or(false);
@@ -2512,7 +2700,7 @@ impl StateEngine {
             // Must have a claim window.
             let window_secs = match lock.claim_window_secs {
                 Some(w) => w,
-                None => continue,
+                None => continue
             };
             // Check if the claim window has expired.
             if now <= lock.created_at + window_secs as i64 {
@@ -2521,7 +2709,7 @@ impl StateEngine {
             // Must have RevertToSender action.
             match &lock.unclaimed_action {
                 Some(chronx_core::account::UnclaimedAction::RevertToSender) => {}
-                _ => continue,
+                _ => continue
             }
 
             // Revert: credit sender, update lock status.
@@ -2549,9 +2737,9 @@ impl StateEngine {
     ///
     /// Called periodically by the node (every 60 seconds). For each pending
     /// withdrawal whose finalize_at <= now:
-    ///   1. Transfer the lock's KX to the executor wallet
-    ///   2. Set lock status to ExecutorWithdrawn
-    ///   3. Mark the withdrawal record as "Finalized"
+    /// 1. Transfer the lock's KX to the executor wallet
+    /// 2. Set lock status to ExecutorWithdrawn
+    /// 3. Mark the withdrawal record as "Finalized"
     ///
     /// Returns the number of withdrawals finalized.
     pub fn sweep_executor_withdrawals(&self, now: i64) -> Result<u32, ChronxError> {
@@ -2567,13 +2755,13 @@ impl StateEngine {
             let lock_id_hex = &record.lock_id;
             let lock_txid = match chronx_core::types::TxId::from_hex(lock_id_hex) {
                 Ok(id) => id,
-                Err(_) => continue,
+                Err(_) => continue
             };
 
             // Load the lock.
             let mut contract = match self.db.get_timelock(&lock_txid)? {
                 Some(c) => c,
-                None => continue,
+                None => continue
             };
 
             // Only finalize if still in PendingExecutor status.
@@ -2588,7 +2776,7 @@ impl StateEngine {
             // Transfer KX to executor wallet.
             let dest_id = match chronx_core::types::AccountId::from_b58(&record.destination) {
                 Ok(id) => id,
-                Err(_) => continue,
+                Err(_) => continue
             };
             let mut dest_account = match self.db.get_account(&dest_id)? {
                 Some(a) => a,
@@ -2704,7 +2892,7 @@ impl StateEngine {
 
         if count > 0 {
             self.db.flush()?;
-            info!(transitions = count, "Genesis 8 sweep completed");
+            info!(transitions = count, "Sweep completed");
         }
         Ok(count)
     }
@@ -2772,6 +2960,99 @@ impl StateEngine {
         Ok(count)
     }
 
+
+
+    // ── A4: Loan payment sweep (settles accrued interest on raw JSON loans) ──
+    pub fn sweep_loan_payments(&self, now: i64, min_settlement: u64) -> Result<u32, ChronxError> {
+        use chronx_core::types::AccountId;
+        let mut settled_count = 0u32;
+
+        // Iterate all raw loan entries
+        let entries: Vec<_> = self.db.iter_loans().collect();
+        for (key, val) in entries {
+            let mut loan: serde_json::Value = match serde_json::from_slice(&val) {
+                Ok(v) => v, Err(_) => continue
+            };
+
+            // Only active main-chain loans
+            let status = loan.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status != "active" { continue; }
+            // Skip channel loans
+            if loan.get("channel_id").and_then(|v| v.as_str()).is_some() { continue; }
+
+            // Get interest rate (bps from interest_rate.Fixed)
+            let rate_bps = loan.get("interest_rate")
+                .and_then(|v| v.get("Fixed"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if rate_bps == 0 { continue; }
+
+            // Principal in chronos
+            let principal_kx = loan.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+            let principal_chronos = loan.get("principal_chronos").and_then(|v| v.as_u64())
+                .unwrap_or(principal_kx * 1_000_000);
+            if principal_chronos == 0 { continue; }
+
+            // Time since last settlement
+            let last_at = loan.get("last_settlement_at").and_then(|v| v.as_i64())
+                .or_else(|| loan.get("accepted_at").and_then(|v| v.as_i64()))
+                .or_else(|| loan.get("created_at").and_then(|v| v.as_i64()))
+                .unwrap_or(0);
+            let elapsed = (now - last_at).max(0) as u64;
+            if elapsed == 0 { continue; }
+
+            // Accrued interest: principal * rate_bps / 10000 * elapsed / 31536000
+            let accrued = (principal_chronos as u128)
+                .checked_mul(rate_bps as u128).unwrap_or(0)
+                .checked_mul(elapsed as u128).unwrap_or(0)
+                / (10_000u128 * 31_536_000u128);
+            let accrued = accrued as u64;
+            if accrued < min_settlement { continue; }
+
+            // Borrower & lender wallets
+            let borrower_str = loan.get("borrower_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let lender_str = loan.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if borrower_str.is_empty() || lender_str.is_empty() { continue; }
+
+            let borrower_id = match AccountId::from_b58(&borrower_str) { Ok(id) => id, Err(_) => continue };
+            let lender_id = match AccountId::from_b58(&lender_str) { Ok(id) => id, Err(_) => continue };
+
+            // Check borrower balance
+            let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                Some(a) => a, None => continue
+            };
+            if borrower_acc.balance < accrued as u128 {
+                loan["status"] = serde_json::json!("payment_failed");
+                let updated = serde_json::to_vec(&loan).map_err(|_| ChronxError::SerializationError)?;
+                if key.len() == 32 { let mut lid = [0u8;32]; lid.copy_from_slice(&key); self.db.save_loan(&lid, &updated)?; }
+                warn!(loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                      "[LOAN SWEEP] payment failed insufficient balance");
+                continue;
+            }
+
+            // Debit borrower, credit lender
+            borrower_acc.balance -= accrued as u128;
+            self.db.put_account(&borrower_acc)?;
+            let mut lender_acc = match self.db.get_account(&lender_id)? {
+                Some(a) => a, None => continue
+            };
+            lender_acc.balance += accrued as u128;
+            self.db.put_account(&lender_acc)?;
+
+            // Update loan record
+            loan["last_settlement_at"] = serde_json::json!(now);
+            let updated = serde_json::to_vec(&loan).map_err(|_| ChronxError::SerializationError)?;
+            if key.len() == 32 { let mut lid = [0u8;32]; lid.copy_from_slice(&key); self.db.save_loan(&lid, &updated)?; }
+
+            info!(accrued_chronos = accrued,
+                  loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                  borrower = %borrower_str, lender = %lender_str,
+                  "[LOAN SWEEP] settled interest payment");
+            settled_count += 1;
+        }
+        if settled_count > 0 { self.db.flush()?; }
+        Ok(settled_count)
+    }
 
 }
 
@@ -2863,7 +3144,7 @@ mod tests {
             split_policy: None,
             claim_attempts_max: None,
             recurring: None,
-            extension_data: None,
+            lock_marker: None,
             oracle_hint: None,
             jurisdiction_hint: None,
             governance_proposal_id: None,
@@ -2873,7 +3154,7 @@ mod tests {
             current_beneficiary: None,
             transfer_history: Vec::new(),
             earliest_transfer_date: None,
-            recipient_email_hash: None,
+            email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
             notification_sent: false,
@@ -2923,7 +3204,7 @@ mod tests {
             split_policy: None,
             claim_attempts_max: None,
             recurring: None,
-            extension_data: None,
+            lock_marker: None,
             oracle_hint: None,
             jurisdiction_hint: None,
             governance_proposal_id: None,
@@ -2933,7 +3214,7 @@ mod tests {
             current_beneficiary: None,
             transfer_history: Vec::new(),
             earliest_transfer_date: None,
-            recipient_email_hash: None,
+            email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
             notification_sent: false,
@@ -2973,12 +3254,12 @@ mod tests {
             split_policy: None,
             claim_attempts_max: None,
             recurring: None,
-            extension_data: None,
+            lock_marker: None,
             oracle_hint: None,
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
-            recipient_email_hash: None,
+            email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
         }
@@ -4057,7 +4338,7 @@ mod tests {
             split_policy: None,
             claim_attempts_max: None,
             recurring: None,
-            extension_data: None,
+            lock_marker: None,
             oracle_hint: None,
             jurisdiction_hint: None,
             governance_proposal_id: None,
@@ -4067,7 +4348,7 @@ mod tests {
             current_beneficiary: None,
             transfer_history: Vec::new(),
             earliest_transfer_date: None,
-            recipient_email_hash: None,
+            email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
             notification_sent: false,

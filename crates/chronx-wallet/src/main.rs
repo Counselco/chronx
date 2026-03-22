@@ -378,6 +378,10 @@ async fn main() -> anyhow::Result<()> {
                 vec![Action::Transfer {
                     to: to_id,
                     amount: chronos,
+                    memo: None,
+                    memo_encrypted: true,
+                    memo_public: false,
+                    pay_as_amount: None,
                 }],
                 &client,
             )
@@ -411,12 +415,12 @@ async fn main() -> anyhow::Result<()> {
                     split_policy: None,
                     claim_attempts_max: None,
                     recurring: None,
-                    extension_data: None,
+                    lock_marker: None,
                     oracle_hint: None,
                     jurisdiction_hint: None,
                     governance_proposal_id: None,
                     client_ref: None,
-                    recipient_email_hash: None,
+                    email_recipient_hash: None,
                     claim_window_secs: None,
                     unclaimed_action: None,
                 lock_type: None,
@@ -435,6 +439,9 @@ async fn main() -> anyhow::Result<()> {
                     beneficiary_description: None,
                     beneficiary_description_hash: None,
                     convert_to: None, authorized_claimants: None, succession_group: None, backup_executors: None, executor_threshold: None,
+                    memo_encrypted: true,
+                    memo_public: false,
+                    pay_as_amount: None,
                 }],
                 &client,
             )
@@ -472,12 +479,12 @@ async fn main() -> anyhow::Result<()> {
                 .collect();
             let claim_code = format!("KX-{}-{}-{}-{}", segments[0], segments[1], segments[2], segments[3]);
 
-            // BLAKE3(claim_code) → extension_data (0xC5 marker + 32 bytes)
+            // BLAKE3(claim_code) → lock_marker (0xC5 marker + 32 bytes)
             let code_hash = blake3::hash(claim_code.as_bytes());
             let mut ext = vec![0xC5u8];
             ext.extend_from_slice(code_hash.as_bytes());
 
-            // BLAKE3(lowercase email) → recipient_email_hash
+            // BLAKE3(lowercase email) → email_recipient_hash
             let email_hash = blake3::hash(email.trim().to_lowercase().as_bytes());
             let email_hash_bytes: [u8; 32] = *email_hash.as_bytes();
 
@@ -496,12 +503,12 @@ async fn main() -> anyhow::Result<()> {
                     split_policy: None,
                     claim_attempts_max: None,
                     recurring: None,
-                    extension_data: Some(ext),
+                    lock_marker: Some(ext),
                     oracle_hint: None,
                     jurisdiction_hint: None,
                     governance_proposal_id: None,
                     client_ref: None,
-                    recipient_email_hash: Some(email_hash_bytes),
+                    email_recipient_hash: Some(email_hash_bytes),
                     claim_window_secs: Some(259_200),
                     unclaimed_action: Some(UnclaimedAction::RevertToSender),
                     lock_type: None,
@@ -520,6 +527,9 @@ async fn main() -> anyhow::Result<()> {
                     beneficiary_description: None,
                     beneficiary_description_hash: None,
                     convert_to: None, authorized_claimants: None, succession_group: None, backup_executors: None, executor_threshold: None,
+                    memo_encrypted: true,
+                    memo_public: false,
+                    pay_as_amount: None,
                 }],
                 &client,
             )
@@ -702,12 +712,12 @@ async fn main() -> anyhow::Result<()> {
                 segments[0], segments[1], segments[2], segments[3]
             );
 
-            // BLAKE3(claim_code) → extension_data (0xC5 marker + 32 bytes)
+            // BLAKE3(claim_code) → lock_marker (0xC5 marker + 32 bytes)
             let code_hash = blake3::hash(claim_code.as_bytes());
             let mut ext = vec![0xC5u8];
             ext.extend_from_slice(code_hash.as_bytes());
 
-            // BLAKE3(lowercase email) → recipient_email_hash
+            // BLAKE3(lowercase email) → email_recipient_hash
             let email_hash = blake3::hash(email.trim().to_lowercase().as_bytes());
             let email_hash_bytes: [u8; 32] = *email_hash.as_bytes();
 
@@ -735,12 +745,12 @@ async fn main() -> anyhow::Result<()> {
                         split_policy: None,
                         claim_attempts_max: None,
                         recurring: None,
-                        extension_data: Some(ext.clone()),
+                        lock_marker: Some(ext.clone()),
                         oracle_hint: None,
                         jurisdiction_hint: None,
                         governance_proposal_id: None,
                         client_ref: None,
-                        recipient_email_hash: Some(email_hash_bytes),
+                        email_recipient_hash: Some(email_hash_bytes),
                         claim_window_secs: Some(259_200),
                         unclaimed_action: Some(UnclaimedAction::RevertToSender),
                         lock_type: None,
@@ -759,6 +769,9 @@ async fn main() -> anyhow::Result<()> {
                     beneficiary_description: None,
                     beneficiary_description_hash: None,
                     convert_to: None, authorized_claimants: None, succession_group: None, backup_executors: None, executor_threshold: None,
+                        memo_encrypted: true,
+                        memo_public: false,
+                        pay_as_amount: None,
                     }
                 })
                 .collect();
@@ -1188,6 +1201,20 @@ fn cmd_genesis_params(out_dir: &PathBuf) -> anyhow::Result<()> {
         reserve_key: reserve_kp.public_key.clone(),
         faucet_key: chronx_core::types::DilithiumPublicKey(vec![0u8; 1312]),
         axioms: None,
+        rate_limit_tx_per_wallet_per_minute: 10,
+        rate_limit_loan_actions_per_wallet_per_day: 100,
+        channel_threshold_daily_tx: 1000,
+        channel_open_min_lock_kx: 1,
+        sweep_loan_interval_seconds: 3600,
+        sweep_email_lock_interval_seconds: 300,
+        sweep_matured_timelock_interval_seconds: 60,
+        loan_min_settlement_chronos: 1000,
+        sweep_humanity_stake_interval_seconds: 86400,
+        sweep_guardian_transition_interval_seconds: 3600,
+        sweep_promise_chain_interval_seconds: 86400,
+        sweep_executor_interval_seconds: 60,
+        pay_as_max_usd: 100.0,
+        pay_as_enabled: true,
     };
     let params_path = out_dir.join("genesis-params.json");
     std::fs::write(&params_path, serde_json::to_string_pretty(&params)?)

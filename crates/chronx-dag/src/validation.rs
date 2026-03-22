@@ -145,6 +145,9 @@ mod tests {
         let actions = vec![Action::Transfer {
             to: AccountId::from_bytes([1u8; 32]),
             amount: 1_000_000,
+            memo: None,
+            memo_encrypted: true,
+            memo_public: false,
         }];
         let auth_scheme = AuthScheme::SingleSig;
         let mut tx = Transaction {

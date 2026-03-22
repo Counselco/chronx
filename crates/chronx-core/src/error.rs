@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ChronxError {
-    // ── Transaction errors ───────────────────────────────────────────────────
+  // ── Transaction errors ───────────────────────────────────────────────────
     #[error("insufficient balance: need {need} Chronos, have {have}")]
     InsufficientBalance { need: u128, have: u128 },
 
@@ -24,7 +24,16 @@ pub enum ChronxError {
     #[error("amount must be greater than zero")]
     ZeroAmount,
 
-    // ── DAG errors ───────────────────────────────────────────────────────────
+    #[error("loan action rate limit exceeded: max loan actions per wallet per 24 hours")]
+    RateLimitExceeded,
+
+    #[error("memo_public requires sender to have a verified identity (TYPE L IdentityVerified)")]
+    MemoPublicRequiresVerifiedIdentity,
+
+    #[error("public memo not allowed on promises with unlock > 365 days")]
+    LongHorizonMemoMustBePrivate,
+
+  // ── DAG errors ───────────────────────────────────────────────────────────
     #[error("vertex already exists: {0}")]
     DuplicateVertex(String),
 
@@ -37,7 +46,7 @@ pub enum ChronxError {
     #[error("too many parents: max {max}, got {got}")]
     TooManyParents { max: usize, got: usize },
 
-    // ── Time-lock errors ─────────────────────────────────────────────────────
+  // ── Time-lock errors ─────────────────────────────────────────────────────
     #[error("time-lock not yet matured (unlocks at {unlock_time})")]
     TimeLockNotMatured { unlock_time: i64 },
 
@@ -71,7 +80,7 @@ pub enum ChronxError {
     #[error("tag too long: maximum {max} characters")]
     TagTooLong { max: usize },
 
-    #[error("extension_data exceeds maximum size of {max} bytes")]
+    #[error("lock_marker exceeds maximum size of {max} bytes")]
     ExtensionDataTooLarge { max: usize },
 
     #[error("cancellation window exceeds maximum of {max} seconds")]
@@ -110,7 +119,7 @@ pub enum ChronxError {
     #[error("transaction has expired (expires_at is in the past)")]
     TransactionExpired,
 
-    // ── Recovery errors ──────────────────────────────────────────────────────
+  // ── Recovery errors ──────────────────────────────────────────────────────
     #[error("recovery already active for account {0}")]
     RecoveryAlreadyActive(String),
 
@@ -141,7 +150,7 @@ pub enum ChronxError {
     #[error("recovery not approved by verifiers")]
     RecoveryNotApproved,
 
-    // ── Auth errors ──────────────────────────────────────────────────────────
+  // ── Auth errors ──────────────────────────────────────────────────────────
     #[error("multisig threshold not met: need {need}, got {got}")]
     MultisigThresholdNotMet { need: u32, got: u32 },
 
@@ -151,25 +160,25 @@ pub enum ChronxError {
     #[error("duplicate signature in multisig")]
     DuplicateMultisigSignature,
 
-    // ── Serialization / storage ──────────────────────────────────────────────
+  // ── Serialization / storage ──────────────────────────────────────────────
     #[error("serialization error: {0}")]
     Serialization(String),
 
     #[error("storage error: {0}")]
     Storage(String),
 
-    // ── Genesis ──────────────────────────────────────────────────────────────
+  // ── Genesis ──────────────────────────────────────────────────────────────
     #[error("genesis supply mismatch: expected {expected}, got {got}")]
     GenesisSupplyMismatch { expected: u128, got: u128 },
 
-    // ── General ──────────────────────────────────────────────────────────────
+  // ── General ──────────────────────────────────────────────────────────────
     #[error("operation not permitted under current auth policy")]
     AuthPolicyViolation,
 
     #[error("feature not active: {0}")]
     FeatureNotActive(String),
 
-    // ── Claims errors ─────────────────────────────────────────────────────────
+  // ── Claims errors ─────────────────────────────────────────────────────────
     #[error("this lock uses the V2 claims framework; use open_claim instead of timelock_claim")]
     LockRequiresClaimsFramework,
 
@@ -230,7 +239,7 @@ pub enum ChronxError {
     #[error("schema registration bond below minimum ({min} Chronos required)")]
     SchemaBondTooLow { min: u128 },
 
-    // ── ExecutorWithdraw errors ─────────────────────────────────────────────
+  // ── ExecutorWithdraw errors ─────────────────────────────────────────────
     #[error("lock is not a Type M (AI-managed) lock")]
     NotTypeMlock,
 
@@ -247,7 +256,7 @@ pub enum ChronxError {
     ExecutorWithdrawRateLimited,
 
 
-    // ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger errors ────────
+  // ── — Invoice/Credit/Deposit/Conditional/Ledger errors ────────
     #[error("invoice not found: {0}")]
     InvoiceNotFound(String),
 
@@ -347,7 +356,7 @@ pub enum ChronxError {
     #[error("ledger entry already exists: {0}")]
     LedgerEntryDuplicate(String),
 
-    // ── Genesis 10a — Loan errors ──────────────────────────────────────────
+  // ── Genesis 10a — Loan errors ──────────────────────────────────────────
     #[error("loan not found: {0}")]
     LoanNotFound(String),
 
@@ -420,7 +429,7 @@ pub enum ChronxError {
     #[error("{0}")]
     Other(String),
 
-    // Genesis 10b
+  // Genesis 10b
     #[error("duplicate lender memo for this default record")]
     DuplicateMemo,
 

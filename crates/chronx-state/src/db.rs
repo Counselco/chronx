@@ -8,10 +8,12 @@ use chronx_dag::vertex::Vertex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-// ── Genesis 7 — Verified Delivery Protocol data structures ───────────────────
+// ── Verified Delivery Protocol data structures ───────────────────
 
 /// Contents of a package created at promise time and sent to the Verifas vault
-/// on Day 91 trigger. Currently stored as plaintext — see encryption TODO below.
+/// MEMO PRIVACY: Memos are private by default.
+// memo_encrypted=true means sender encrypts before submission. Node stores ciphertext only.
+// memo_public=true requires verified sender identity (TYPE L) and is rejected for promises > 365 days.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PromisePackage {
     pub claim_secret_hash: String,
@@ -63,7 +65,7 @@ pub struct VerifierRecord {
     pub status: String,
 }
 
-// ── Genesis 8 — AI Agent Architecture data structures ────────────────────
+// ── AI Agent Architecture data structures ────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentRecord {
@@ -141,7 +143,7 @@ pub struct ExecutorWithdrawalRecord {
 }
 
 
-// ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger record types ──────
+// ── Invoice/Credit/Deposit/Conditional/Ledger record types ──────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum InvoiceStatus {
@@ -255,7 +257,7 @@ pub struct LedgerEntryRecord {
 }
 
 
-// ── Genesis 8 — Sign of Life and Promise Chain record types ─────────────────
+// ── Sign of Life and Promise Chain record types ─────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignOfLifeRecord {
@@ -304,20 +306,20 @@ pub struct IdentityRecord {
 /// Persistent state database backed by sled (pure-Rust, no C dependencies).
 ///
 /// Named trees:
-///   accounts         — AccountId bytes  → bincode(Account)
-///   vertices         — TxId bytes       → bincode(Vertex)
-///   timelocks        — TxId bytes       → bincode(TimeLockContract)
-///   dag_tips         — TxId bytes       → [] (membership set)
-///   meta             — utf8 key bytes   → raw bytes
-///   providers        — AccountId bytes  → bincode(ProviderRecord)   [V2]
-///   schemas          — u64 be bytes     → bincode(CertificateSchema) [V2]
-///   claims           — TxId bytes       → bincode(ClaimState)       [V2]
-///   oracle_snapshots — pair utf8 bytes  → bincode(OracleSnapshot)   [V2]
-///   oracle_submissions — (pair + AccountId) → bincode(OracleSubmission) [V2]
-///   email_claim_hashes — TxId bytes     → 32-byte BLAKE3 hash       [V3.3]
-///   promise_packages — TxId bytes       → bincode(PromisePackageRecord) [G7]
-///   promise_triggers — TxId bytes       → bincode(PromiseTriggerRecord) [G7]
-///   verifier_registry — wallet bytes    → bincode(VerifierRecord)       [G7]
+/// accounts — AccountId bytes  → bincode(Account)
+/// vertices — TxId bytes       → bincode(Vertex)
+/// timelocks — TxId bytes       → bincode(TimeLockContract)
+/// dag_tips — TxId bytes       → [] (membership set)
+/// meta — utf8 key bytes   → raw bytes
+/// providers — AccountId bytes  → bincode(ProviderRecord)   [V2]
+/// schemas — u64 be bytes     → bincode(CertificateSchema) [V2]
+/// claims — TxId bytes       → bincode(ClaimState)       [V2]
+/// oracle_snapshots — pair utf8 bytes  → bincode(OracleSnapshot)   [V2]
+/// oracle_submissions — (pair + AccountId) → bincode(OracleSubmission) [V2]
+/// email_claim_hashes — TxId bytes     → 32-byte BLAKE3 hash       [V3.3]
+/// promise_packages — TxId bytes       → bincode(PromisePackageRecord) [G7]
+/// promise_triggers — TxId bytes       → bincode(PromiseTriggerRecord) [G7]
+/// verifier_registry — wallet bytes    → bincode(VerifierRecord)       [G7]
 pub struct StateDb {
     _db: sled::Db,
     accounts: sled::Tree,
@@ -334,22 +336,22 @@ pub struct StateDb {
     /// V3.3 Secure email claims: maps TxId (lock_id) → BLAKE3 hash of claim secret.
     /// Separate tree so that TimeLockContract serialisation format is unchanged.
     email_claim_hashes: sled::Tree,
-    // Genesis 7 — Verified Delivery Protocol trees
+    // protocol — Verified Delivery Protocol trees
     promise_packages: sled::Tree,
     promise_triggers: sled::Tree,
     verifier_registry: sled::Tree,
 
-    // Genesis 8 — AI Agent Architecture trees
+    // protocol — AI Agent Architecture trees
     agent_registry: sled::Tree,
     agent_loans: sled::Tree,
     agent_custody_records: sled::Tree,
     axiom_consents: sled::Tree,
 
-    // Genesis 8 — Sign of Life and Promise Chain trees
+    // protocol — Sign of Life and Promise Chain trees
     sign_of_life: sled::Tree,
     promise_chains: sled::Tree,
 
-    // Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger trees
+    // protocol — Invoice/Credit/Deposit/Conditional/Ledger trees
     invoices: sled::Tree,
     credits: sled::Tree,
     deposits: sled::Tree,
@@ -360,20 +362,20 @@ pub struct StateDb {
     /// Identity index: wallet_b58 bytes -> bincode(Vec<[u8;32]>) of identity entry_ids.
     identity_index: sled::Tree,
     /// Suggestion-only convert_to field: lock_id bytes -> UTF-8 string (max 50 chars).
-    lock_convert_to: sled::Tree,
+    convert_to_suggestion: sled::Tree,
 
     /// MISAI ExecutorWithdraw: maps lock_id bytes → bincode(ExecutorWithdrawalRecord).
     /// Tracks pending executor withdrawals for finalization sweep and rate limiting.
     executor_withdrawals: sled::Tree,
 
-    /// Genesis 9: TYPE_G Wallet Groups — maps group_id [u8;32] -> bincode(GroupRecord).
+    /// protocol: TYPE_G Wallet Groups — maps group_id [u8;32] -> bincode(GroupRecord).
     groups: sled::Tree,
 
     // Genesis 10a — Loan Protocol trees
     loans: sled::Tree,
-    loan_stages: sled::Tree,
+    _loan_stages: sled::Tree,
     loan_defaults: sled::Tree,
-    loan_payments: sled::Tree,
+    _loan_payments: sled::Tree,
     oracle_cache: sled::Tree,
     pub loan_memos: sled::Tree,
 
@@ -467,8 +469,8 @@ impl StateDb {
         let identity_index = db
             .open_tree("identity_index")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
-        let lock_convert_to = db
-            .open_tree("lock_convert_to")
+        let convert_to_suggestion = db
+            .open_tree("convert_to_suggestion")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let ledger_promise_index = db
             .open_tree("ledger_promise_index")
@@ -482,13 +484,13 @@ impl StateDb {
         let loans = db
             .open_tree("loans")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
-        let loan_stages = db
+        let _loan_stages = db
             .open_tree("loan_stages")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let loan_defaults = db
             .open_tree("loan_defaults")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
-        let loan_payments = db
+        let _loan_payments = db
             .open_tree("loan_payments")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let oracle_cache = db
@@ -537,14 +539,14 @@ impl StateDb {
             conditionals,
             ledger_entries,
             identity_index,
-            lock_convert_to,
+            convert_to_suggestion,
             ledger_promise_index,
             executor_withdrawals,
             groups,
             loans,
-            loan_stages,
+            _loan_stages,
             loan_defaults,
-            loan_payments,
+            _loan_payments,
             oracle_cache,
             loan_memos,
             escrow_accounts,
@@ -972,7 +974,7 @@ impl StateDb {
         Ok(out)
     }
 
-    // ── Genesis 7 — Promise packages ──────────────────────────────────────────
+    // ── protocol — Promise packages ──────────────────────────────────────────
 
     /// Store the package created at promise time.
     /// Key = lock_id bytes.
@@ -1007,7 +1009,7 @@ impl StateDb {
         }
     }
 
-    // ── Genesis 7 — Promise triggers (Day 91 events) ──────────────────────────
+    // ── protocol — Promise triggers (Day 91 events) ──────────────────────────
 
     /// Store a trigger record when Day 91 fires for a promise.
     pub fn put_promise_trigger(
@@ -1061,7 +1063,7 @@ impl StateDb {
         Ok(out)
     }
 
-    // ── Genesis 7 — Verifier registry ─────────────────────────────────────────
+    // ── protocol — Verifier registry ─────────────────────────────────────────
 
     /// Register or update a verifier entry.
     pub fn put_verifier(
@@ -1122,7 +1124,7 @@ impl StateDb {
         }
         Ok(None)
     }
-    // ── Genesis 8 — Agent registry ────────────────────────────────────────
+    // ── protocol — Agent registry ────────────────────────────────────────
 
     pub fn put_agent(&self, wallet: &str, record: &AgentRecord) -> Result<(), ChronxError> {
         let b = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
@@ -1147,7 +1149,7 @@ impl StateDb {
         Ok(out)
     }
 
-    // ── Genesis 8 — Agent loans ───────────────────────────────────────────
+    // ── protocol — Agent loans ───────────────────────────────────────────
 
     pub fn put_agent_loan(&self, lock_id: &str, record: &AgentLoanRecord) -> Result<(), ChronxError> {
         let b = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
@@ -1171,7 +1173,7 @@ impl StateDb {
         Ok(out)
     }
 
-    // ── Genesis 8 — Agent custody records ─────────────────────────────────
+    // ── protocol — Agent custody records ─────────────────────────────────
 
     pub fn put_agent_custody(&self, lock_id: &str, record: &AgentCustodyRecord) -> Result<(), ChronxError> {
         let b = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
@@ -1196,7 +1198,7 @@ impl StateDb {
         Ok(out)
     }
 
-    // ── Genesis 8 — Axiom consents ────────────────────────────────────────
+    // ── protocol — Axiom consents ────────────────────────────────────────
 
     pub fn put_axiom_consent(&self, lock_id: &str, party_type: &str, record: &AxiomConsentRecord) -> Result<(), ChronxError> {
         let key = format!("{}:{}", lock_id, party_type);
@@ -1294,7 +1296,7 @@ impl StateDb {
         Ok(hasher.finalize().to_hex().to_string())
     }
 
-    // ── Genesis 8 — Invoice accessors ─────────────────────────────────────
+    // ── protocol — Invoice accessors ─────────────────────────────────────
 
     pub fn get_invoice(&self, invoice_id: &[u8; 32]) -> Result<Option<InvoiceRecord>, ChronxError> {
         match self.invoices.get(invoice_id) {
@@ -1356,7 +1358,7 @@ impl StateDb {
         Ok(results)
     }
 
-    // ── Genesis 8 — Credit accessors ──────────────────────────────────────
+    // ── protocol — Credit accessors ──────────────────────────────────────
 
     pub fn get_credit(&self, credit_id: &[u8; 32]) -> Result<Option<CreditRecord>, ChronxError> {
         match self.credits.get(credit_id) {
@@ -1423,7 +1425,7 @@ impl StateDb {
         Ok(results)
     }
 
-    // ── Genesis 8 — Deposit accessors ─────────────────────────────────────
+    // ── protocol — Deposit accessors ─────────────────────────────────────
 
     pub fn get_deposit(&self, deposit_id: &[u8; 32]) -> Result<Option<DepositRecord>, ChronxError> {
         match self.deposits.get(deposit_id) {
@@ -1478,7 +1480,7 @@ impl StateDb {
         Ok(results)
     }
 
-    // ── Genesis 8 — Conditional accessors ─────────────────────────────────
+    // ── protocol — Conditional accessors ─────────────────────────────────
 
     pub fn get_conditional(&self, type_v_id: &[u8; 32]) -> Result<Option<ConditionalRecord>, ChronxError> {
         match self.conditionals.get(type_v_id) {
@@ -1528,7 +1530,7 @@ impl StateDb {
         Ok(results)
     }
 
-    // ── Genesis 8 — Ledger Entry accessors ────────────────────────────────
+    // ── protocol — Ledger Entry accessors ────────────────────────────────
 
     pub fn put_ledger_entry(&self, record: &LedgerEntryRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
@@ -1651,21 +1653,21 @@ impl StateDb {
 
     // ── convert_to field accessors ────────────────────────────────────
 
-    pub fn put_lock_convert_to(&self, lock_id: &chronx_core::types::TxId, value: &str) -> Result<(), ChronxError> {
-        self.lock_convert_to.insert(lock_id.as_bytes(), value.as_bytes())
+    pub fn put_convert_to_suggestion(&self, lock_id: &chronx_core::types::TxId, value: &str) -> Result<(), ChronxError> {
+        self.convert_to_suggestion.insert(lock_id.as_bytes(), value.as_bytes())
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    pub fn get_lock_convert_to(&self, lock_id: &chronx_core::types::TxId) -> Result<Option<String>, ChronxError> {
-        match self.lock_convert_to.get(lock_id.as_bytes()) {
+    pub fn get_convert_to_suggestion(&self, lock_id: &chronx_core::types::TxId) -> Result<Option<String>, ChronxError> {
+        match self.convert_to_suggestion.get(lock_id.as_bytes()) {
             Ok(Some(bytes)) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
             Ok(None) => Ok(None),
             Err(e) => Err(ChronxError::Storage(e.to_string())),
         }
     }
 
-    // ── Genesis 8 — Sign of Life accessors ────────────────────────────
+    // ── protocol — Sign of Life accessors ────────────────────────────
 
     pub fn get_sign_of_life(&self, lock_id: &str) -> Result<Option<SignOfLifeRecord>, ChronxError> {
         match self.sign_of_life.get(lock_id.as_bytes()) {
@@ -1698,7 +1700,7 @@ impl StateDb {
         Ok(results)
     }
 
-    // ── Genesis 8 — Promise Chain accessors ───────────────────────────
+    // ── protocol — Promise Chain accessors ───────────────────────────
 
     pub fn get_promise_chain(&self, promise_id: &[u8; 32]) -> Result<Option<PromiseChainRecord>, ChronxError> {
         match self.promise_chains.get(promise_id) {
@@ -1730,7 +1732,7 @@ impl StateDb {
     }
 
 
-    // ── Genesis 9: Wallet Group accessors ────────────────────────────────────
+    // ── protocol: Wallet Group accessors ────────────────────────────────────
 
     pub fn get_group(&self, group_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::GroupRecord>, ChronxError> {
         match self.groups.get(group_id).map_err(|e| ChronxError::Storage(e.to_string()))? {
@@ -1823,35 +1825,15 @@ pub struct OraclePriceRecord {
 }
 
 impl StateDb {
-    pub fn get_loan(&self, loan_id: &[u8; 32]) -> Result<Option<LoanRecord>, ChronxError> {
-        match self.loans.get(loan_id) {
-            Ok(Some(bytes)) => {
-                let record: LoanRecord = bincode::deserialize(&bytes)
-                    .map_err(|e| ChronxError::Serialization(e.to_string()))?;
-                Ok(Some(record))
-            }
-            Ok(None) => Ok(None),
-            Err(e) => Err(ChronxError::Storage(e.to_string())),
-        }
-    }
-
-    pub fn save_loan(&self, loan: &LoanRecord) -> Result<(), ChronxError> {
-        let bytes = bincode::serialize(loan)
-            .map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.loans.insert(&loan.loan_id, bytes)
-            .map_err(|e| ChronxError::Storage(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Store raw JSON loan data by loan_id (for LoanOffer protocol)
-    pub fn save_loan_raw(&self, loan_id: &[u8; 32], data: &[u8]) -> Result<(), ChronxError> {
+    /// Store JSON loan data by loan_id
+    pub fn save_loan(&self, loan_id: &[u8; 32], data: &[u8]) -> Result<(), ChronxError> {
         self.loans.insert(loan_id.as_ref(), data)
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    /// Get raw loan data by loan_id
-    pub fn get_loan_raw(&self, loan_id: &[u8; 32]) -> Result<Option<Vec<u8>>, ChronxError> {
+    /// Get JSON loan data by loan_id
+    pub fn get_loan(&self, loan_id: &[u8; 32]) -> Result<Option<Vec<u8>>, ChronxError> {
         match self.loans.get(loan_id.as_ref()) {
             Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
             Ok(None) => Ok(None),
@@ -1860,7 +1842,7 @@ impl StateDb {
     }
 
     /// Iterate all raw loan entries (for RPC scan)
-    pub fn iter_loans_raw(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+    pub fn iter_loans(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
         self.loans.iter()
             .filter_map(|r| r.ok())
             .map(|(k, v)| (k.to_vec(), v.to_vec()))

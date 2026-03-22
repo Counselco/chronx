@@ -41,7 +41,7 @@ use crate::types::{
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
     RpcDetailedTx, RpcActionSummary,
-    RpcLoanRecord, RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
+    RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -116,10 +116,10 @@ fn tlc_status_str(status: &TimeLockStatus) -> String {
 fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
     let status = tlc_status_str(&tlc.status);
 
-    // If extension_data starts with 0xC5 marker and is 33 bytes,
+    // If lock_marker starts with 0xC5 marker and is 33 bytes,
     // the remaining 32 bytes are BLAKE3(claim_code). Locks sharing the
     // same hash belong to the same Promise Series.
-    let claim_secret_hash = tlc.extension_data.as_ref().and_then(|d| {
+    let claim_secret_hash = tlc.lock_marker.as_ref().and_then(|d| {
         if d.len() == 33 && d[0] == 0xC5 {
             Some(hex::encode(&d[1..]))
         } else {
@@ -127,7 +127,7 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
         }
     });
 
-    let recipient_email_hash = tlc.recipient_email_hash.map(|h| hex::encode(h));
+    let email_recipient_hash = tlc.email_recipient_hash.map(|h| hex::encode(h));
     let cancellation_window_secs = tlc.cancellation_window_secs;
     let claim_window_secs_val = tlc.claim_window_secs;
     let unclaimed_action_str = tlc.unclaimed_action.as_ref().map(|ua| {
@@ -153,12 +153,12 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
         lock_version: tlc.lock_version,
         claim_secret_hash,
         cancellation_window_secs,
-        recipient_email_hash,
+        email_recipient_hash,
         claim_window_secs: claim_window_secs_val,
         unclaimed_action: unclaimed_action_str,
         lock_type: tlc.lock_type,
         lock_metadata: tlc.lock_metadata,
-        convert_to: None, // populated by caller from lock_convert_to tree
+        convert_to: None, // populated by caller from convert_to_suggestion tree
     }
 }
 
@@ -292,7 +292,7 @@ impl ChronxApiServer for RpcServer {
             Some(v) => {
                 let actions: Vec<RpcActionSummary> = v.transaction.actions.iter().map(|action| {
                     match action {
-                        Action::Transfer { to, amount } => RpcActionSummary {
+                        Action::Transfer { to, amount, .. } => RpcActionSummary {
                             action_type: "Transfer".to_string(),
                             to_address: Some(to.to_b58()),
                             amount_chronos: Some(amount.to_string()),
@@ -303,9 +303,9 @@ impl ChronxApiServer for RpcServer {
                             lock_id: None,
                         },
                         Action::TimeLockCreate {
-                            amount, unlock_at, memo, recipient_email_hash, ..
+                            amount, unlock_at, memo, email_recipient_hash, ..
                         } => {
-                            let email_hash_hex = recipient_email_hash.map(|h| hex::encode(h));
+                            let email_hash_hex = email_recipient_hash.map(|h| hex::encode(h));
                             let atype = if email_hash_hex.is_some() { "EmailLock" } else { "TimeLock" };
                             RpcActionSummary {
                                 action_type: atype.to_string(),
@@ -386,9 +386,9 @@ impl ChronxApiServer for RpcServer {
         }
     }
 
-    /// `chronx_getTimeLockContracts` — all locks where the account is sender or recipient,
+    /// `chronx_getLocks` — all locks where the account is sender or recipient,
     /// deduplicated and sorted newest-first.
-    async fn get_timelock_contracts(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>> {
+    async fn get_locks(&self, account_id: String) -> RpcResult<Vec<RpcTimeLock>> {
         let id = AccountId::from_b58(&account_id)
             .map_err(|e| rpc_err(-32602, format!("invalid account id: {e}")))?;
 
@@ -567,8 +567,8 @@ impl ChronxApiServer for RpcServer {
 
     // ── V3 New methods ────────────────────────────────────────────────────────
 
-    /// `chronx_getTimeLockById` — fetch a single time-lock by its TxId hex.
-    async fn get_timelock_by_id(&self, lock_id: String) -> RpcResult<Option<RpcTimeLock>> {
+    /// `chronx_getLockById` — fetch a single time-lock by its TxId hex.
+    async fn get_lock_by_id(&self, lock_id: String) -> RpcResult<Option<RpcTimeLock>> {
         let id = TxId::from_hex(&lock_id)
             .map_err(|e| rpc_err(-32602, format!("invalid lock id: {e}")))?;
         let tlc = self
@@ -599,9 +599,9 @@ impl ChronxApiServer for RpcServer {
         Ok(locks)
     }
 
-    /// `chronx_getTimeLockContractsPaged` — paginated lock list for an account
+    /// `chronx_getLocksPaged` — paginated lock list for an account
     /// (max 200 per page). Deduplicated and sorted newest-first.
-    async fn get_timelock_contracts_paged(
+    async fn get_locks_paged(
         &self,
         account_id: String,
         offset: u32,
@@ -829,7 +829,7 @@ impl ChronxApiServer for RpcServer {
     }
 
     /// `chronx_getEmailLocks` — all **Pending** time-lock contracts whose
-    /// `recipient_email_hash` matches the provided 64-char hex (BLAKE3 of lowercase email).
+    /// `email_recipient_hash` matches the provided 64-char hex (BLAKE3 of lowercase email).
     /// Sorted newest-first. Used by wallets to detect incoming email-addressed locks.
     async fn get_email_locks(&self, email_hash_hex: String) -> RpcResult<Vec<RpcTimeLock>> {
         let bytes = hex::decode(&email_hash_hex)
@@ -850,7 +850,7 @@ impl ChronxApiServer for RpcServer {
             .map_err(|e| rpc_err(-32603, e.to_string()))?
             .into_iter()
             .filter(|tlc| {
-                tlc.recipient_email_hash == Some(hash)
+                tlc.email_recipient_hash == Some(hash)
                     && matches!(tlc.status, TimeLockStatus::Pending)
             })
             .map(tlc_to_rpc)
@@ -875,7 +875,7 @@ impl ChronxApiServer for RpcServer {
         for v in &vertices {
             let tx = &v.transaction;
             for action in &tx.actions {
-                if let Action::Transfer { to, amount } = action {
+                if let Action::Transfer { to, amount, .. } = action {
                     if *to == id && tx.from != id {
                         results.push(RpcIncomingTransfer {
                             tx_id: tx.tx_id.to_hex(),
@@ -898,7 +898,7 @@ impl ChronxApiServer for RpcServer {
             if tlc.sender == id { continue; }
             match &tlc.status {
                 TimeLockStatus::Claimed { .. } => {
-                    let tx_type = if tlc.recipient_email_hash.is_some() {
+                    let tx_type = if tlc.email_recipient_hash.is_some() {
                         "email_claim"
                     } else {
                         "timelock_claim"
@@ -939,7 +939,7 @@ impl ChronxApiServer for RpcServer {
             let tx = &v.transaction;
             if tx.from != id { continue; }
             for action in &tx.actions {
-                if let Action::Transfer { to, amount } = action {
+                if let Action::Transfer { to, amount, .. } = action {
                     if *to != id {
                         results.push(RpcOutgoingTransfer {
                             tx_id: tx.tx_id.to_hex(),
@@ -959,12 +959,12 @@ impl ChronxApiServer for RpcServer {
         let outgoing_locks = self.state.db.iter_timelocks_for_sender(&id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         for tlc in outgoing_locks {
-            let tx_type = if tlc.recipient_email_hash.is_some() {
+            let tx_type = if tlc.email_recipient_hash.is_some() {
                 "email_send"
             } else {
                 "promise_sent"
             };
-            let recipient = if tlc.recipient_email_hash.is_some() {
+            let recipient = if tlc.email_recipient_hash.is_some() {
                 String::new()
             } else {
                 tlc.recipient_account_id.to_b58()
@@ -984,9 +984,9 @@ impl ChronxApiServer for RpcServer {
         results.truncate(500);
         Ok(results)
     }
-    /// `chronx_getGlobalLockStats` — aggregate stats across all Pending timelocks.
+    /// `chronx_getLockStats` — aggregate stats across all Pending timelocks.
     /// Designed for the public website stats bar: single cheap call, no pagination.
-    async fn get_global_lock_stats(&self) -> RpcResult<RpcGlobalLockStats> {
+    async fn get_lock_stats(&self) -> RpcResult<RpcGlobalLockStats> {
         let all = self
             .state
             .db
@@ -1015,11 +1015,11 @@ impl ChronxApiServer for RpcServer {
 
     // ── V4 Cascade Send ────────────────────────────────────────────────────
 
-    /// `chronx_sendCascade` — submit a cascade transaction.
+    /// `chronx_submitCascade` — submit a cascade transaction.
     /// This is just `sendTransaction` with a semantic name. The transaction
     /// must contain multiple `TimeLockCreate` actions sharing the same
-    /// `extension_data` (0xC5 + claim_secret_hash). Returns TxId hex.
-    async fn send_cascade(&self, tx_hex: String) -> RpcResult<String> {
+    /// `lock_marker` (0xC5 + claim_secret_hash). Returns TxId hex.
+    async fn submit_cascade(&self, tx_hex: String) -> RpcResult<String> {
         // Delegate to the same pipeline as sendTransaction.
         self.send_transaction(tx_hex).await
     }
@@ -1080,7 +1080,7 @@ impl ChronxApiServer for RpcServer {
     }
 
 
-    // ── Genesis 7 — Verified Delivery Protocol ────────────────────────────
+    // ── Verified Delivery Protocol ────────────────────────────
 
     /// `chronx_getVerifierRegistry` — return all Active verifiers.
     async fn get_verifier_registry(&self) -> RpcResult<Vec<RpcVerifierRecord>> {
@@ -1119,7 +1119,7 @@ impl ChronxApiServer for RpcServer {
         }))
     }
 
-    /// `chronx_getGenesis7Constants` — return Genesis 7 constants from metadata.
+    /// `chronx_getGenesis7Constants` — return protocol constants from metadata.
     async fn get_genesis7_constants(&self) -> RpcResult<serde_json::Value> {
         let meta: Option<Vec<u8>> = self.state.db.get_meta("genesis_7_constants")
             .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?;
@@ -1163,7 +1163,7 @@ impl ChronxApiServer for RpcServer {
             .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?
             .map(|b: Vec<u8>| String::from_utf8_lossy(&b).to_string())
             .unwrap_or_default();
-        // Genesis 8: compute combined axiom hash
+        // protocol: compute combined axiom hash
         let combined_hash = {
             let mut hasher = blake3::Hasher::new();
             hasher.update(promise.as_bytes());
@@ -1178,7 +1178,7 @@ impl ChronxApiServer for RpcServer {
     }
 
 
-    // ── Genesis 8 — AI Agent Architecture ────────────────────────────
+    // ── AI Agent Architecture ────────────────────────────
 
     /// `chronx_getAgentRegistry` — return all Active agents.
     async fn get_agent_registry(&self) -> RpcResult<Vec<RpcAgentRecord>> {
@@ -1302,7 +1302,7 @@ impl ChronxApiServer for RpcServer {
         Ok(results)
     }
 
-    /// `chronx_getGenesis8Constants` — return Genesis 8 constants from metadata.
+    /// `chronx_getGenesis8Constants` — return protocol constants from metadata.
     async fn get_genesis8_constants(&self) -> RpcResult<serde_json::Value> {
         let meta: Option<Vec<u8>> = self.state.db.get_meta("genesis_8_constants")
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
@@ -1348,7 +1348,7 @@ impl ChronxApiServer for RpcServer {
             .map(|v| {
                 let actions: Vec<RpcActionSummary> = v.transaction.actions.iter().map(|action| {
                     match action {
-                        Action::Transfer { to, amount } => RpcActionSummary {
+                        Action::Transfer { to, amount, .. } => RpcActionSummary {
                             action_type: "Transfer".to_string(),
                             to_address: Some(to.to_b58()),
                             amount_chronos: Some(amount.to_string()),
@@ -1359,9 +1359,9 @@ impl ChronxApiServer for RpcServer {
                             lock_id: None,
                         },
                         Action::TimeLockCreate {
-                            amount, unlock_at, memo, recipient_email_hash, ..
+                            amount, unlock_at, memo, email_recipient_hash, ..
                         } => {
-                            let email_hash_hex = recipient_email_hash.map(|h| hex::encode(h));
+                            let email_hash_hex = email_recipient_hash.map(|h| hex::encode(h));
                             let atype = if email_hash_hex.is_some() { "EmailLock" } else { "TimeLock" };
                             RpcActionSummary {
                                 action_type: atype.to_string(),
@@ -1445,7 +1445,7 @@ impl ChronxApiServer for RpcServer {
         Ok(result)
     }
 
-    // ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger RPC impls ──
+    // ── Invoice/Credit/Deposit/Conditional/Ledger RPC impls ──
 
     async fn get_invoice(&self, invoice_id_hex: String) -> RpcResult<Option<RpcInvoiceRecord>> {
         let bytes = hex::decode(&invoice_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
@@ -1602,7 +1602,7 @@ impl ChronxApiServer for RpcServer {
         Ok(entries.iter().map(ledger_entry_to_rpc).collect())
     }
 
-    // ── Genesis 9 — TYPE_G Wallet Group implementations ─────────────────
+    // ── Wallet Group implementations ─────────────────
 
     async fn get_group(&self, group_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
         let bytes = hex::decode(&group_id_hex).map_err(|e| {
@@ -1697,15 +1697,11 @@ impl ChronxApiServer for RpcServer {
         }
         let mut loan_id = [0u8; 32];
         loan_id.copy_from_slice(&bytes);
-        // Try JSON path first (LoanOffer protocol)
-        if let Ok(Some(raw)) = self.state.db.get_loan_raw(&loan_id) {
+        // All loans stored as JSON
+        if let Ok(Some(raw)) = self.state.db.get_loan(&loan_id) {
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&raw) {
                 return Ok(Some(val));
             }
-        }
-        // Fall back to bincode LoanRecord
-        if let Ok(Some(record)) = self.state.db.get_loan(&loan_id) {
-            return Ok(Some(serde_json::to_value(loan_to_rpc(&record)).unwrap_or_default()));
         }
         Ok(None)
     }
@@ -1713,7 +1709,7 @@ impl ChronxApiServer for RpcServer {
     /// `chronx_getLoansByWallet` — all loans for a given wallet (as lender or borrower).
     async fn get_loans_by_wallet(&self, wallet_address: String) -> RpcResult<Vec<serde_json::Value>> {
         let mut loans: Vec<serde_json::Value> = Vec::new();
-        for (key, val) in self.state.db.iter_loans_raw() {
+        for (key, val) in self.state.db.iter_loans() {
             if String::from_utf8_lossy(&key).contains(':') { continue; }
             if let Ok(loan) = serde_json::from_slice::<serde_json::Value>(&val) {
                 let is_lender = loan.get("lender_wallet")
@@ -1737,10 +1733,27 @@ impl ChronxApiServer for RpcServer {
         }
         let mut loan_id = [0u8; 32];
         loan_id.copy_from_slice(&bytes);
-        let record = self.state.db.get_loan(&loan_id)
+        let raw = self.state.db.get_loan(&loan_id)
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
-        match record {
-            Some(r) => Ok(r.stages.iter().map(|s| stage_to_rpc(s)).collect()),
+        match raw {
+            Some(bytes) => {
+                if let Ok(loan) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    // Extract stages from JSON loan
+                    let stages = loan.get("stages").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+                    let rpc_stages: Vec<RpcLoanPaymentStage> = stages.iter().filter_map(|s| {
+                        Some(RpcLoanPaymentStage {
+                            stage_index: s.get("stage_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                            due_at: s.get("due_at").and_then(|v| v.as_u64()).unwrap_or(0),
+                            amount_kx: s.get("amount_kx").and_then(|v| v.as_u64()).unwrap_or(0),
+                            pay_as: s.get("pay_as").and_then(|v| v.as_str()).unwrap_or("KX").to_string(),
+                            payment_type: s.get("payment_type").and_then(|v| v.as_str()).unwrap_or("principal_and_interest").to_string(),
+                        })
+                    }).collect();
+                    Ok(rpc_stages)
+                } else {
+                    Err(rpc_err(-32603, "failed to parse loan data"))
+                }
+            }
             None => Err(rpc_err(-32602, format!("loan not found: {loan_id_hex}"))),
         }
     }
@@ -1816,7 +1829,7 @@ impl ChronxApiServer for RpcServer {
     }
 
 
-    // ── Genesis 10b: LenderMemo + Governance queries ─────────────────────
+    // ── LenderMemo + Governance queries ─────────────────────
 
     /// `chronx_getLenderMemos` — all lender memos for a given loan_id (hex).
     async fn get_lender_memos(&self, loan_id_hex: String) -> RpcResult<Vec<serde_json::Value>> {
@@ -1867,7 +1880,7 @@ impl ChronxApiServer for RpcServer {
 
     /// chronx_getLoanOffers -- pending offers for borrower.
     async fn get_loan_offers(&self, wallet_b58: String) -> RpcResult<Vec<serde_json::Value>> {
-        let offers: Vec<serde_json::Value> = self.state.db.iter_loans_raw()
+        let offers: Vec<serde_json::Value> = self.state.db.iter_loans()
             .filter(|(k, _)| !String::from_utf8_lossy(k).contains(':'))
             .filter_map(|(_, v)| serde_json::from_slice::<serde_json::Value>(&v).ok())
             .filter(|loan: &serde_json::Value| {
@@ -1880,7 +1893,7 @@ impl ChronxApiServer for RpcServer {
 
     /// chronx_getLoansByStatus -- loans by status for wallet.
     async fn get_loans_by_status(&self, wallet_b58: String, status: String) -> RpcResult<Vec<serde_json::Value>> {
-        let loans: Vec<serde_json::Value> = self.state.db.iter_loans_raw()
+        let loans: Vec<serde_json::Value> = self.state.db.iter_loans()
             .filter(|(k, _)| !String::from_utf8_lossy(k).contains(':'))
             .filter_map(|(_, v)| serde_json::from_slice::<serde_json::Value>(&v).ok())
             .filter(|loan: &serde_json::Value| {
@@ -1904,10 +1917,23 @@ impl ChronxApiServer for RpcServer {
             _ => Ok(None),
         }
     }
+
+    /// chronx_getChannelInfo -- stub for payment channel info.
+    async fn get_channel_info(&self, channel_id_hex: String) -> RpcResult<serde_json::Value> {
+        // Channels are scaffolding only — no persistent storage yet.
+        // Return a placeholder response.
+        Ok(serde_json::json!({
+            "channel_id": channel_id_hex,
+            "status": "not_found",
+            "message": "Payment channels are Phase 2 — scaffolding only in this build."
+        }))
+    }
+
+
 }
 
 
-// ── Genesis 8 — RPC conversion helpers ──────────────────────────────────────
+// ── RPC conversion helpers ──────────────────────────────────────
 
 fn invoice_to_rpc(r: &chronx_state::db::InvoiceRecord) -> RpcInvoiceRecord {
     let status = match r.status {
@@ -2015,99 +2041,6 @@ fn ledger_entry_to_rpc(r: &chronx_state::db::LedgerEntryRecord) -> RpcLedgerEntr
 
 // ── Genesis 10a — Loan RPC conversion helpers ───────────────────────────────
 
-fn loan_to_rpc(r: &chronx_state::db::LoanRecord) -> RpcLoanRecord {
-    use chronx_core::transaction::{PayAsDenomination, PrepaymentTerms, LateFeeSchedule};
 
-    let status = match &r.status {
-        LoanStatus::Active => "Active".to_string(),
-        LoanStatus::Defaulted { defaulted_at } => format!("Defaulted({})", defaulted_at),
-        LoanStatus::Reinstated { reinstated_at } => format!("Reinstated({})", reinstated_at),
-        LoanStatus::WrittenOff { written_off_at, outstanding_kx } =>
-            format!("WrittenOff({},{}KX)", written_off_at, outstanding_kx),
-        LoanStatus::Completed { completed_at } => format!("Completed({})", completed_at),
-        LoanStatus::EarlyPayoff { paid_off_at } => format!("EarlyPayoff({})", paid_off_at),
-    };
 
-    let pay_as_str = match &r.pay_as {
-        PayAsDenomination::FixedKX => "FixedKX".to_string(),
-        PayAsDenomination::UsdEquivalentAtCreation { rate_microcents_per_kx } =>
-            format!("UsdEquivalentAtCreation({})", rate_microcents_per_kx),
-        PayAsDenomination::UsdEquivalentAtMaturity => "UsdEquivalentAtMaturity".to_string(),
-        PayAsDenomination::EurEquivalentAtCreation { rate_microeuros_per_kx } =>
-            format!("EurEquivalentAtCreation({})", rate_microeuros_per_kx),
-        PayAsDenomination::EurEquivalentAtMaturity => "EurEquivalentAtMaturity".to_string(),
-    };
 
-    let prepayment_str = match &r.prepayment {
-        PrepaymentTerms::Prohibited => "Prohibited".to_string(),
-        PrepaymentTerms::AllowedAtPar => "AllowedAtPar".to_string(),
-        PrepaymentTerms::AllowedWithPenalty { penalty_pct, penalty_minimum_kx } =>
-            format!("AllowedWithPenalty({}%,{}KX)", penalty_pct, penalty_minimum_kx),
-        PrepaymentTerms::AllowedWithDiscount { discount_pct, discount_maximum_kx } =>
-            format!("AllowedWithDiscount({}%,{}KX)", discount_pct, discount_maximum_kx),
-    };
-
-    let late_fee_str = match &r.late_fee_schedule {
-        LateFeeSchedule::None => "None".to_string(),
-        LateFeeSchedule::Flat { fee_kx } => format!("Flat({}KX)", fee_kx),
-        LateFeeSchedule::Tiered { stages } => format!("Tiered({} stages)", stages.len()),
-    };
-
-    let hedge_str = r.hedge_requirement.as_ref().map(|h| {
-        format!("{}% {:?} in {}d", h.minimum_coverage_pct, h.coverage_type, h.funding_deadline_days)
-    });
-
-    let oracle_str = format!("retry_{}d_{}h_{:?}",
-        r.oracle_policy.retry_window_days,
-        r.oracle_policy.retry_interval_hours,
-        r.oracle_policy.fallback,
-    );
-
-    RpcLoanRecord {
-        loan_id: hex::encode(r.loan_id),
-        lender: r.lender.clone(),
-        borrower: r.borrower.clone(),
-        principal_kx: r.principal_kx,
-        pay_as: pay_as_str,
-        stages: r.stages.iter().map(|s| stage_to_rpc(s)).collect(),
-        prepayment: prepayment_str,
-        late_fee_schedule: late_fee_str,
-        grace_period_days: r.grace_period_days,
-        hedge_requirement: hedge_str,
-        oracle_policy: oracle_str,
-        agreement_hash: r.agreement_hash.map(|h| hex::encode(h)),
-        status,
-        created_at: r.created_at,
-        memo: r.memo.clone(),
-    }
-}
-
-fn stage_to_rpc(s: &chronx_core::transaction::LoanPaymentStage) -> RpcLoanPaymentStage {
-    use chronx_core::transaction::{PayAsDenomination, LoanPaymentType};
-
-    let pay_as_str = match &s.pay_as {
-        PayAsDenomination::FixedKX => "FixedKX".to_string(),
-        PayAsDenomination::UsdEquivalentAtCreation { rate_microcents_per_kx } =>
-            format!("UsdEquivalentAtCreation({})", rate_microcents_per_kx),
-        PayAsDenomination::UsdEquivalentAtMaturity => "UsdEquivalentAtMaturity".to_string(),
-        PayAsDenomination::EurEquivalentAtCreation { rate_microeuros_per_kx } =>
-            format!("EurEquivalentAtCreation({})", rate_microeuros_per_kx),
-        PayAsDenomination::EurEquivalentAtMaturity => "EurEquivalentAtMaturity".to_string(),
-    };
-
-    let payment_type_str = match &s.payment_type {
-        LoanPaymentType::InterestOnly => "InterestOnly",
-        LoanPaymentType::PrincipalOnly => "PrincipalOnly",
-        LoanPaymentType::PrincipalAndInterest => "PrincipalAndInterest",
-        LoanPaymentType::BulletFinal => "BulletFinal",
-        LoanPaymentType::Custom => "Custom",
-    };
-
-    RpcLoanPaymentStage {
-        stage_index: s.stage_index,
-        due_at: s.due_at,
-        amount_kx: s.amount_kx,
-        pay_as: pay_as_str,
-        payment_type: payment_type_str.to_string(),
-    }
-}

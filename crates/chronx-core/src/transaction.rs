@@ -20,7 +20,7 @@ pub enum AuthScheme {
     MultiSig { k: u32, n: u32 },
 }
 
-// ── Genesis 9 — AuthorizedSet (used by 6 payment types) ──────────────────
+// ── AuthorizedSet (used by 6 payment types) ──────────────────
 
 /// A set of wallets authorized to interact with a payment instrument.
 /// Used by Invoice (payers), TimeLock (claimants), Credit (beneficiaries),
@@ -33,7 +33,7 @@ pub enum AuthorizedSet {
     Group([u8; 32]),
 }
 
-// ── Genesis 9 — TYPE_G Wallet Group structs ──────────────────────────────
+// ── Wallet Group structs ──────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CreateGroupAction {
@@ -88,7 +88,7 @@ pub struct GroupRecord {
 // ── Action ────────────────────────────────────────────────────────────────────
 
 
-// ── Genesis 8 — New Action Structs ──────────────────────────────────────────
+// ── Payment Type Action Structs ──────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CreateInvoiceAction {
@@ -99,7 +99,7 @@ pub struct CreateInvoiceAction {
     pub expiry: u64,
     pub encrypted_memo: Option<Vec<u8>>,
     pub memo_hash: Option<[u8; 32]>,
-    /// Genesis 9: Optional set of authorized payers (inline list or Group ref).
+    /// Optional set of authorized payers (inline list or Group ref).
     #[serde(default)]
     pub authorized_payers: Option<AuthorizedSet>,
 }
@@ -126,7 +126,7 @@ pub struct CreateCreditAction {
     pub expiry: u64,
     pub credit_id: [u8; 32],
     pub encrypted_terms: Option<Vec<u8>>,
-    /// Genesis 9: Optional group whose members may also draw.
+    /// Optional group whose members may also draw.
     #[serde(default)]
     pub beneficiary_group: Option<[u8; 32]>,
 }
@@ -190,7 +190,7 @@ pub struct CreateConditionalAction {
     pub fallback: ConditionalFallback,
     pub encrypted_terms: Option<Vec<u8>>,
     pub type_v_id: [u8; 32],
-    /// Genesis 9: Optional group whose members may also attest.
+    /// Optional group whose members may also attest.
     #[serde(default)]
     pub attestor_group: Option<[u8; 32]>,
 }
@@ -230,7 +230,7 @@ pub struct CreateLedgerEntryAction {
 }
 
 
-// ── Genesis 8 — Sign of Life types ─────────────────────────────────────────
+// ── Sign of Life types ─────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum SignOfLifeStatus {
@@ -352,7 +352,22 @@ impl Default for OraclePolicy {
 pub enum Action {
     // ── Transfers ────────────────────────────────────────────────────────────
     /// Send KX from one account to another.
-    Transfer { to: AccountId, amount: Balance },
+    Transfer {
+        to: AccountId,
+        amount: Balance,
+        #[serde(default)]
+        memo: Option<String>,
+        #[serde(default = "default_true")]
+        memo_encrypted: bool,
+        #[serde(default)]
+        memo_public: bool,
+        /// Target amount in the convert_to_suggestion currency.
+        /// Example: convert_to_suggestion="USDC", pay_as_amount=Some(500.0)
+        /// means "deliver the KX equivalent of 500 USDC at maturity".
+        /// None = plain KX promise, deliver full locked amount.
+        #[serde(default)]
+        pay_as_amount: Option<f64>,
+    },
 
     // ── Time-lock contracts ───────────────────────────────────────────────────
     /// Lock `amount` Chronos until `unlock_at`. Only `recipient` may claim.
@@ -374,6 +389,20 @@ pub enum Action {
         tags: Option<Vec<String>>,
         /// If true, hide memo and amount from public explorer.
         private: Option<bool>,
+        /// If true (default), memo is encrypted by sender before submission.
+        /// Node stores ciphertext only.
+        #[serde(default = "default_true")]
+        memo_encrypted: bool,
+        /// If true, memo is publicly visible. Requires verified sender identity
+        /// (TYPE L IdentityVerified) and unlock <= 365 days.
+        #[serde(default)]
+        memo_public: bool,
+        /// Target amount in the convert_to_suggestion currency.
+        /// Example: convert_to_suggestion="USDC", pay_as_amount=Some(500.0)
+        /// means "deliver the KX equivalent of 500 USDC at maturity".
+        /// None = plain KX promise, deliver full locked amount.
+        #[serde(default)]
+        pay_as_amount: Option<f64>,
         /// What happens if funds are unclaimed after grace period.
         expiry_policy: Option<crate::account::ExpiryPolicy>,
         /// Future multi-recipient split (scaffold, inactive V1).
@@ -383,7 +412,7 @@ pub enum Action {
         /// Recurring lock schedule (scaffold, inactive V1).
         recurring: Option<crate::account::RecurringPolicy>,
         /// Reserved bytes for future extensions (max 1 KB).
-        extension_data: Option<Vec<u8>>,
+        lock_marker: Option<Vec<u8>>,
         /// Suggested fiat currency for oracle at claim time.
         oracle_hint: Option<String>,
         /// ISO country code hint for lane selection.
@@ -395,7 +424,7 @@ pub enum Action {
         // ── V3.1 email lock fields ─────────────────────────────────────────────
         /// BLAKE3 hash of recipient's email. Never store plaintext.
         #[serde(default)]
-        recipient_email_hash: Option<[u8; 32]>,
+        email_recipient_hash: Option<[u8; 32]>,
         /// Seconds from creation the recipient has to claim before unclaimed_action.
         #[serde(default)]
         claim_window_secs: Option<u64>,
@@ -409,7 +438,7 @@ pub enum Action {
         #[serde(default)]
         lock_metadata: Option<String>,
 
-        // ── Genesis 8 — AI Agent management fields ─────────────────────────
+        // ── — AI Agent management fields ─────────────────────────
         /// If true, this lock's investable fraction is managed by a registered AI agent.
         #[serde(default)]
         agent_managed: Option<bool>,
@@ -429,7 +458,7 @@ pub enum Action {
         #[serde(default)]
         grantor_intent: Option<String>,
 
-        // ── Genesis 8 — Sign of Life fields ────────────────────────────
+        // ── — Sign of Life fields ────────────────────────────
         /// Interval in days between required sign-of-life attestations.
         #[serde(default)]
         sign_of_life_interval_days: Option<u64>,
@@ -456,7 +485,7 @@ pub enum Action {
         #[serde(default)]
         convert_to: Option<String>,
 
-        // ── Genesis 9 — Wallet Group fields ────────────────────────────
+        // ── — Wallet Group fields ────────────────────────────
         /// Optional set of wallets/group authorized to claim this lock.
         #[serde(default)]
         authorized_claimants: Option<AuthorizedSet>,
@@ -622,7 +651,7 @@ pub enum Action {
         lock_id: TimeLockId,
     },
 
-    // ── Genesis 7 — Verified Delivery Protocol ────────────────────────────────
+    // ── — Verified Delivery Protocol ────────────────────────────────
     /// Register a bonded verifier in the on-chain registry.
     /// Only the governance wallet (currently Founder) may submit this action.
     VerifierRegister {
@@ -635,7 +664,7 @@ pub enum Action {
         role: String,
     },
 
-    // ── Genesis 8 — AI Agent Architecture ─────────────────────────────────
+    // ── — AI Agent Architecture ─────────────────────────────────
     /// Register an AI agent in the on-chain registry.
     /// Only the governance wallet may submit this action.
     AgentRegister {
@@ -670,12 +699,12 @@ pub enum Action {
     /// before its maturity date, for the purpose of AI-managed trading.
     ///
     /// Validation:
-    ///   - lock must be Type M (lock_type == "M")
-    ///   - signer must be the registered MISAI executor
-    ///   - destination must match db.get_meta("misai_executor_wallet")
-    ///   - lock status must be Pending
-    ///   - lock_metadata must not be null
-    ///   - rate limit: max 3 per 24-hour window
+    /// - lock must be Type M (lock_type == "M")
+    /// - signer must be the registered MISAI executor
+    /// - destination must match db.get_meta("misai_executor_wallet")
+    /// - lock status must be Pending
+    /// - lock_metadata must not be null
+    /// - rate limit: max 3 per 24-hour window
     ///
     /// On acceptance, lock transitions to PendingExecutor for a configurable
     /// delay (default 24 hours) before finalization.
@@ -687,7 +716,7 @@ pub enum Action {
         executor_pubkey: String,
     },
 
-    // ── Genesis 8 — TYPE I Invoice ──────────────────────────────────────────
+    // ── — TYPE I Invoice ──────────────────────────────────────────
     /// Create a new invoice requesting payment.
     CreateInvoice(CreateInvoiceAction),
 
@@ -697,7 +726,7 @@ pub enum Action {
     /// Cancel an open invoice (issuer only).
     CancelInvoice(CancelInvoiceAction),
 
-    // ── Genesis 8 — TYPE C Credit Authorization ─────────────────────────────
+    // ── — TYPE C Credit Authorization ─────────────────────────────
     /// Authorize a credit line for a beneficiary.
     CreateCredit(CreateCreditAction),
 
@@ -707,25 +736,25 @@ pub enum Action {
     /// Revoke an open credit line (grantor only).
     RevokeCredit(RevokeCreditAction),
 
-    // ── Genesis 8 — TYPE Y Interest Bearing Deposit ─────────────────────────
+    // ── — TYPE Y Interest Bearing Deposit ─────────────────────────
     /// Create a deposit with interest terms.
     CreateDeposit(CreateDepositAction),
 
     /// Settle a matured deposit (obligor pays back principal + interest).
     SettleDeposit(SettleDepositAction),
 
-    // ── Genesis 8 — TYPE V Conditional Validity ─────────────────────────────
+    // ── — TYPE V Conditional Validity ─────────────────────────────
     /// Create a conditional payment requiring attestor approval.
     CreateConditional(CreateConditionalAction),
 
     /// Attest (approve) a conditional payment.
     AttestConditional(AttestConditionalAction),
 
-    // ── Genesis 8 — TYPE L Ledger Entry ─────────────────────────────────────
+    // ── — TYPE L Ledger Entry ─────────────────────────────────────
     /// Create an immutable ledger entry (bonded agents only).
     CreateLedgerEntry(CreateLedgerEntryAction),
 
-    // ── Genesis 9 — TYPE_G Wallet Group ─────────────────────────────────
+    // ── Wallet Group ─────────────────────────────────
     /// Create a new on-chain wallet group.
     CreateGroup(CreateGroupAction),
     /// Add a member to an existing group.
@@ -803,6 +832,25 @@ pub enum Action {
         default_record_id: [u8; 32],
         memo: String,
         lender_signature: DilithiumSignature,
+    },
+
+    // ── Genesis 10c: Payment Channels ────────────────────────────────
+    ChannelOpen {
+        channel_id: [u8; 32],
+        counterparty: AccountId,
+        locked_chronos: u64,
+        metadata: Option<String>,
+    },
+    ChannelClose {
+        channel_id: [u8; 32],
+        net_settlement_chronos: i64,
+        payment_count: u64,
+        final_state_hash: [u8; 32],
+    },
+    // ── Genesis 10c: Loan Exit (explicit exit action) ────────────────
+    LoanExit {
+        loan_id: [u8; 32],
+        exiting_party_signature: DilithiumSignature,
     },
 }
 
@@ -1218,6 +1266,8 @@ pub struct LoanOffer {
     #[serde(default)]
     pub requires_autopay: bool,
     pub memo: Option<String>,
+        #[serde(default)]
+    pub channel_id: Option<[u8; 32]>,
     pub lender_signature: DilithiumSignature,
 }
 
@@ -1276,3 +1326,5 @@ pub enum PaymentSourcePolicy {
 impl Default for PaymentSourcePolicy {
     fn default() -> Self { PaymentSourcePolicy::Open }
 }
+
+fn default_true() -> bool { true }

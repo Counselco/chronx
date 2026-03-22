@@ -249,6 +249,9 @@ async fn smoke_transfer_and_timelock() {
         vec![Action::Transfer {
             to: alice.account_id.clone(),
             amount: 1_000 * CHRONOS_PER_KX,
+            memo: None,
+            memo_encrypted: true,
+            memo_public: false,
         }],
     );
     send_tx(&http, &rpc_url, &tx1).await;
@@ -303,12 +306,12 @@ async fn smoke_transfer_and_timelock() {
             split_policy: None,
             claim_attempts_max: None,
             recurring: None,
-            extension_data: None,
+            lock_marker: None,
             oracle_hint: None,
             jurisdiction_hint: None,
             governance_proposal_id: None,
             client_ref: None,
-            recipient_email_hash: None,
+            email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
         }],

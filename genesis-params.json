@@ -18473,5 +18473,19 @@
     "badge_code_max_chars": 32,
     "behavior": "latest_entry_wins",
     "note": "On-chain identity verification infrastructure. Blue checkmark displayed when latest entry is IdentityVerified and not expired. Designed for corporate identity, professional credentials, and regulatory identifiers."
-  }
+  },
+  "rate_limit_tx_per_wallet_per_minute": 10,
+  "rate_limit_loan_actions_per_wallet_per_day": 100,
+  "channel_threshold_daily_tx": 1000,
+  "channel_open_min_lock_kx": 1,
+  "sweep_loan_interval_seconds": 3600,
+  "sweep_email_lock_interval_seconds": 300,
+  "sweep_matured_timelock_interval_seconds": 60,
+  "loan_min_settlement_chronos": 1000,
+  "sweep_humanity_stake_interval_seconds": 86400,
+  "sweep_guardian_transition_interval_seconds": 3600,
+  "sweep_promise_chain_interval_seconds": 86400,
+  "sweep_executor_interval_seconds": 60,
+  "pay_as_max_usd": 100.0,
+  "pay_as_enabled": true
 }

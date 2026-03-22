@@ -8,7 +8,7 @@
 //!   chronx_getBalance          — balance in Chronos
 //!   chronx_sendTransaction     — submit a signed transaction (hex-encoded bincode)
 //!   chronx_getTransaction      — get a vertex/tx by TxId hex
-//!   chronx_getTimeLockContracts — list time-locks for an account
+//!   chronx_getLocks — list time-locks for an account
 //!   chronx_getDagTips           — current DAG tip TxIds
 //!   chronx_getGenesisInfo       — protocol constants
 

@@ -2,9 +2,9 @@
 //!
 //! "The ledger for long-horizon human promises."
 //!
-//! Total supply: 8,270,000,000 KX  (≈ human population at genesis design)
-//! Base unit:    Chrono  (1 KX = 1,000,000 Chronos)
-//! Ticker:       KX
+//! Total supply: 8,270,000,000 KX (≈ human population at genesis design)
+//! Base unit:  Chrono (1 KX = 1,000,000 Chronos)
+//! Ticker:    KX
 
 // ── Supply ───────────────────────────────────────────────────────────────────
 
@@ -14,23 +14,23 @@ pub const TOTAL_SUPPLY_CHRONOS: u128 = 8_270_000_000_000_000;
 /// 1 KX expressed in Chronos.
 pub const CHRONOS_PER_KX: u128 = 1_000_000;
 
-/// Public sale allocation (KX). Genesis 8: 6,090,000,000 KX.
+/// Public sale allocation (KX). : 6,090,000,000 KX.
 pub const PUBLIC_SALE_KX: u128 = 6_093_000_000;
 
 /// Founder allocation (KX). Spendable at genesis.
-// Genesis 9: Founder funded via post-genesis transfer from Public Sale
+// : Founder funded via post-genesis transfer from Public Sale
 pub const FOUNDER_KX: u128 = 0;
 
 /// MISAI Bond allocation (KX). Ecosystem bond, spendable at genesis.
-// Genesis 9: MISAI Bond funded via post-genesis transfer from Public Sale
+// : MISAI Bond funded via post-genesis transfer from Public Sale
 pub const MISAI_BOND_KX: u128 = 0;
 
 /// Verifas Bond allocation (KX). Ecosystem bond, spendable at genesis.
-// Genesis 9: Verifas Bond funded via post-genesis transfer from Public Sale
+// : Verifas Bond funded via post-genesis transfer from Public Sale
 pub const VERIFAS_BOND_KX: u128 = 0;
 
 /// Faucet allocation (KX). Spendable at genesis.
-// Genesis 9: Faucet funded via post-genesis transfer from Public Sale
+// : Faucet funded via post-genesis transfer from Public Sale
 pub const FAUCET_KX: u128 = 0;
 
 /// Treasury allocation (KX). Released logarithmically over 100 years.
@@ -161,7 +161,7 @@ pub const MAX_LOCK_DURATION_YEARS: u32 = 200;
 /// Minimum lock duration — 1 second (wallet enforces user-facing minimums).
 pub const MIN_LOCK_DURATION_SECS: i64 = 1;
 
-/// Maximum bytes for `extension_data` fields.
+/// Maximum bytes for `lock_marker` fields.
 pub const MAX_EXTENSION_DATA_BYTES: usize = 1_024;
 
 /// Maximum recurring payment count (100 years of monthly payments).
@@ -201,7 +201,7 @@ pub const MISAI_MIN_INVESTMENT_WINDOW_DAYS: u32 = 90;
 pub const H100_SCALED: u128 = 5_187_377_517_640;
 pub const H100_SCALE: u128 = 1_000_000_000_000;
 
-// ── Genesis 8 — TYPE I Invoice ─────────────────────────────────────────────
+// ── — TYPE I Invoice ─────────────────────────────────────────────
 
 /// Minimum invoice expiry: 1 hour.
 pub const INVOICE_MIN_EXPIRY_SECONDS: u64 = 3600;
@@ -212,7 +212,7 @@ pub const INVOICE_MAX_EXPIRY_SECONDS: u64 = 31_536_000;
 /// Invoice fee: zero — always free.
 pub const INVOICE_FEE_BASIS_POINTS: u64 = 0;
 
-// ── Genesis 8 — TYPE C Credit Authorization ────────────────────────────────
+// ── — TYPE C Credit Authorization ────────────────────────────────
 
 /// Minimum credit ceiling: 1 KX.
 pub const CREDIT_MIN_CEILING_CHRONOS: u64 = 1_000_000;  // 1 KX minimum
@@ -223,7 +223,7 @@ pub const CREDIT_MAX_EXPIRY_SECONDS: u64 = 94_608_000;
 /// Credit fee: zero — always free.
 pub const CREDIT_FEE_BASIS_POINTS: u64 = 0;
 
-// ── Genesis 8 — TYPE Y Interest Bearing Deposit ───────────────────────────
+// ── — TYPE Y Interest Bearing Deposit ───────────────────────────
 
 /// Minimum deposit term: 1 day.
 pub const DEPOSIT_MIN_TERM_SECONDS: u64 = 86_400;
@@ -240,7 +240,7 @@ pub const DEPOSIT_FEE_BASIS_POINTS: u64 = 0;
 /// Default grace period after maturity before Defaulted status: 7 days.
 pub const DEPOSIT_DEFAULT_GRACE_SECONDS: u64 = 604_800;
 
-// ── Genesis 8 — TYPE V Conditional Validity ────────────────────────────────
+// ── — TYPE V Conditional Validity ────────────────────────────────
 
 /// Minimum number of attestors required.
 pub const CONDITIONAL_MIN_ATTESTORS: u32 = 1;
@@ -251,7 +251,7 @@ pub const CONDITIONAL_MAX_ATTESTORS: u32 = 10;
 /// Conditional payment fee: zero — always free.
 pub const CONDITIONAL_FEE_BASIS_POINTS: u64 = 0;
 
-// ── Genesis 8 — TYPE L Ledger Entry ────────────────────────────────────────
+// ── — TYPE L Ledger Entry ────────────────────────────────────────
 
 /// Ledger entry fee: zero — always free.
 pub const LEDGER_ENTRY_FEE_BASIS_POINTS: u64 = 0;
@@ -259,7 +259,7 @@ pub const LEDGER_ENTRY_FEE_BASIS_POINTS: u64 = 0;
 /// Maximum content summary size.
 pub const LEDGER_MAX_SUMMARY_BYTES: usize = 500;
 
-// ── Genesis 8 — Sign of Life ───────────────────────────────────────────────
+// ── — Sign of Life ───────────────────────────────────────────────
 
 /// Default interval between sign-of-life attestations: 1 year.
 pub const SIGN_OF_LIFE_DEFAULT_INTERVAL_DAYS: u64 = 365;
@@ -270,7 +270,7 @@ pub const SIGN_OF_LIFE_DEFAULT_GRACE_DAYS: u64 = 90;
 /// Minimum sign-of-life interval: 30 days.
 pub const SIGN_OF_LIFE_MIN_INTERVAL_DAYS: u64 = 30;
 
-// ── Genesis 8 — Promise Chain ──────────────────────────────────────────────
+// ── — Promise Chain ──────────────────────────────────────────────
 
 /// Interval between automatic promise chain anchors: 24 hours.
 pub const PROMISE_CHAIN_ANCHOR_INTERVAL_SECONDS: u64 = 86_400;
@@ -324,13 +324,13 @@ pub const HUMANITY_STAKE_HARMONIC_N: u64 = 100;
 
 // Immutable governance exclusions — forever:
 // 1. Any current or former ChronX Foundation
-//    governance board member is excluded from
-//    directing distribution.
+//  governance board member is excluded from
+//  directing distribution.
 // 2. Any wallet holding MORE than the median KX
-//    balance at time of each distribution is
-//    excluded from voting.
-//    (Bottom half of holders by balance only —
-//     scales automatically regardless of KX value.)
+//  balance at time of each distribution is
+//  excluded from voting.
+//  (Bottom half of holders by balance only —
+//   scales automatically regardless of KX value.)
 pub const HUMANITY_STAKE_EXCLUDES_GOVERNANCE_BOARD:
     bool = true;
 pub const HUMANITY_STAKE_EXCLUDES_ABOVE_MEDIAN_HOLDER:

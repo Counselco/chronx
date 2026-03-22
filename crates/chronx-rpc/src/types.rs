@@ -58,13 +58,13 @@ pub struct RpcTimeLock {
     pub private: bool,
     pub lock_version: u16,
     // ── V4 email-lock & series fields ────────────────────────────────────
-    /// Hex of BLAKE3(claim_code) extracted from extension_data (0xC5 marker).
+    /// Hex of BLAKE3(claim_code) extracted from lock_marker (0xC5 marker).
     /// Locks sharing the same hash belong to the same Promise Series.
     pub claim_secret_hash: Option<String>,
     /// Cancellation window in seconds (72 h for email locks, 24 h for ≥1-year locks).
     pub cancellation_window_secs: Option<u32>,
     /// Hex of BLAKE3(recipient_email) — used for email-lock discovery.
-    pub recipient_email_hash: Option<String>,
+    pub email_recipient_hash: Option<String>,
     /// Seconds from creation the recipient has to claim.
     pub claim_window_secs: Option<u64>,
     /// What happens if claim window expires: "RevertToSender", "Burn", or "ForwardTo(<id>)".
@@ -168,7 +168,7 @@ pub struct RpcChainStats {
     pub total_supply_kx: String,
 }
 
-/// Lightweight global lock statistics returned by `chronx_getGlobalLockStats`.
+/// Lightweight global lock statistics returned by `chronx_getLockStats`.
 /// Used by the website stats bar to show active promise count and total KX locked
 /// without fetching every timelock contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +241,7 @@ pub struct RpcCascadeDetails {
 }
 
 /// Input for a single entry in a cascade send.
-/// Used by `chronx_sendCascade`.
+/// Used by `chronx_submitCascade`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcCascadeEntry {
     /// Amount in KX (decimal string, e.g. "100.5").
@@ -292,7 +292,7 @@ pub struct RpcOutgoingTransfer {
     /// Optional memo.
     pub memo: Option<String>,
 }
-// ── Genesis 7 — Verified Delivery Protocol RPC types ─────────────────────────
+// ── Verified Delivery Protocol RPC types ─────────────────────────
 
 /// Verifier registry entry returned by `chronx_getVerifierRegistry`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,7 +334,7 @@ pub struct RpcPromiseAxioms {
     pub combined_axiom_hash: String,
 }
 
-// ── Genesis 8 — AI Agent Architecture RPC types ──────────────────────────────
+// ── AI Agent Architecture RPC types ──────────────────────────────
 
 /// Agent registry entry returned by `chronx_getAgentRegistry`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,7 +436,7 @@ pub struct RpcDetailedTx {
     pub memo: Option<String>,
 }
 
-// ── Genesis 8 — Invoice/Credit/Deposit/Conditional/Ledger RPC types ─────────
+// ── Invoice/Credit/Deposit/Conditional/Ledger RPC types ─────────
 
 /// Invoice record returned by `chronx_getInvoice`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -516,7 +516,7 @@ pub struct RpcLedgerEntryRecord {
 }
 
 
-// ── Genesis 8 — Sign of Life and Promise Chain RPC types ────────────────────
+// ── Sign of Life and Promise Chain RPC types ────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcSignOfLifeRecord {

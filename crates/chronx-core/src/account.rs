@@ -187,7 +187,7 @@ pub struct Account {
     pub preferred_fiat_currency: Option<String>,
     /// Reserved for future protocol extensions. Ignored by current nodes.
     #[serde(default)]
-    pub extension_data: Option<Vec<u8>>,
+    pub lock_marker: Option<Vec<u8>>,
 }
 
 impl Account {
@@ -210,7 +210,7 @@ impl Account {
             total_locked_incoming_chronos: 0,
             total_locked_outgoing_chronos: 0,
             preferred_fiat_currency: None,
-            extension_data: None,
+            lock_marker: None,
         }
     }
 
@@ -445,7 +445,7 @@ pub struct TimeLockContract {
     pub recurring: Option<RecurringPolicy>,
     /// Raw bytes reserved for future protocol extensions. Ignored by current nodes.
     #[serde(default)]
-    pub extension_data: Option<Vec<u8>>,
+    pub lock_marker: Option<Vec<u8>>,
     /// Suggested fiat currency for value oracle at claim time (e.g. "USD").
     #[serde(default)]
     pub oracle_hint: Option<String>,
@@ -483,7 +483,7 @@ pub struct TimeLockContract {
     /// BLAKE3 hash of the recipient's email address. Never store plaintext.
     /// Used for email-based locks where the recipient does not yet have a wallet.
     #[serde(default)]
-    pub recipient_email_hash: Option<[u8; 32]>,
+    pub email_recipient_hash: Option<[u8; 32]>,
     /// Seconds from creation that the recipient has to claim an email-based lock
     /// before `unclaimed_action` triggers.
     #[serde(default)]

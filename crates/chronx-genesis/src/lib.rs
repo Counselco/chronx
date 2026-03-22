@@ -6,14 +6,14 @@
 //!
 //! Genesis allocations v8.0 (all at GENESIS_TIMESTAMP = 2026-01-01 00:00:00 UTC):
 //!
-//! Genesis 9 allocations (6 entries only — all at GENESIS_TIMESTAMP = 2026-01-01 00:00:00 UTC):
+//! Genesis allocations (6 entries only — all at GENESIS_TIMESTAMP = 2026-01-01 00:00:00 UTC):
 //!
-//! 1.  Public sale address  — 6,093,000,000 KX  (spendable immediately)
-//! 2.  Treasury             — 1,000,000,000 KX  (100 annual time-locks, log-declining)
-//! 3.  Node Rewards         — 1,000,000,000 KX  (100 annual time-locks, log-declining)
-//! 4.  Humanity stake       —     1,000,000 KX  (single lock until 2126-01-01, own wallet)
-//! 5.  Milestone 2076       —       500,000 KX  (unlocks 2076-01-01, own wallet)
-//! 6.  Protocol reserve     —       500,000 KX  (unlocks 2036-01-01, own wallet)
+//! 1.  Public sale address — 6,093,000,000 KX  (spendable immediately)
+//! 2.  Treasury — 1,000,000,000 KX  (100 annual time-locks, log-declining)
+//! 3.  Node Rewards — 1,000,000,000 KX  (100 annual time-locks, log-declining)
+//! 4.  Humanity stake —     1,000,000 KX  (single lock until 2126-01-01, own wallet)
+//! 5.  Milestone 2076 —       500,000 KX  (unlocks 2076-01-01, own wallet)
+//! 6.  Protocol reserve —       500,000 KX  (unlocks 2036-01-01, own wallet)
 //!
 //! Genesis block total: 8,095,000,000 KX
 //! Remaining 175,000,000 KX sits in Public Sale, distributed post-genesis:
@@ -48,17 +48,17 @@ pub struct GenesisAccounts {
     pub node_rewards: AccountId,
     /// The humanity stake recipient. Long-horizon public key.
     pub humanity: AccountId,
-    /// Founder allocation (v5.0).
+    /// Founder allocation .
     pub founder: AccountId,
-    /// MISAI Bond allocation (v5.0).
+    /// MISAI Bond allocation .
     pub misai: AccountId,
-    /// Verifas Bond allocation (v5.0).
+    /// Verifas Bond allocation .
     pub verifas: AccountId,
-    /// Milestone 2076 wallet (v8.0).
+    /// Milestone 2076 wallet .
     pub milestone: AccountId,
-    /// Protocol Reserve wallet (v8.0).
+    /// Protocol Reserve wallet .
     pub reserve: AccountId,
-    /// Faucet allocation (Genesis 8).
+    /// Faucet allocation .
     pub faucet: AccountId,
 }
 
@@ -242,7 +242,7 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         "genesis: protocol reserve time-lock created"
     );
 
-    // ── 7. Founder allocation (v5.0) ──────────────────────────────────────────
+    // ── 7. Founder allocation  ──────────────────────────────────────────
     let mut founder_account = Account::new(
         accounts.founder.clone(),
         AuthPolicy::SingleSig {
@@ -257,7 +257,7 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         "genesis: founder allocation"
     );
 
-    // ── 8. MISAI Bond allocation (v5.0) ─────────────────────────────────────
+    // ── 8. MISAI Bond allocation  ─────────────────────────────────────
     let mut misai_account = Account::new(
         accounts.misai.clone(),
         AuthPolicy::SingleSig {
@@ -272,7 +272,7 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         "genesis: MISAI bond allocation"
     );
 
-    // ── 9. Verifas Bond allocation (v5.0) ────────────────────────────────────
+    // ── 9. Verifas Bond allocation  ────────────────────────────────────
     let mut verifas_account = Account::new(
         accounts.verifas.clone(),
         AuthPolicy::SingleSig {
@@ -287,7 +287,7 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         "genesis: Verifas bond allocation"
     );
 
-    // ── 10. Faucet allocation (Genesis 8) ─────────────────────────────────────
+    // ── 10. Faucet allocation  ─────────────────────────────────────
     let mut faucet_account = Account::new(
         accounts.faucet.clone(),
         AuthPolicy::SingleSig {
@@ -302,7 +302,7 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
         "genesis: faucet allocation"
     );
 
-    // ── 11. Store axioms in genesis metadata (v5.0) ─────────────────────────
+    // ── 11. Store axioms in genesis metadata  ─────────────────────────
     if let Some(ref axioms) = params.axioms {
         db.put_meta("genesis_axioms", axioms.as_bytes())?;
         info!("genesis: axioms stored in metadata ({} bytes)", axioms.len());
@@ -318,12 +318,11 @@ pub fn apply_genesis(db: &StateDb, params: &GenesisParams) -> Result<GenesisAcco
 }
 
 /// Verify that all genesis balances + pending time-locks sum correctly.
-/// Genesis 9: Only Public Sale + timelocked allocations are created at genesis.
+/// Only Public Sale + timelocked allocations are created at genesis.
 /// Founder, Faucet, MISAI Bond, Verifas Bond are funded post-genesis from Public Sale.
 /// Genesis block total = TOTAL_SUPPLY_CHRONOS (all KX starts in Public Sale + timelocks).
 fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), ChronxError> {
-    use chronx_core::constants::TOTAL_SUPPLY_CHRONOS;
-
+    
     let bal = |key: &chronx_core::types::DilithiumPublicKey| -> Result<u128, ChronxError> {
         Ok(db
             .get_account(&chronx_crypto::hash::account_id_from_pubkey(&key.0))?
@@ -362,7 +361,7 @@ fn verify_genesis_supply(db: &StateDb, params: &GenesisParams) -> Result<(), Chr
         + milestone_amount
         + reserve_amount;
 
-    // Genesis 9: genesis block total = 8,095,000,000 KX (175M distributed post-genesis)
+    // genesis block total = 8,095,000,000 KX (175M distributed post-genesis)
     let genesis_block_total: u128 = (PUBLIC_SALE_KX + TREASURY_KX + NODE_REWARDS_KX + HUMANITY_STAKE_KX + MILESTONE_2076_KX + PROTOCOL_RESERVE_KX) * CHRONOS_PER_KX;
     if total != genesis_block_total {
         return Err(ChronxError::GenesisSupplyMismatch {
@@ -424,7 +423,7 @@ fn genesis_lock(
         split_policy: None,
         claim_attempts_max: None,
         recurring: None,
-        extension_data: None,
+        lock_marker: None,
         oracle_hint: None,
         jurisdiction_hint: None,
         governance_proposal_id: None,
@@ -434,7 +433,7 @@ fn genesis_lock(
         current_beneficiary: None,
         transfer_history: Vec::new(),
         earliest_transfer_date: None,
-        recipient_email_hash: None,
+        email_recipient_hash: None,
         claim_window_secs: None,
         unclaimed_action: None,
         notification_sent: false,
@@ -496,7 +495,7 @@ pub fn null_address() -> AccountId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chronx_core::constants::{MILESTONE_2076_KX, PROTOCOL_RESERVE_KX, TOTAL_SUPPLY_CHRONOS};
+    use chronx_core::constants::{MILESTONE_2076_KX, PROTOCOL_RESERVE_KX};
     use chronx_crypto::KeyPair;
 
     fn test_params() -> GenesisParams {
