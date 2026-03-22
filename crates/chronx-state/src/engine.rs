@@ -2140,6 +2140,10 @@ impl StateEngine {
                         if loan_val.get("status").and_then(|s| s.as_str()) != Some("pending") {
                             return Err(ChronxError::LoanNotActive);
                         }
+                        // Store requires_autopay in the active loan record
+                        let requires_ap = loan_val.get("requires_autopay")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         loan_val["status"] = serde_json::json!("active");
                         loan_val["accepted_at"] = serde_json::json!(acceptance.accepted_at);
                         let val = serde_json::to_vec(&loan_val)

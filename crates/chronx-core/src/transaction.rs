@@ -1215,6 +1215,8 @@ pub struct LoanOffer {
     #[serde(default)]
     pub payment_source_policy: PaymentSourcePolicy,
     pub offer_expiry_seconds: Option<u64>,
+    #[serde(default)]
+    pub requires_autopay: bool,
     pub memo: Option<String>,
     pub lender_signature: DilithiumSignature,
 }
