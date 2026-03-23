@@ -360,9 +360,9 @@ impl ChronxApiServer for RpcServer {
                         },
                         Action::LoanOffer(ref lo) => RpcActionSummary {
                             action_type: "LoanOffer".to_string(),
-                            to_address: Some(lo.borrower_wallet.clone()),
+                            to_address: Some(lo.borrower_wallet.to_string()),
                             amount_chronos: Some(lo.principal_chronos.to_string()),
-                            amount_kx: Some((lo.principal_chronos / 1_000_000).to_string()),
+                            amount_kx: Some((lo.principal_chronos / CHRONOS_PER_KX).to_string()),
                             lock_until: None,
                             memo: lo.memo.clone(),
                             email_hash: None,
@@ -1466,9 +1466,9 @@ impl ChronxApiServer for RpcServer {
                         },
                         Action::LoanOffer(ref lo) => RpcActionSummary {
                             action_type: "LoanOffer".to_string(),
-                            to_address: Some(lo.borrower_wallet.clone()),
+                            to_address: Some(lo.borrower_wallet.to_string()),
                             amount_chronos: Some(lo.principal_chronos.to_string()),
-                            amount_kx: Some((lo.principal_chronos / 1_000_000).to_string()),
+                            amount_kx: Some((lo.principal_chronos / CHRONOS_PER_KX).to_string()),
                             lock_until: None,
                             memo: lo.memo.clone(),
                             email_hash: None,
