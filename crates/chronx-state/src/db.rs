@@ -1816,6 +1816,10 @@ pub struct LoanRecord {
     /// Credit history visibility preference.
     #[serde(default)]
     pub credit_visibility: chronx_core::transaction::CreditVisibility,
+
+    /// Timestamp of last interest payment settlement.
+    #[serde(default)]
+    pub last_payment_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

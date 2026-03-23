@@ -3134,6 +3134,27 @@ impl StateEngine {
                 continue;
             }
 
+            // Calculate payment status (on time vs late)
+            let renewal_secs = loan.get("loan_type")
+                .and_then(|v| v.get("Revolving"))
+                .and_then(|v| v.get("renewal_period_seconds"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(86400); // default daily
+            let due_at = loan.get("last_payment_at").and_then(|v| v.as_i64())
+                .or_else(|| loan.get("accepted_at").and_then(|v| v.as_i64()))
+                .unwrap_or(last_at)
+                + renewal_secs;
+            let periods_late = if now > due_at && renewal_secs > 0 {
+                ((now - due_at) / renewal_secs) as u32
+            } else { 0u32 };
+            let status_str = if periods_late == 0 {
+                "On Time".to_string()
+            } else {
+                format!("{} period(s) late", periods_late)
+            };
+            let loan_id_short = loan.get("loan_id_hex").and_then(|v| v.as_str()).unwrap_or("?");
+            let loan_id_prefix = if loan_id_short.len() >= 8 { &loan_id_short[..8] } else { loan_id_short };
+
             // Debit borrower, credit lender
             borrower_acc.balance -= accrued as u128;
             self.db.put_account(&borrower_acc)?;
@@ -3143,15 +3164,17 @@ impl StateEngine {
             lender_acc.balance += accrued as u128;
             self.db.put_account(&lender_acc)?;
 
-            // Update loan record
+            // Update loan record with settlement + payment timestamps
             loan["last_settlement_at"] = serde_json::json!(now);
+            loan["last_payment_at"] = serde_json::json!(now);
             let updated = serde_json::to_vec(&loan).map_err(|_| ChronxError::SerializationError)?;
             if key.len() == 32 { let mut lid = [0u8;32]; lid.copy_from_slice(&key); self.db.save_loan(&lid, &updated)?; }
 
             info!(accrued_chronos = accrued,
-                  loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                  loan_id = %loan_id_prefix,
+                  status = %status_str,
                   borrower = %borrower_str, lender = %lender_str,
-                  "[LOAN SWEEP] settled interest payment");
+                  "[LOAN SWEEP] {} — {} KX — {}", loan_id_prefix, accrued / 1_000_000, status_str);
             settled_count += 1;
         }
         if settled_count > 0 { self.db.flush()?; }
