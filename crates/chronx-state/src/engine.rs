@@ -2199,7 +2199,7 @@ impl StateEngine {
                         // ICO price $0.00319/KX → $10 ≈ 3135 KX = 3_135_000_000 Chronos
                         let principal_chronos = loan_val.get("principal_chronos")
                             .and_then(|v| v.as_u64()).unwrap_or(0);
-                        let deminimis_chronos: u64 = 3_135_000_000; // ~$10 at ICO price
+                        let deminimis_chronos: u64 = 3_135_000_000;
 
                         if principal_chronos < deminimis_chronos {
                             // Skip rescission — activate immediately (no principal transfer yet,
@@ -2212,8 +2212,8 @@ impl StateEngine {
                                   "De minimis loan accepted — active immediately");
                         } else {
                             // Rescission window: default 72 hours
-                            let rescission_window_hours: u64 = 72;
-                            let rescission_expires_at = now + (rescission_window_hours * 3600);
+                            let rescission_window_secs: i64 = 72 * 3600;
+                            let rescission_expires_at = now as i64 + rescission_window_secs;
                             loan_val["status"] = serde_json::json!("accepted_pending_rescission");
                             loan_val["rescission_expires_at"] = serde_json::json!(rescission_expires_at);
                             let val = serde_json::to_vec(&loan_val)
