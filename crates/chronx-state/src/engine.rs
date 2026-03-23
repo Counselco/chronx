@@ -2547,7 +2547,7 @@ impl StateEngine {
 
             // ── v2.5.29: Loan transfer (disabled) ────────────────────────
             Action::LoanTransfer { .. } => {
-                Err(ChronxError::InvalidAction(
+                Err(ChronxError::Other(
                     "Loan transfer requires governance activation. \
                      Secondary loan market coming post-ICO.".into()
                 ))
@@ -2555,7 +2555,7 @@ impl StateEngine {
 
             // ── v2.5.29: Credit visibility (disabled) ────────────────────
             Action::CreditVisibilityUpdate { .. } => {
-                Err(ChronxError::InvalidAction(
+                Err(ChronxError::Other(
                     "Credit visibility requires governance activation.".into()
                 ))
             }
@@ -2567,9 +2567,9 @@ impl StateEngine {
                 // Parse loan_id string as hex into [u8; 32]
                 let lid_bytes: [u8; 32] = {
                     let decoded = hex::decode(loan_id)
-                        .map_err(|_| ChronxError::InvalidAction("Bad loan_id hex".into()))?;
+                        .map_err(|_| ChronxError::Other("Bad loan_id hex".into()))?;
                     if decoded.len() != 32 {
-                        return Err(ChronxError::InvalidAction("loan_id must be 32 bytes".into()));
+                        return Err(ChronxError::Other("loan_id must be 32 bytes".into()));
                     }
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&decoded);
@@ -2580,7 +2580,7 @@ impl StateEngine {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
                         let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
                         if status != "accepted_pending_rescission" {
-                            return Err(ChronxError::InvalidAction(
+                            return Err(ChronxError::Other(
                                 "Loan is not in rescission window.".into()
                             ));
                         }
@@ -2592,7 +2592,7 @@ impl StateEngine {
                         let borrower2 = loan_val.get("borrower").and_then(|s| s.as_str()).unwrap_or("").to_string();
                         let submitter_str = sender.account_id.to_string();
                         if submitter_str != lender && submitter_str != borrower && submitter_str != borrower2 {
-                            return Err(ChronxError::InvalidAction(
+                            return Err(ChronxError::Other(
                                 "Only loan parties may cancel during rescission.".into()
                             ));
                         }
@@ -2601,7 +2601,7 @@ impl StateEngine {
                         let expires = loan_val.get("rescission_expires_at")
                             .and_then(|v| v.as_i64()).unwrap_or(0);
                         if (now as i64) > expires {
-                            return Err(ChronxError::InvalidAction(
+                            return Err(ChronxError::Other(
                                 "Rescission window has closed. Loan is now active.".into()
                             ));
                         }
@@ -2620,7 +2620,7 @@ impl StateEngine {
                         Err(ChronxError::SerializationError)
                     }
                 } else {
-                    Err(ChronxError::InvalidAction("Loan not found".into()))
+                    Err(ChronxError::Other("Loan not found".into()))
                 }
             }
         }
@@ -3152,8 +3152,8 @@ impl StateEngine {
             } else {
                 format!("{} period(s) late", periods_late)
             };
-            let loan_id_short = loan.get("loan_id_hex").and_then(|v| v.as_str()).unwrap_or("?");
-            let loan_id_prefix = if loan_id_short.len() >= 8 { &loan_id_short[..8] } else { loan_id_short };
+            let loan_id_prefix = loan.get("loan_id_hex").and_then(|v| v.as_str()).unwrap_or("?")
+                .chars().take(8).collect::<String>();
 
             // Debit borrower, credit lender
             borrower_acc.balance -= accrued as u128;
