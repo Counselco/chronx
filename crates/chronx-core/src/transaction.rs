@@ -881,14 +881,50 @@ pub enum Action {
         wallet_address: String,
         visibility: CreditVisibility,
     },
+
+    /// Lender or MISAI flags a loan for dispute/review.
+    /// governance: loan_flag_post_enabled = false (dormant)
+    LoanFlagPost {
+        loan_id: [u8; 32],
+        flag_type: String,
+        posted_by: String,
+        memo: Option<String>,
+        #[serde(default)]
+        dispute_annotation: Option<String>,
+    },
+
+    /// Permanent purge of loan payment detail.
+    /// governance: credit_history_purge_enabled = false
+    CreditHistoryPurge {
+        wallet_address: String,
+        reason: Option<String>,
+        acknowledged_irreversible: bool,
+    },
+
+    /// Foundation registers accredited lender.
+    /// governance: accredited_lender_registry_enabled = false
+    AccreditedLenderRegister {
+        lender_wallet: String,
+        institution_name: String,
+        jurisdiction: String,
+        license_reference: Option<String>,
+        credit_weight_multiplier: u32,
+    },
+
+    /// Foundation revokes accredited lender status.
+    /// governance: accredited_lender_registry_enabled = false
+    AccreditedLenderRevoke {
+        lender_wallet: String,
+        reason: Option<String>,
+    },
 }
 
 /// Credit history visibility setting for a wallet.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub enum CreditVisibility {
     #[default]
-    Public,
     Private,
+    Public,
 }
 
 // ── Transaction ───────────────────────────────────────────────────────────────
@@ -1306,6 +1342,12 @@ pub struct LoanOffer {
         #[serde(default)]
     pub channel_id: Option<[u8; 32]>,
     pub lender_signature: DilithiumSignature,
+    #[serde(default)]
+    pub min_credit_history_months: Option<u32>,
+    #[serde(default)]
+    pub require_accredited_lender_history: Option<bool>,
+    #[serde(default)]
+    pub require_public_credit_history: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

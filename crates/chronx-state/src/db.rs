@@ -1820,6 +1820,11 @@ pub struct LoanRecord {
     /// Timestamp of last interest payment settlement.
     #[serde(default)]
     pub last_payment_at: Option<i64>,
+
+    #[serde(default)]
+    pub prune_after_timestamp: Option<i64>,
+    #[serde(default)]
+    pub credit_weight_at_creation: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

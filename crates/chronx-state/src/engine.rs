@@ -2560,6 +2560,35 @@ impl StateEngine {
                 ))
             }
 
+            Action::LoanFlagPost { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Loan flag post requires governance activation (loan_flag_post_enabled).".into()
+                ))
+            }
+
+            Action::CreditHistoryPurge { acknowledged_irreversible, .. } => {
+                if !acknowledged_irreversible {
+                    return Err(ChronxError::Other(
+                        "Must acknowledge irreversibility before purging credit history.".into()
+                    ));
+                }
+                Err(ChronxError::FeatureNotActive(
+                    "Credit history purge requires governance activation (credit_history_purge_enabled).".into()
+                ))
+            }
+
+            Action::AccreditedLenderRegister { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Accredited lender registry requires governance activation.".into()
+                ))
+            }
+
+            Action::AccreditedLenderRevoke { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Accredited lender registry requires governance activation.".into()
+                ))
+            }
+
             // ── v2.5.29: Rescission cancel ───────────────────────────────
             Action::LoanRescissionCancel { ref loan_id, ref cancelled_by, .. } => {
                 self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
