@@ -370,16 +370,8 @@ impl StateEngine {
                         });
                     }
                 }
-                // Memo privacy rules
-                if *memo_public {
-                    let identity = self.db.get_meta(&format!("identity:{}", sender.account_id))?;
-                    if identity.is_none() {
-                        return Err(ChronxError::MemoPublicRequiresVerifiedIdentity);
-                    }
-                    if *unlock_at > now + 365 * 86400 {
-                        return Err(ChronxError::LongHorizonMemoMustBePrivate);
-                    }
-                }
+                // Memo privacy rules (TYPE L identity requirement removed v2.5.31)
+                // Any wallet can make a public memo — wallet UI warning is sufficient
                 if let Some(t) = tags {
                     if t.len() > MAX_TAGS_PER_LOCK {
                         return Err(ChronxError::TooManyTags {
