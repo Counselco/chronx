@@ -2648,6 +2648,30 @@ impl StateEngine {
                     Err(ChronxError::Other("Loan not found".into()))
                 }
             }
+
+            Action::DrawRequest { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Milestone draw loans require governance activation.".into()
+                ))
+            }
+
+            Action::DrawApproval { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Milestone draw loans require governance activation.".into()
+                ))
+            }
+
+            Action::DrawDecline { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Milestone draw loans require governance activation.".into()
+                ))
+            }
+
+            Action::PartialExit { .. } => {
+                Err(ChronxError::FeatureNotActive(
+                    "Partial loan exit requires governance activation.".into()
+                ))
+            }
         }
     }
 }

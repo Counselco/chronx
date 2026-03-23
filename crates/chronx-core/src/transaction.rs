@@ -917,6 +917,31 @@ pub enum Action {
         lender_wallet: String,
         reason: Option<String>,
     },
+
+    /// Milestone draw request on a loan
+    DrawRequest {
+        loan_id: String,
+        amount_chronos: u64,
+        proof_hash: Option<String>,
+        memo: Option<String>,
+    },
+    /// Approve a draw request
+    DrawApproval {
+        loan_id: String,
+        draw_request_tx_id: String,
+        amount_chronos: u64,
+    },
+    /// Decline a draw request
+    DrawDecline {
+        loan_id: String,
+        draw_request_tx_id: String,
+        reason: Option<String>,
+    },
+    /// Partial exit from an active loan
+    PartialExit {
+        loan_id: String,
+        amount_chronos: u64,
+    },
 }
 
 /// Credit history visibility setting for a wallet.
@@ -1348,6 +1373,12 @@ pub struct LoanOffer {
     pub require_accredited_lender_history: Option<bool>,
     #[serde(default)]
     pub require_public_credit_history: Option<bool>,
+    #[serde(default)]
+    pub milestone_draws_enabled: Option<bool>,
+    #[serde(default)]
+    pub lender_only_exit: Option<bool>,
+    #[serde(default)]
+    pub draw_requestor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
