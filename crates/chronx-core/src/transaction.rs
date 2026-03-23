@@ -500,6 +500,10 @@ pub enum Action {
         executor_threshold: Option<u8>,
 // Genesis 10a: PAY_AS denomination for this lock        #[serde(default)]        pay_as: Option<PayAsDenomination>,
 
+        /// Verifas beneficiary identification package.
+        /// Free-form text encrypted to Verifas HSM public key.
+        #[serde(default)]
+        beneficiary_package: Option<Vec<u8>>,
     },
 
     /// Claim a matured time-lock. Callable only by the registered recipient.
@@ -852,6 +856,39 @@ pub enum Action {
         loan_id: [u8; 32],
         exiting_party_signature: DilithiumSignature,
     },
+
+    // ── v2.5.29: Loan secondary market + rescission ──────────────────
+    /// Transfer loan to new lender. DISABLED until governance activation.
+    LoanTransfer {
+        loan_id: String,
+        new_lender_wallet: String,
+        transfer_price_chronos: u64,
+        memo: Option<String>,
+    },
+
+    /// Right of rescission cancellation during window.
+    /// Available to either party before rescission_expires_at.
+    LoanRescissionCancel {
+        loan_id: String,
+        cancelled_by: String,
+        reason: Option<String>,
+    },
+
+    /// Credit history visibility preference.
+    /// Latest entry for a wallet wins.
+    /// Governed by: credit_visibility_enabled = false (dormant)
+    CreditVisibilityUpdate {
+        wallet_address: String,
+        visibility: CreditVisibility,
+    },
+}
+
+/// Credit history visibility setting for a wallet.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub enum CreditVisibility {
+    #[default]
+    Public,
+    Private,
 }
 
 // ── Transaction ───────────────────────────────────────────────────────────────
@@ -1276,6 +1313,9 @@ pub struct LoanAcceptance {
     pub loan_id: [u8; 32],
     pub accepted_at: u64,
     pub borrower_signature: DilithiumSignature,
+    /// Borrower self-declares age >= 18.
+    #[serde(default)]
+    pub age_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

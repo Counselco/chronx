@@ -1800,6 +1800,22 @@ pub struct LoanRecord {
     pub status: LoanStatus,
     pub created_at: u64,
     pub memo: Option<String>,
+
+    /// Child chain anchor for payment history.
+    #[serde(default)]
+    pub child_chain_id: Option<String>,
+
+    /// Rescission window expiry timestamp.
+    #[serde(default)]
+    pub rescission_expires_at: Option<i64>,
+
+    /// Borrower age confirmation.
+    #[serde(default)]
+    pub age_confirmed: bool,
+
+    /// Credit history visibility preference.
+    #[serde(default)]
+    pub credit_visibility: chronx_core::transaction::CreditVisibility,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

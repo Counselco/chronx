@@ -2191,17 +2191,37 @@ impl StateEngine {
                         let _requires_ap = loan_val.get("requires_autopay")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
-                        // Rescission window: default 72 hours
-                        let rescission_window_hours: u64 = 72;
-                        let rescission_expires_at = now + (rescission_window_hours * 3600);
-                        loan_val["status"] = serde_json::json!("accepted_pending_rescission");
-                        loan_val["rescission_expires_at"] = serde_json::json!(rescission_expires_at);
+                        // Record age confirmation
+                        loan_val["age_confirmed"] = serde_json::json!(acceptance.age_confirmed);
                         loan_val["accepted_at"] = serde_json::json!(acceptance.accepted_at);
-                        let val = serde_json::to_vec(&loan_val)
-                            .map_err(|_| ChronxError::SerializationError)?;
-                        self.db.save_loan(&acceptance.loan_id, &val)?;
-                        info!(loan_id = %hex::encode(acceptance.loan_id),
-                              rescission_expires_at, "Loan accepted, pending rescission until {}", rescission_expires_at);
+
+                        // De minimis check: loans under ~$10 USD equiv skip rescission
+                        // ICO price $0.00319/KX → $10 ≈ 3135 KX = 3_135_000_000 Chronos
+                        let principal_chronos = loan_val.get("principal_chronos")
+                            .and_then(|v| v.as_u64()).unwrap_or(0);
+                        let deminimis_chronos: u64 = 3_135_000_000; // ~$10 at ICO price
+
+                        if principal_chronos < deminimis_chronos {
+                            // Skip rescission — activate immediately (no principal transfer yet,
+                            // sweep will handle it on next pass)
+                            loan_val["status"] = serde_json::json!("active");
+                            let val = serde_json::to_vec(&loan_val)
+                                .map_err(|_| ChronxError::SerializationError)?;
+                            self.db.save_loan(&acceptance.loan_id, &val)?;
+                            info!(loan_id = %hex::encode(acceptance.loan_id),
+                                  "De minimis loan accepted — active immediately");
+                        } else {
+                            // Rescission window: default 72 hours
+                            let rescission_window_hours: u64 = 72;
+                            let rescission_expires_at = now + (rescission_window_hours * 3600);
+                            loan_val["status"] = serde_json::json!("accepted_pending_rescission");
+                            loan_val["rescission_expires_at"] = serde_json::json!(rescission_expires_at);
+                            let val = serde_json::to_vec(&loan_val)
+                                .map_err(|_| ChronxError::SerializationError)?;
+                            self.db.save_loan(&acceptance.loan_id, &val)?;
+                            info!(loan_id = %hex::encode(acceptance.loan_id),
+                                  rescission_expires_at, "Loan accepted, pending rescission until {}", rescission_expires_at);
+                        }
                     }
                 }
                 Ok(())
@@ -2522,6 +2542,85 @@ impl StateEngine {
                     }
                 } else {
                     Err(ChronxError::LoanNotFound(hex::encode(loan_id)))
+                }
+            }
+
+            // ── v2.5.29: Loan transfer (disabled) ────────────────────────
+            Action::LoanTransfer { .. } => {
+                Err(ChronxError::InvalidAction(
+                    "Loan transfer requires governance activation. \
+                     Secondary loan market coming post-ICO.".into()
+                ))
+            }
+
+            // ── v2.5.29: Credit visibility (disabled) ────────────────────
+            Action::CreditVisibilityUpdate { .. } => {
+                Err(ChronxError::InvalidAction(
+                    "Credit visibility requires governance activation.".into()
+                ))
+            }
+
+            // ── v2.5.29: Rescission cancel ───────────────────────────────
+            Action::LoanRescissionCancel { ref loan_id, ref cancelled_by, .. } => {
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+
+                // Parse loan_id string as hex into [u8; 32]
+                let lid_bytes: [u8; 32] = {
+                    let decoded = hex::decode(loan_id)
+                        .map_err(|_| ChronxError::InvalidAction("Bad loan_id hex".into()))?;
+                    if decoded.len() != 32 {
+                        return Err(ChronxError::InvalidAction("loan_id must be 32 bytes".into()));
+                    }
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&decoded);
+                    arr
+                };
+
+                if let Ok(Some(existing)) = self.db.get_loan(&lid_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        if status != "accepted_pending_rescission" {
+                            return Err(ChronxError::InvalidAction(
+                                "Loan is not in rescission window.".into()
+                            ));
+                        }
+
+                        // Verify submitter is lender or borrower
+                        let lender = loan_val.get("lender_wallet").and_then(|s| s.as_str()).unwrap_or("");
+                        let borrower = loan_val.get("borrower_wallet").and_then(|s| s.as_str()).unwrap_or("")
+                            .to_string();
+                        let borrower2 = loan_val.get("borrower").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        let submitter_str = sender.account_id.to_string();
+                        if submitter_str != lender && submitter_str != borrower && submitter_str != borrower2 {
+                            return Err(ChronxError::InvalidAction(
+                                "Only loan parties may cancel during rescission.".into()
+                            ));
+                        }
+
+                        // Check window not expired
+                        let expires = loan_val.get("rescission_expires_at")
+                            .and_then(|v| v.as_i64()).unwrap_or(0);
+                        if (now as i64) > expires {
+                            return Err(ChronxError::InvalidAction(
+                                "Rescission window has closed. Loan is now active.".into()
+                            ));
+                        }
+
+                        // Cancel: revert to declined, no principal transfer
+                        loan_val["status"] = serde_json::json!("declined");
+                        loan_val["rescission_cancelled_at"] = serde_json::json!(now as u64);
+                        loan_val["rescission_cancelled_by"] = serde_json::json!(cancelled_by);
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&lid_bytes, &updated)?;
+                        info!(loan_id = %loan_id, cancelled_by = %cancelled_by,
+                              "[RESCISSION CANCEL] Loan cancelled during rescission window");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::InvalidAction("Loan not found".into()))
                 }
             }
         }
