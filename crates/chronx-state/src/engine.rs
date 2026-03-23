@@ -1983,15 +1983,20 @@ impl StateEngine {
             // ── protocol — TYPE L Ledger Entry ─────────────────────────────
             Action::CreateLedgerEntry(ref action) => {
                 let now_u64 = now as u64;
-                // Identity entries can be submitted by governance/founder wallet
+                // Author must be a bonded agent OR registered verifier
+                let author_wallet = hex::encode(&action.author_pubkey.0);
+                let author_account_id = chronx_crypto::hash::account_id_from_pubkey(&action.author_pubkey.0);
+                let author_b58 = author_account_id.to_b58();
                 let is_identity_entry = matches!(action.entry_type,
                     LedgerEntryType::IdentityVerified | LedgerEntryType::IdentityRevoked);
-                if !is_identity_entry {
-                    // Author must be a bonded agent (non-identity entries)
-                    let author_wallet = hex::encode(&action.author_pubkey.0);
+                if is_identity_entry {
+                    // Identity entries require a registered verifier (e.g. CPNX)
+                    if self.db.get_verifier(&author_b58)?.is_none() {
+                        return Err(ChronxError::NotBondedAgent);
+                    }
+                } else {
+                    // Non-identity entries require bonded agent or verifier
                     if self.db.get_agent(&author_wallet)?.is_none() {
-                        let author_account_id = chronx_crypto::hash::account_id_from_pubkey(&action.author_pubkey.0);
-                        let author_b58 = author_account_id.to_b58();
                         if self.db.get_verifier(&author_b58)?.is_none() {
                             return Err(ChronxError::NotBondedAgent);
                         }
