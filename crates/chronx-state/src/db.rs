@@ -694,10 +694,20 @@ impl StateDb {
     pub fn iter_all_vertices(&self) -> Result<Vec<Vertex>, ChronxError> {
         let mut result = Vec::new();
         for item in self.vertices.iter() {
-            let (_, bytes) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
-            let v: Vertex = bincode::deserialize(&bytes)
-                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
-            result.push(v);
+            let (_, bytes) = match item {
+                Ok(kv) => kv,
+                Err(e) => {
+                    eprintln!("[db] Skipping unreadable vertex entry: {}", e);
+                    continue;
+                }
+            };
+            match bincode::deserialize::<Vertex>(&bytes) {
+                Ok(v) => result.push(v),
+                Err(e) => {
+                    eprintln!("[db] Skipping vertex with deserialization error: {}", e);
+                    continue;
+                }
+            }
         }
         Ok(result)
     }
