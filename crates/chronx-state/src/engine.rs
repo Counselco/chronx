@@ -2040,6 +2040,25 @@ impl StateEngine {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&summary_str) {
                         if let Some(target_wallet) = parsed.get("wallet").and_then(|v| v.as_str()) {
                             self.db.add_identity_entry(target_wallet, action.entry_id)?;
+
+                            // Handle revocation blackouts
+                            if entry_type_str == "IdentityRevoked" {
+                                if let Some(revocation_type) = parsed.get("revocation_type").and_then(|v| v.as_str()) {
+                                    if revocation_type == "fraud" || revocation_type == "impersonation" {
+                                        let blackout_years = parsed.get("blackout_years").and_then(|v| v.as_u64()).unwrap_or(5);
+                                        let blackout_until = now + (blackout_years as i64 * 365 * 24 * 3600);
+                                        let blackout_data = serde_json::json!({
+                                            "blackout_until": blackout_until,
+                                            "reason": revocation_type,
+                                            "revoked_at": now
+                                        });
+                                        let val = serde_json::to_vec(&blackout_data).unwrap_or_default();
+                                        self.db.badge_blackouts_insert(target_wallet, &val)?;
+                                        info!(wallet = target_wallet, blackout_years, "Badge blackout set for {}", revocation_type);
+                                    }
+                                }
+                            }
+
                             let display = parsed.get("display").and_then(|v| v.as_str()).unwrap_or("?");
                             let msg = format!("Identity {} for {} ({})", entry_type_str, target_wallet, display);
                             info!("{}", msg);

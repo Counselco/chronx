@@ -361,6 +361,8 @@ pub struct StateDb {
     ledger_promise_index: sled::Tree,
     /// Identity index: wallet_b58 bytes -> bincode(Vec<[u8;32]>) of identity entry_ids.
     identity_index: sled::Tree,
+    /// Badge blackouts: wallet_b58 bytes -> JSON {blackout_until, reason, revoked_at}.
+    badge_blackouts: sled::Tree,
     /// Suggestion-only convert_to field: lock_id bytes -> UTF-8 string (max 50 chars).
     convert_to_suggestion: sled::Tree,
 
@@ -469,6 +471,9 @@ impl StateDb {
         let identity_index = db
             .open_tree("identity_index")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let badge_blackouts = db
+            .open_tree("badge_blackouts")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let convert_to_suggestion = db
             .open_tree("convert_to_suggestion")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
@@ -539,6 +544,7 @@ impl StateDb {
             conditionals,
             ledger_entries,
             identity_index,
+            badge_blackouts,
             convert_to_suggestion,
             ledger_promise_index,
             executor_withdrawals,
@@ -1618,6 +1624,23 @@ impl StateDb {
         }
         results.sort_by_key(|r| r.timestamp);
         Ok(results)
+    }
+
+    pub fn badge_blackouts_insert(&self, wallet_b58: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.badge_blackouts.insert(wallet_b58.as_bytes(), data)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_badge_blackout(&self, wallet_b58: &str) -> Result<Option<serde_json::Value>, ChronxError> {
+        match self.badge_blackouts.get(wallet_b58.as_bytes()) {
+            Ok(Some(bytes)) => {
+                let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                Ok(Some(val))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
     }
 
     pub fn get_latest_identity(&self, wallet_b58: &str, now_unix: u64) -> Result<Option<IdentityRecord>, ChronxError> {
