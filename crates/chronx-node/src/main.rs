@@ -391,6 +391,24 @@ async fn main() -> anyhow::Result<()> {
         info!("loan payment sweep task started (every 3600 seconds)");
     }
 
+    // ── Background sweep: activate loans past rescission window (every 5 min) ─
+    {
+        let rescission_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                match rescission_engine.sweep_loan_rescissions(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {} // nothing to activate — silent
+                    Ok(n) => info!(count = n, "sweep: activated loans past rescission window"),
+                    Err(e) => warn!(error = %e, "sweep: failed to sweep loan rescissions"),
+                }
+            }
+        });
+        info!("loan rescission sweep task started (every 300 seconds)");
+    }
+
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
 

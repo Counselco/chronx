@@ -2191,12 +2191,17 @@ impl StateEngine {
                         let _requires_ap = loan_val.get("requires_autopay")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
-                        loan_val["status"] = serde_json::json!("active");
+                        // Rescission window: default 72 hours
+                        let rescission_window_hours: u64 = 72;
+                        let rescission_expires_at = now + (rescission_window_hours * 3600);
+                        loan_val["status"] = serde_json::json!("accepted_pending_rescission");
+                        loan_val["rescission_expires_at"] = serde_json::json!(rescission_expires_at);
                         loan_val["accepted_at"] = serde_json::json!(acceptance.accepted_at);
                         let val = serde_json::to_vec(&loan_val)
                             .map_err(|_| ChronxError::SerializationError)?;
                         self.db.save_loan(&acceptance.loan_id, &val)?;
-                        info!(loan_id = %hex::encode(acceptance.loan_id), "Loan accepted and active");
+                        info!(loan_id = %hex::encode(acceptance.loan_id),
+                              rescission_expires_at, "Loan accepted, pending rescission until {}", rescission_expires_at);
                     }
                 }
                 Ok(())
@@ -3052,6 +3057,74 @@ impl StateEngine {
         }
         if settled_count > 0 { self.db.flush()?; }
         Ok(settled_count)
+    }
+
+    // ── Rescission sweep: activate loans past their rescission window ─────────
+    /// Sweep loans past their rescission window: transfer principal, set status Active
+    pub fn sweep_loan_rescissions(&self, now: i64) -> Result<u32, ChronxError> {
+        use chronx_core::types::AccountId;
+        let mut count = 0u32;
+
+        let entries: Vec<_> = self.db.iter_loans().collect();
+        for (key, val) in entries {
+            let mut loan: serde_json::Value = match serde_json::from_slice(&val) {
+                Ok(v) => v, Err(_) => continue
+            };
+
+            let status = loan.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status != "accepted_pending_rescission" { continue; }
+
+            let expires = loan.get("rescission_expires_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if expires > now { continue; }
+
+            // Rescission window expired — activate loan and transfer principal
+            let lender_str = loan.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let borrower_str = loan.get("borrower_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let principal_kx = loan.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+            let principal_chronos = loan.get("principal_chronos").and_then(|v| v.as_u64())
+                .unwrap_or(principal_kx * 1_000_000) as u128;
+
+            if principal_chronos > 0 && !lender_str.is_empty() && !borrower_str.is_empty() {
+                let lender_id = match AccountId::from_b58(&lender_str) { Ok(id) => id, Err(_) => continue };
+                let borrower_id = match AccountId::from_b58(&borrower_str) { Ok(id) => id, Err(_) => continue };
+
+                // Debit lender
+                let mut lender_acc = match self.db.get_account(&lender_id)? {
+                    Some(a) => a, None => continue
+                };
+                if lender_acc.balance < principal_chronos {
+                    warn!(loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                          "[RESCISSION SWEEP] lender insufficient balance, skipping");
+                    continue;
+                }
+                lender_acc.balance -= principal_chronos;
+                self.db.put_account(&lender_acc)?;
+
+                // Credit borrower
+                let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                    Some(a) => a, None => continue
+                };
+                borrower_acc.balance += principal_chronos;
+                self.db.put_account(&borrower_acc)?;
+            }
+
+            loan["status"] = serde_json::json!("active");
+            loan["activated_at"] = serde_json::json!(now);
+            let updated = serde_json::to_vec(&loan).map_err(|_| ChronxError::SerializationError)?;
+            if key.len() == 32 {
+                let mut lid = [0u8; 32];
+                lid.copy_from_slice(&key);
+                self.db.save_loan(&lid, &updated)?;
+            }
+
+            info!(loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                  "[RESCISSION SWEEP] rescission window expired, loan activated");
+            count += 1;
+        }
+        if count > 0 { self.db.flush()?; }
+        Ok(count)
     }
 
 }

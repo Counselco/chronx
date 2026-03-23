@@ -1780,6 +1780,7 @@ pub enum LoanStatus {
     WrittenOff { written_off_at: u64, outstanding_kx: u64 },
     Completed { completed_at: u64 },
     EarlyPayoff { paid_off_at: u64 },
+    AcceptedPendingRescission { rescission_expires_at: u64 },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
