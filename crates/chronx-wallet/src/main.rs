@@ -382,7 +382,6 @@ async fn main() -> anyhow::Result<()> {
                     memo_encrypted: true,
                     memo_public: false,
                     pay_as_amount: None,
-                    beneficiary_package: None,
                 }],
                 &client,
             )
