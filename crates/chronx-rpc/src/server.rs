@@ -1815,6 +1815,7 @@ impl ChronxApiServer for RpcServer {
                 LoanStatus::WrittenOff { .. } => written_off += 1,
                 LoanStatus::EarlyPayoff { .. } => early_payoff += 1,
                 LoanStatus::Reinstated { .. } => reinstated += 1,
+                LoanStatus::AcceptedPendingRescission { .. } => active += 1,
             }
         }
 
