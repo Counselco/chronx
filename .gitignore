@@ -28,3 +28,9 @@ website/
 FETCH_HEAD
 chronx.log
 wallet-build.log
+
+.env
+.env.local
+*.env
+*secret*
+*api_key*
