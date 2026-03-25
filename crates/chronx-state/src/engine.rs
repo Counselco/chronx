@@ -2891,6 +2891,305 @@ impl StateEngine {
                 Ok(())
             }
 
+
+            // -- Genesis Zero -- Obligation Transfer handlers ---------------------
+
+            Action::ObligationTransfer(ref action) => {
+                // 1. Find obligation (loan) by obligation_id
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify signed_by == current_owner
+                        let current_owner = loan_val.get("current_owner")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                loan_val.get("lender_wallet")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                            });
+                        let signed_by_str = action.signed_by.to_string();
+                        if signed_by_str != current_owner {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_TRANSFER: signed_by does not match current_owner".into()
+                            ));
+                        }
+
+                        // 3. Check transferable flag
+                        let transfer_flag = loan_val.get("transferable")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Free");
+                        if transfer_flag == "Locked" {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_TRANSFER: obligation is not transferable (Locked)".into()
+                            ));
+                        }
+
+                        // 4. If Restricted, check governance_unlock_at
+                        if transfer_flag == "Restricted" {
+                            if let Some(conditions) = loan_val.get("transfer_conditions") {
+                                if let Some(unlock_at) = conditions.get("governance_unlock_at").and_then(|v| v.as_u64()) {
+                                    if (now as u64) < unlock_at {
+                                        return Err(ChronxError::Other(
+                                            "OBLIGATION_TRANSFER: governance unlock date not reached".into()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        // 5. Update current_owner
+                        loan_val["current_owner"] = serde_json::json!(action.to_wallet.to_string());
+
+                        // 6. Append to transfer_history
+                        let record = serde_json::json!({
+                            "from_wallet": action.from_wallet.to_string(),
+                            "to_wallet": action.to_wallet.to_string(),
+                            "consideration_kx": action.consideration_kx,
+                            "consideration_currency": action.consideration_currency,
+                            "transferred_at": now as u64
+                        });
+                        if let Some(history) = loan_val.get_mut("transfer_history") {
+                            if let Some(arr) = history.as_array_mut() {
+                                arr.push(record);
+                            }
+                        } else {
+                            loan_val["transfer_history"] = serde_json::json!([record]);
+                        }
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              from = %action.from_wallet.to_string(),
+                              to = %action.to_wallet.to_string(),
+                              "[OBLIGATION TRANSFER] ownership transferred");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::ObligationTranche(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.parent_obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify signed_by == current_owner
+                        let current_owner = loan_val.get("current_owner")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                loan_val.get("lender_wallet")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                            });
+                        let signed_by_str = action.signed_by.to_string();
+                        if signed_by_str != current_owner {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_TRANCHE: signed_by does not match current_owner".into()
+                            ));
+                        }
+
+                        // 3. Validate tranche_count
+                        let max_tranches: u32 = self.db.get_meta("max_tranches_per_obligation")
+                            .ok().flatten()
+                            .and_then(|b| String::from_utf8(b).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1000);
+                        if action.tranche_count > max_tranches {
+                            return Err(ChronxError::Other(
+                                format!("OBLIGATION_TRANCHE: tranche_count {} exceeds max {}", action.tranche_count, max_tranches)
+                            ));
+                        }
+
+                        // 4. Validate face_value_per_tranche_kx
+                        let min_face: u64 = self.db.get_meta("min_tranche_face_value_kx")
+                            .ok().flatten()
+                            .and_then(|b| String::from_utf8(b).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1000);
+                        if action.face_value_per_tranche_kx < min_face {
+                            return Err(ChronxError::Other(
+                                format!("OBLIGATION_TRANCHE: face_value {} below minimum {}", action.face_value_per_tranche_kx, min_face)
+                            ));
+                        }
+
+                        // 5. Mark parent as tranched, record child count
+                        loan_val["tranched"] = serde_json::json!(true);
+                        loan_val["tranche_count"] = serde_json::json!(action.tranche_count);
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(parent = %hex::encode(&id_bytes),
+                              tranches = action.tranche_count,
+                              face_kx = action.face_value_per_tranche_kx,
+                              "[OBLIGATION TRANCHE] obligation split into tranches");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::ObligationRetire(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify retiring_wallet is borrower or authorized
+                        let borrower = loan_val.get("borrower_wallet")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let retiring_str = action.retiring_wallet.to_string();
+                        if retiring_str != borrower {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_RETIRE: retiring_wallet is not the borrower".into()
+                            ));
+                        }
+
+                        // 3. Validate retire_fraction
+                        if action.retire_fraction < 0.0 || action.retire_fraction > 1.0 {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_RETIRE: retire_fraction must be between 0.0 and 1.0".into()
+                            ));
+                        }
+
+                        // 4. Update retirement fields
+                        let prev_fraction = loan_val.get("retired_fraction")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let new_fraction = (prev_fraction + action.retire_fraction).min(1.0);
+
+                        loan_val["retired_fraction"] = serde_json::json!(new_fraction);
+                        if (new_fraction - 1.0).abs() < f64::EPSILON {
+                            loan_val["retirement_status"] = serde_json::json!("FullyRetired");
+                            loan_val["status"] = serde_json::json!("closed");
+                        } else if new_fraction > 0.0 {
+                            loan_val["retirement_status"] = serde_json::json!("PartiallyRetired");
+                        }
+
+                        if let Some(ref ann) = action.announcement {
+                            loan_val["retirement_announcement"] = serde_json::json!(ann);
+                        }
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              fraction = new_fraction,
+                              "[OBLIGATION RETIRE] obligation retired");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::TransferFlagUpdate(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify lender_wallet is original lender
+                        let lender = loan_val.get("lender_wallet")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let lender_str = action.lender_wallet.to_string();
+                        if lender_str != lender {
+                            return Err(ChronxError::Other(
+                                "TRANSFER_FLAG_UPDATE: only the original lender may update transfer flag".into()
+                            ));
+                        }
+
+                        // 3. Serialize the new flag
+                        let flag_val = serde_json::to_value(&action.new_flag)
+                            .unwrap_or(serde_json::json!("Free"));
+                        loan_val["transferable"] = flag_val;
+                        loan_val["transfer_flag_updated_at"] = serde_json::json!(now as u64);
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              "[TRANSFER FLAG UPDATE] transfer flag changed");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::TermsVisibilityUpdate(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify lender_wallet is original lender
+                        let lender = loan_val.get("lender_wallet")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let lender_str = action.lender_wallet.to_string();
+                        if lender_str != lender {
+                            return Err(ChronxError::Other(
+                                "TERMS_VISIBILITY_UPDATE: only the original lender may update terms visibility".into()
+                            ));
+                        }
+
+                        // 3. Record visibility change history
+                        let prev_visibility = loan_val.get("terms_visibility")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Private")
+                            .to_string();
+                        let new_vis = serde_json::to_value(&action.new_visibility)
+                            .unwrap_or(serde_json::json!("Private"));
+                        let new_vis_str = new_vis.as_str().unwrap_or("Private").to_string();
+
+                        // Append to visibility change log
+                        let change_record = serde_json::json!({
+                            "from": prev_visibility,
+                            "to": new_vis_str,
+                            "changed_at": now as u64
+                        });
+                        if let Some(log) = loan_val.get_mut("visibility_change_log") {
+                            if let Some(arr) = log.as_array_mut() {
+                                arr.push(change_record);
+                            }
+                        } else {
+                            loan_val["visibility_change_log"] = serde_json::json!([change_record]);
+                        }
+
+                        loan_val["terms_visibility"] = new_vis;
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              from = %prev_visibility,
+                              to = %new_vis_str,
+                              "[TERMS VISIBILITY] visibility changed");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
             Action::PartialExit { .. } => {
                 Err(ChronxError::FeatureNotActive(
                     "Partial loan exit requires governance activation.".into()
@@ -3730,7 +4029,15 @@ mod tests {
             email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
-        }
+        
+            transferable: None,
+            current_owner_account: None,
+            transfer_history: None,
+            terms_visibility: None,
+            tranche_info: None,
+            retirement_status: None,
+            retired_fraction: None,
+}
     }
 
     fn seed_oracle(db: &StateDb, price_cents: u64) {

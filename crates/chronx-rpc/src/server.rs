@@ -2210,6 +2210,202 @@ impl ChronxApiServer for RpcServer {
             "active_grants": active_grants,
         }))
     }
+    // -- Genesis Zero -- Obligation Transfer RPC implementations --------------
+
+    async fn get_obligation_owner(&self, obligation_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&obligation_id)?;
+        let db = &self.state.db;
+        if let Ok(Some(existing)) = db.get_loan(&id_bytes) {
+            if let Ok(loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                let current_owner = loan_val.get("current_owner")
+                    .or_else(|| loan_val.get("lender_wallet"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Ok(serde_json::json!({
+                    "obligation_id": obligation_id,
+                    "current_owner": current_owner
+                }))
+            } else {
+                Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Deserialization error", None::<String>))
+            }
+        } else {
+            Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Obligation not found", None::<String>))
+        }
+    }
+
+    async fn get_transfer_history(&self, obligation_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&obligation_id)?;
+        let db = &self.state.db;
+        if let Ok(Some(existing)) = db.get_loan(&id_bytes) {
+            if let Ok(loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                let history = loan_val.get("transfer_history")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]));
+                Ok(serde_json::json!({
+                    "obligation_id": obligation_id,
+                    "transfer_history": history
+                }))
+            } else {
+                Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Deserialization error", None::<String>))
+            }
+        } else {
+            Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Obligation not found", None::<String>))
+        }
+    }
+
+    async fn get_obligations_by_owner(&self, wallet: String) -> RpcResult<serde_json::Value> {
+        let db = &self.state.db;
+        let mut obligation_ids: Vec<String> = Vec::new();
+        for item in db.iter_loans() {
+            if let Ok(loan_val) = serde_json::from_slice::<serde_json::Value>(&item.1) {
+                let current_owner = loan_val.get("current_owner")
+                    .or_else(|| loan_val.get("lender_wallet"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if current_owner == wallet {
+                    obligation_ids.push(hex::encode(&item.0));
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "wallet": wallet,
+            "obligation_ids": obligation_ids,
+            "count": obligation_ids.len()
+        }))
+    }
+
+    async fn get_tranches(&self, parent_obligation_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&parent_obligation_id)?;
+        let db = &self.state.db;
+        if let Ok(Some(existing)) = db.get_loan(&id_bytes) {
+            if let Ok(loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                let tranche_count = loan_val.get("tranche_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let tranched = loan_val.get("tranched")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Ok(serde_json::json!({
+                    "parent_obligation_id": parent_obligation_id,
+                    "tranched": tranched,
+                    "tranche_count": tranche_count
+                }))
+            } else {
+                Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Deserialization error", None::<String>))
+            }
+        } else {
+            Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Obligation not found", None::<String>))
+        }
+    }
+
+    async fn get_yield_inputs(&self, obligation_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&obligation_id)?;
+        let db = &self.state.db;
+        if let Ok(Some(existing)) = db.get_loan(&id_bytes) {
+            if let Ok(loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                let visibility = loan_val.get("terms_visibility")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Private");
+                let current_owner = loan_val.get("current_owner")
+                    .or_else(|| loan_val.get("lender_wallet"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let retirement_status = loan_val.get("retirement_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Active")
+                    .to_string();
+                let retired_fraction = loan_val.get("retired_fraction")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let history_count = loan_val.get("transfer_history")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len() as u32)
+                    .unwrap_or(0);
+
+                if visibility == "Public" {
+                    // Full details
+                    let interest_rate = loan_val.get("interest_rate").cloned();
+                    let term_seconds = loan_val.get("term_seconds")
+                        .and_then(|v| v.as_u64());
+                    let payment_schedule = loan_val.get("payment_schedule")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    Ok(serde_json::json!({
+                        "obligation_id": obligation_id,
+                        "terms_visibility": visibility,
+                        "interest_rate": interest_rate,
+                        "term_seconds": term_seconds,
+                        "payment_schedule": payment_schedule,
+                        "current_owner": current_owner,
+                        "retirement_status": retirement_status,
+                        "retired_fraction": retired_fraction,
+                        "transfer_history_count": history_count
+                    }))
+                } else {
+                    // Private: only non-sensitive fields
+                    Ok(serde_json::json!({
+                        "obligation_id": obligation_id,
+                        "terms_visibility": "Private",
+                        "interest_rate": null,
+                        "term_seconds": null,
+                        "payment_schedule": null,
+                        "current_owner": current_owner,
+                        "retirement_status": retirement_status,
+                        "retired_fraction": retired_fraction,
+                        "transfer_history_count": history_count
+                    }))
+                }
+            } else {
+                Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Deserialization error", None::<String>))
+            }
+        } else {
+            Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Obligation not found", None::<String>))
+        }
+    }
+
+    async fn get_obligation_status(&self, obligation_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&obligation_id)?;
+        let db = &self.state.db;
+        if let Ok(Some(existing)) = db.get_loan(&id_bytes) {
+            if let Ok(loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                let retirement_status = loan_val.get("retirement_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Active")
+                    .to_string();
+                let retired_fraction = loan_val.get("retired_fraction")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let tranche_count = loan_val.get("tranche_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let transferable = loan_val.get("transferable")
+                    .cloned()
+                    .unwrap_or(serde_json::json!("Free"));
+                let current_owner = loan_val.get("current_owner")
+                    .or_else(|| loan_val.get("lender_wallet"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Ok(serde_json::json!({
+                    "obligation_id": obligation_id,
+                    "status": retirement_status,
+                    "retired_fraction": retired_fraction,
+                    "tranche_count": tranche_count,
+                    "active_tranches": tranche_count,
+                    "transferable": transferable,
+                    "current_owner": current_owner
+                }))
+            } else {
+                Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Deserialization error", None::<String>))
+            }
+        } else {
+            Err(jsonrpsee::types::ErrorObjectOwned::owned(-32603, "Obligation not found", None::<String>))
+        }
+    }
+
+
 }
 
 
@@ -2324,3 +2520,14 @@ fn ledger_entry_to_rpc(r: &chronx_state::db::LedgerEntryRecord) -> RpcLedgerEntr
 
 
 
+
+fn hex_to_32(hex_str: &str) -> RpcResult<[u8; 32]> {
+    let decoded = hex::decode(hex_str)
+        .map_err(|_| jsonrpsee::types::ErrorObjectOwned::owned(-32602, "Invalid hex", None::<String>))?;
+    if decoded.len() != 32 {
+        return Err(jsonrpsee::types::ErrorObjectOwned::owned(-32602, "Expected 32 bytes", None::<String>));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&decoded);
+    Ok(arr)
+}

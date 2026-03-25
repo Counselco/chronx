@@ -380,4 +380,31 @@ pub trait ChronxApi {
     #[method(name = "getKXGCCapacity")]
     async fn get_kxgc_capacity(&self) -> RpcResult<serde_json::Value>;
 
+
+    // -- Genesis Zero -- Obligation Transfer RPC queries ----------------------
+
+    /// Return the current owner of an obligation.
+    #[method(name = "getObligationOwner")]
+    async fn get_obligation_owner(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return the transfer history of an obligation.
+    #[method(name = "getTransferHistory")]
+    async fn get_transfer_history(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return all obligations owned by a wallet.
+    #[method(name = "getObligationsByOwner")]
+    async fn get_obligations_by_owner(&self, wallet: String) -> RpcResult<serde_json::Value>;
+
+    /// Return all tranches of a parent obligation.
+    #[method(name = "getTranches")]
+    async fn get_tranches(&self, parent_obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return yield inputs for an obligation (respects terms_visibility).
+    #[method(name = "getYieldInputs")]
+    async fn get_yield_inputs(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return obligation status summary.
+    #[method(name = "getObligationStatus")]
+    async fn get_obligation_status(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
 }

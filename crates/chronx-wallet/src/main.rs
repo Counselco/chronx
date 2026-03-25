@@ -443,7 +443,15 @@ async fn main() -> anyhow::Result<()> {
                     memo_public: false,
                     pay_as_amount: None,
                     beneficiary_package: None,
-                }],
+                
+                    transferable: None,
+                    current_owner_account: None,
+                    transfer_history: None,
+                    terms_visibility: None,
+                    tranche_info: None,
+                    retirement_status: None,
+                    retired_fraction: None,
+}],
                 &client,
             )
             .await?;
@@ -532,7 +540,15 @@ async fn main() -> anyhow::Result<()> {
                     memo_public: false,
                     pay_as_amount: None,
                     beneficiary_package: None,
-                }],
+                
+                    transferable: None,
+                    current_owner_account: None,
+                    transfer_history: None,
+                    terms_visibility: None,
+                    tranche_info: None,
+                    retirement_status: None,
+                    retired_fraction: None,
+}],
                 &client,
             )
             .await?;
@@ -775,7 +791,15 @@ async fn main() -> anyhow::Result<()> {
                         memo_public: false,
                         pay_as_amount: None,
                         beneficiary_package: None,
-                    }
+                    
+                        transferable: None,
+                        current_owner_account: None,
+                        transfer_history: None,
+                        terms_visibility: None,
+                        tranche_info: None,
+                        retirement_status: None,
+                        retired_fraction: None,
+}
                 })
                 .collect();
 
