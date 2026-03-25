@@ -3961,6 +3961,69 @@ impl StateEngine {
     /// Reads latest oracle price from oracle_cache sled tree.
     /// If price crosses threshold in the configured direction, auto-triggers.
     /// On clean expiry: success_payment then fallback.
+
+    /// Process pending draw requests from the pending_drawrequests sled tree.
+    /// Draws that have passed their lock_until timestamp are eligible for execution.
+    pub fn sweep_pending_drawrequests(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+        let mut to_remove: Vec<String> = Vec::new();
+
+        for (key, val) in self.db.iter_pending_drawrequests()? {
+            let lock_until = val.get("lock_until").and_then(|v| v.as_u64()).unwrap_or(0);
+            if lock_until > 0 && now_u64 < lock_until {
+                continue; // Not yet eligible
+            }
+
+            let bond_wallet = val.get("bond_wallet").and_then(|v| v.as_str()).unwrap_or("");
+            let amount_chronos = val.get("amount_chronos").and_then(|v| v.as_u64()).unwrap_or(0);
+            let reason = val.get("reason").and_then(|v| v.as_str()).unwrap_or("scheduled");
+
+            if amount_chronos == 0 || bond_wallet.is_empty() {
+                to_remove.push(key.clone());
+                continue;
+            }
+
+            // Execute the draw: transfer from bond wallet to recipient
+            if let Ok(bond_id) = chronx_core::types::AccountId::from_b58(bond_wallet) {
+                if let Ok(Some(mut bond_acc)) = self.db.get_account(&bond_id) {
+                    if bond_acc.balance >= amount_chronos as u128 {
+                        let dest_wallet = val.get("destination_wallet").and_then(|v| v.as_str()).unwrap_or("");
+                        if !dest_wallet.is_empty() {
+                            if let Ok(dest_id) = chronx_core::types::AccountId::from_b58(dest_wallet) {
+                                if let Ok(Some(mut dest_acc)) = self.db.get_account(&dest_id) {
+                                    bond_acc.balance -= amount_chronos as u128;
+                                    dest_acc.balance += amount_chronos as u128;
+                                    self.db.put_account(&bond_acc)?;
+                                    self.db.put_account(&dest_acc)?;
+                                    count += 1;
+                                    info!(bond = %bond_wallet, dest = %dest_wallet,
+                                          amount_kx = amount_chronos / 1_000_000,
+                                          reason = %reason,
+                                          "[DRAW REQUEST] executed");
+                                }
+                            }
+                        }
+                        to_remove.push(key.clone());
+                    } else {
+                        info!(bond = %bond_wallet, needed = amount_chronos,
+                              balance = %bond_acc.balance,
+                              "[DRAW REQUEST] insufficient bond balance, deferring");
+                    }
+                }
+            }
+        }
+
+        for key in to_remove {
+            let _ = self.db.remove_pending_drawrequest(&key);
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
     pub fn sweep_oracle_triggers(&self, now: i64) -> Result<u32, ChronxError> {
         // Check governance flag
         let enabled = self.db.get_meta("hedgekx_oracle_trigger_enabled")

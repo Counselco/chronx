@@ -439,4 +439,13 @@ pub trait ChronxApi {
     #[method(name = "getPartialReleaseHistory")]
     async fn get_partial_release_history(&self, lock_id: String) -> RpcResult<serde_json::Value>;
 
+
+    /// Return oracle trigger status for a conditional lock.
+    #[method(name = "getOracleTriggerStatus")]
+    async fn get_oracle_trigger_status(&self, lock_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return all pending draw requests.
+    #[method(name = "getPendingDrawRequests")]
+    async fn get_pending_draw_requests(&self) -> RpcResult<serde_json::Value>;
+
 }

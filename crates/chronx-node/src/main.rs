@@ -425,6 +425,24 @@ async fn main() -> anyhow::Result<()> {
         });
         tracing::info!("oracle trigger sweep started (every 60 seconds)");
     }
+    // Pending draw requests sweep (every 60 seconds)
+    {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = chrono::Utc::now().timestamp();
+                match engine.sweep_pending_drawrequests(now) {
+                    Ok(n) if n > 0 => tracing::info!(executed = n, "Draw request sweep completed"),
+                    Err(e) => tracing::warn!(error = %e, "Draw request sweep error"),
+                    _ => {}
+                }
+            }
+        });
+        tracing::info!("pending draw request sweep started (every 60 seconds)");
+    }
+
 
 
     // ── Main loop: validate & apply ───────────────────────────────────────────
