@@ -425,6 +425,37 @@ async fn main() -> anyhow::Result<()> {
         });
         tracing::info!("oracle trigger sweep started (every 60 seconds)");
     }
+    // Oracle price poller: fetches KX/USD from HedgeKX API every 60s
+    // and stores in oracle_price_kx_usd meta key for sweep_oracle_triggers
+    {
+        let db = Arc::clone(&engine).db.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                match client.get("http://127.0.0.1:4044/hedgekx/reserves")
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send().await
+                {
+                    Ok(resp) => {
+                        if let Ok(text) = resp.text().await {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(price) = json.get("kx_price_now").and_then(|v| v.as_f64()) {
+                                    if price > 0.0 {
+                                        let _ = db.put_meta("oracle_price_kx_usd", price.to_string().as_bytes());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {} // HedgeKX unavailable, skip
+                }
+            }
+        });
+        tracing::info!("oracle price poller started (every 60 seconds from HedgeKX)");
+    }
+
     // Pending draw requests sweep (every 60 seconds)
     {
         let engine = Arc::clone(&engine);

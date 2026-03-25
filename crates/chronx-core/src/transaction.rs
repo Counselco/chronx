@@ -193,6 +193,19 @@ pub struct CreateConditionalAction {
     /// Optional group whose members may also attest.
     #[serde(default)]
     pub attestor_group: Option<[u8; 32]>,
+    // -- OracleTrigger fields (set by CLI, stored in ConditionalRecord) --
+    #[serde(default)]
+    pub condition_type: Option<String>,
+    #[serde(default)]
+    pub oracle_pair: Option<String>,
+    #[serde(default)]
+    pub oracle_trigger_threshold: Option<f64>,
+    #[serde(default)]
+    pub oracle_trigger_direction: Option<String>,
+    #[serde(default)]
+    pub success_payment_wallet: Option<String>,
+    #[serde(default)]
+    pub success_payment_chronos: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

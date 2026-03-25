@@ -1875,11 +1875,15 @@ impl StateEngine {
             Action::CreateConditional(ref action) => {
                 let now_u64 = now as u64;
                 let attestor_count = action.attestor_pubkeys.len() as u32;
-                if attestor_count < CONDITIONAL_MIN_ATTESTORS || attestor_count > CONDITIONAL_MAX_ATTESTORS {
-                    return Err(ChronxError::AttestorCountOutOfRange);
-                }
-                if action.min_attestors > attestor_count {
-                    return Err(ChronxError::MinAttestorsExceedsCount);
+                let is_oracle_trigger = action.condition_type.as_deref() == Some("OracleTrigger");
+                // OracleTrigger conditions do not require human attestors
+                if !is_oracle_trigger {
+                    if attestor_count < CONDITIONAL_MIN_ATTESTORS || attestor_count > CONDITIONAL_MAX_ATTESTORS {
+                        return Err(ChronxError::AttestorCountOutOfRange);
+                    }
+                    if action.min_attestors > attestor_count {
+                        return Err(ChronxError::MinAttestorsExceedsCount);
+                    }
                 }
                 if action.valid_until <= now_u64 {
                     return Err(ChronxError::ConditionalExpiryInPast);
@@ -1916,15 +1920,21 @@ impl StateEngine {
                     attestations_received: Vec::new(),
                     status: ConditionalStatus::Pending,
                     created_at: now_u64,
-                    success_payment_wallet: None,
-                    success_payment_chronos: None,
+                    success_payment_wallet: action.success_payment_wallet.clone(),
+                    success_payment_chronos: action.success_payment_chronos,
                     released_so_far_chronos: 0,
                     release_count: 0,
-                    condition_type: None,
-                    oracle_pair: None,
-                    oracle_trigger_threshold: None,
-                    oracle_trigger_direction: None,
-                    oracle_creation_price: None,
+                    condition_type: action.condition_type.clone(),
+                    oracle_pair: action.oracle_pair.clone(),
+                    oracle_trigger_threshold: action.oracle_trigger_threshold,
+                    oracle_trigger_direction: action.oracle_trigger_direction.clone(),
+                    oracle_creation_price: if action.condition_type.as_deref() == Some("OracleTrigger") {
+                        // Record creation price from oracle cache
+                        self.db.get_meta("oracle_price_kx_usd")
+                            .ok().flatten()
+                            .and_then(|b| String::from_utf8(b).ok())
+                            .and_then(|s| s.parse::<f64>().ok())
+                    } else { None },
                     escalation_wallet: None,
                     escalation_lock_seconds: None,
                     attestors_suspended: false,
