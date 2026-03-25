@@ -412,6 +412,23 @@ async fn main() -> anyhow::Result<()> {
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
 
+
+            // Store KXGC bond wallet in meta for TYPE A authority grant validation
+            if let Ok(val) = std::env::var("KXGC_BOND_WALLET") {
+                let _ = db.put_meta("kxgc_bond_wallet", val.as_bytes());
+                info!(wallet = %val, "KXGC bond wallet stored in meta");
+            } else {
+                // Try loading from genesis-params.json
+                if let Ok(gp_str) = std::fs::read_to_string("genesis-params.json") {
+                    if let Ok(gp) = serde_json::from_str::<serde_json::Value>(&gp_str) {
+                        if let Some(wallet) = gp.get("kxgc_bond_wallet_b58").and_then(|v| v.as_str()) {
+                            let _ = db.put_meta("kxgc_bond_wallet", wallet.as_bytes());
+                            info!(wallet = %wallet, "KXGC bond wallet loaded from genesis-params");
+                        }
+                    }
+                }
+            }
+
     info!("node ready");
     while let Some(tx) = tx_receiver.recv().await {
         let now = chrono::Utc::now().timestamp();

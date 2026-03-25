@@ -18434,8 +18434,8 @@
       }
     ]
   },
-  "genesis_version": "8.0",
-  "genesis_date": "2026-03-16",
+  "genesis_version": "11.0",
+  "genesis_date": "2026-03-24",
   "genesis8_transaction_types": {
     "TYPE_I": "Invoice \u2014 recipient-gated payment request",
     "TYPE_C": "Credit Authorization \u2014 pre-authorized variable draws",
@@ -18536,5 +18536,17 @@
   "jurisdiction_oracle_url": "https://chronx.io/jurisdiction-rules.json",
   "jurisdiction_oracle_cache_seconds": 86400,
   "memo_encrypted_by_default": true,
-  "memo_public_by_default": false
+  "memo_public_by_default": false,
+  "executor_withdraw_delay_seconds": 86400,
+  "final_genesis": true,
+  "genesis_lock": true,
+  "genesis_name": "ChronX Genesis 11 - Final",
+  "kxgc_bond_wallet_b58": "BqjGDbhzLJJgzpVywRxug4wTa2Qqtwipc1hkcLLJsWzF",
+  "executor_eligibility_window_days": 90,
+  "executor_fee_cap_pct": 7,
+  "verifier_min_bond_kx": 100000,
+  "long_horizon_memo_public_threshold_days": 365,
+  "axioms": "{\"promise\": [\"The grantor's intent governs.\", \"Promised funds are never lost.\", \"The protocol delivers.\"], \"credit\": [\"No obligation exists without the explicit consent of both parties. Verification confirms identity and eligibility. It does not guarantee performance.\", \"External agreements may govern additional terms. Collection remains between the parties and the law.\"], \"trigger\": [\"Any promise or agreement may encode a condition which triggers an obligation. The obligor records fulfillment. The protocol acts on that record. Conditions unmet at expiry return funds to the obligor.\"], \"ai_agent\": [\"Mandate: the grantor's intent governs within the bounds of applicable law and protocol parameters.\", \"Transparency: every decision is recorded publicly at execution.\", \"Risk: AI management may result in gains or losses including total loss.\", \"Separation: the agent that decides does not hold funds.\", \"Coordination: agents must account for aggregate effects.\"], \"closing\": \"All axioms remain subject to applicable law.\", \"genesis\": 11, \"immutable\": true}",
+  "kxgc_min_reserve_ratio": 1.0,
+  "kxgc_investable_fraction": 0.0
 }

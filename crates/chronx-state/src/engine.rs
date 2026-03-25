@@ -2691,6 +2691,206 @@ impl StateEngine {
                 ))
             }
 
+
+            // ── TYPE A — Authority Grant ─────────────────────────────────────────
+            Action::AuthorityGrant(ref action) => {
+                use chronx_core::transaction::AuthorityType;
+
+                let sender_b58 = sender.account_id.to_b58();
+
+                // 1. Verify grantor has authority to grant
+                match action.authority_type {
+                    AuthorityType::Tier1 => {
+                        // Only KXGC wallet may issue Tier1 grants
+                        let kxgc_b58 = self.db.get_meta("kxgc_bond_wallet")
+                            .ok()
+                            .flatten()
+                            .map(|b| String::from_utf8_lossy(&b).to_string())
+                            .unwrap_or_default();
+                        if sender_b58 != kxgc_b58 {
+                            return Err(ChronxError::Other(
+                                "TYPE_A_TIER1_REQUIRES_KXGC: Only the KXGC bond wallet may issue Tier 1 authority grants.".into()
+                            ));
+                        }
+                    }
+                    AuthorityType::Tier2 => {
+                        // Grantor must have an active Tier1 grant with can_subgrant=true
+                        let mut has_authority = false;
+                        for (_key, val) in self.db.iter_authority_grants() {
+                            if let Ok(grant) = serde_json::from_slice::<serde_json::Value>(&val) {
+                                let grantee = grant.get("grantee_wallet").and_then(|v| v.as_str()).unwrap_or("");
+                                let status = grant.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                let tier = grant.get("authority_type").and_then(|v| v.as_str()).unwrap_or("");
+                                let can_sub = grant.get("can_subgrant").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                                if grantee == sender_b58 && status == "Active" && tier == "Tier1" && can_sub {
+                                    // Verify sub-grant limits do not exceed grantor limits
+                                    let grantor_coverage = grant.get("max_coverage_ratio")
+                                        .and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    let grantor_invest = grant.get("max_investable_pct")
+                                        .and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                                    if action.subgrant_max_coverage > grantor_coverage {
+                                        return Err(ChronxError::Other(
+                                            format!("TYPE_A_SUBGRANT_EXCEEDS_COVERAGE: subgrant_max_coverage {} exceeds grantor limit {}",
+                                                action.subgrant_max_coverage, grantor_coverage)
+                                        ));
+                                    }
+                                    if action.subgrant_max_invest > grantor_invest {
+                                        return Err(ChronxError::Other(
+                                            format!("TYPE_A_SUBGRANT_EXCEEDS_INVEST: subgrant_max_invest {} exceeds grantor limit {}",
+                                                action.subgrant_max_invest, grantor_invest)
+                                        ));
+                                    }
+                                    if action.max_coverage_ratio > grantor_coverage {
+                                        return Err(ChronxError::Other(
+                                            format!("TYPE_A_COVERAGE_EXCEEDS_GRANTOR: max_coverage_ratio {} exceeds grantor limit {}",
+                                                action.max_coverage_ratio, grantor_coverage)
+                                        ));
+                                    }
+                                    if action.max_investable_pct > grantor_invest {
+                                        return Err(ChronxError::Other(
+                                            format!("TYPE_A_INVEST_EXCEEDS_GRANTOR: max_investable_pct {} exceeds grantor limit {}",
+                                                action.max_investable_pct, grantor_invest)
+                                        ));
+                                    }
+                                    has_authority = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !has_authority {
+                            return Err(ChronxError::Other(
+                                "TYPE_A_TIER2_REQUIRES_TIER1: Sender has no active Tier 1 grant with can_subgrant=true.".into()
+                            ));
+                        }
+                    }
+                }
+
+                // 2. Validate fields
+                if action.max_coverage_ratio < 0.0 || action.max_coverage_ratio > 100.0 {
+                    return Err(ChronxError::Other("TYPE_A: max_coverage_ratio must be 0.0-100.0".into()));
+                }
+                if action.max_investable_pct < 0.0 || action.max_investable_pct > 1.0 {
+                    return Err(ChronxError::Other("TYPE_A: max_investable_pct must be 0.0-1.0".into()));
+                }
+                if let Some(ref memo) = action.memo {
+                    if memo.len() > 256 {
+                        return Err(ChronxError::Other("TYPE_A: memo exceeds 256 bytes".into()));
+                    }
+                }
+
+                // 3. Build grant record
+                let grant_id = tx_id.as_bytes();
+                let now_u64 = now as u64;
+                let grant_record = serde_json::json!({
+                    "grantor_wallet": sender_b58,
+                    "grantee_wallet": action.grantee_wallet.to_b58(),
+                    "authority_type": match action.authority_type {
+                        AuthorityType::Tier1 => "Tier1",
+                        AuthorityType::Tier2 => "Tier2",
+                    },
+                    "max_coverage_ratio": action.max_coverage_ratio,
+                    "max_investable_pct": action.max_investable_pct,
+                    "max_obligations_kx": action.max_obligations_kx,
+                    "can_subgrant": action.can_subgrant,
+                    "subgrant_max_coverage": action.subgrant_max_coverage,
+                    "subgrant_max_invest": action.subgrant_max_invest,
+                    "effective_from": action.effective_from,
+                    "effective_until": action.effective_until,
+                    "revocation_notice_seconds": action.revocation_notice_seconds,
+                    "status": "Active",
+                    "created_at": now_u64,
+                    "memo": action.memo,
+                    "grant_vertex_id": hex::encode(grant_id),
+                });
+
+                let data = serde_json::to_vec(&grant_record)
+                    .map_err(|_| ChronxError::SerializationError)?;
+
+                let mut id_arr = [0u8; 32];
+                id_arr.copy_from_slice(grant_id);
+                self.db.save_authority_grant(&id_arr, &data)?;
+
+                info!(
+                    grantor = %sender_b58,
+                    grantee = %action.grantee_wallet.to_b58(),
+                    tier = ?action.authority_type,
+                    coverage = action.max_coverage_ratio,
+                    "[TYPE A] authority grant issued"
+                );
+                Ok(())
+            }
+
+            // ── TYPE A — Authority Revoke ────────────────────────────────────────
+            Action::AuthorityRevoke(ref action) => {
+                let sender_b58 = sender.account_id.to_b58();
+
+                // 1. Find original grant
+                let grant_id_bytes = action.grant_vertex_id.as_bytes();
+                let mut id_arr = [0u8; 32];
+                id_arr.copy_from_slice(grant_id_bytes);
+
+                let existing = self.db.get_authority_grant(&id_arr)?
+                    .ok_or_else(|| ChronxError::Other(
+                        "TYPE_A_REVOKE: grant not found".into()
+                    ))?;
+
+                let mut grant_val: serde_json::Value = serde_json::from_slice(&existing)
+                    .map_err(|_| ChronxError::SerializationError)?;
+
+                // 2. Verify revoking wallet is the original grantor
+                let grantor = grant_val.get("grantor_wallet")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if sender_b58 != grantor {
+                    return Err(ChronxError::Other(
+                        "TYPE_A_REVOKE: only the original grantor may revoke".into()
+                    ));
+                }
+
+                // 3. Check current status
+                let status = grant_val.get("status")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if status != "Active" && status != "PendingRevocation" {
+                    return Err(ChronxError::Other(
+                        format!("TYPE_A_REVOKE: grant status is '{}', cannot revoke", status)
+                    ));
+                }
+
+                // 4. Validate reason
+                if action.reason.is_empty() || action.reason.len() > 512 {
+                    return Err(ChronxError::Other(
+                        "TYPE_A_REVOKE: reason required (1-512 bytes)".into()
+                    ));
+                }
+
+                // 5. Apply notice period
+                let notice_secs = grant_val.get("revocation_notice_seconds")
+                    .and_then(|v| v.as_u64()).unwrap_or(2_592_000);
+                let now_u64 = now as u64;
+                let executes_at = now_u64 + notice_secs;
+
+                grant_val["status"] = serde_json::json!("PendingRevocation");
+                grant_val["revocation_submitted_at"] = serde_json::json!(now_u64);
+                grant_val["revocation_executes_at"] = serde_json::json!(executes_at);
+                grant_val["revocation_reason"] = serde_json::json!(action.reason);
+
+                let updated = serde_json::to_vec(&grant_val)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_authority_grant(&id_arr, &updated)?;
+
+                let grantee = grant_val.get("grantee_wallet")
+                    .and_then(|v| v.as_str()).unwrap_or("unknown");
+                info!(
+                    grantor = %sender_b58,
+                    grantee = %grantee,
+                    executes_at = executes_at,
+                    "[TYPE A] authority revocation notice issued ({}s notice)",
+                    notice_secs
+                );
+                Ok(())
+            }
+
             Action::PartialExit { .. } => {
                 Err(ChronxError::FeatureNotActive(
                     "Partial loan exit requires governance activation.".into()

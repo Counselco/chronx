@@ -347,6 +347,66 @@ impl Default for OraclePolicy {
 /// Every state-changing operation in the ChronX DAG is one of these variants.
 // TimeLockCreate carries a full DilithiumPublicKey (1312 bytes for Dilithium2). Boxing it
 // would push derefs into every match arm across the entire codebase. The size is intentional.
+// ── TYPE A — Authority Grant ─────────────────────────────────────────────────
+
+/// Authority tier: Tier1 (granted by KXGC) or Tier2 (sub-granted by Tier1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AuthorityType {
+    Tier1,
+    Tier2,
+}
+
+/// Status of an authority grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AuthorityStatus {
+    Active,
+    PendingRevocation,
+    Revoked,
+    Expired,
+}
+
+/// TYPE A — Authority Grant action.
+/// Enables KXGC to authorize Tier 1 participants (and Tier 1 to authorize
+/// Tier 2) with specific operational parameters. All grants public on DAG.
+/// Revocable with protocol-enforced notice period.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuthorityGrantAction {
+    /// The wallet receiving authority.
+    pub grantee_wallet: AccountId,
+    /// TIER_1 or TIER_2.
+    pub authority_type: AuthorityType,
+    /// Maximum coverage ratio (total obligations / KX on deposit). e.g. 5.0 = 5x.
+    pub max_coverage_ratio: f64,
+    /// Maximum fraction MISAI may manage. e.g. 0.25 = 25%.
+    pub max_investable_pct: f64,
+    /// Absolute hard cap in KX regardless of coverage ratio.
+    pub max_obligations_kx: u64,
+    /// Whether grantee may authorize the next tier down.
+    pub can_subgrant: bool,
+    /// Sub-grant max coverage ratio (cannot exceed grantor own limits).
+    pub subgrant_max_coverage: f64,
+    /// Sub-grant max investable pct (cannot exceed grantor own limits).
+    pub subgrant_max_invest: f64,
+    /// Activation timestamp (unix UTC).
+    pub effective_from: u64,
+    /// Expiry timestamp. None = indefinite.
+    pub effective_until: Option<u64>,
+    /// Notice period in seconds before revocation executes. Default 2592000 (30 days).
+    pub revocation_notice_seconds: u64,
+    /// Optional memo (public, max 256 bytes).
+    pub memo: Option<String>,
+}
+
+/// TYPE A — Authority Revoke action.
+/// Grantor revokes a previously issued authority grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuthorityRevokeAction {
+    /// Reference to original grant vertex.
+    pub grant_vertex_id: TxId,
+    /// Reason (required, immutable, max 512 bytes).
+    pub reason: String,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Action {
@@ -938,6 +998,14 @@ pub enum Action {
         reason: Option<String>,
     },
     /// Partial exit from an active loan
+
+    // ── TYPE A — Authority Grant ─────────────────────────────────────────────
+    /// Grant operational authority to a participant.
+    AuthorityGrant(AuthorityGrantAction),
+
+    /// Revoke a previously issued authority grant.
+    AuthorityRevoke(AuthorityRevokeAction),
+
     PartialExit {
         loan_id: String,
         amount_chronos: u64,
