@@ -220,6 +220,7 @@ pub struct DepositRecord {
 pub enum ConditionalStatus {
     Pending,
     Released,
+    PartiallyReleased,
     Voided,
     Returned,
     Escrowed,
@@ -245,6 +246,28 @@ pub struct ConditionalRecord {
     pub success_payment_wallet: Option<String>,
     #[serde(default)]
     pub success_payment_chronos: Option<u64>,
+    #[serde(default)]
+    pub released_so_far_chronos: u64,
+    #[serde(default)]
+    pub release_count: u32,
+    #[serde(default)]
+    pub condition_type: Option<String>,
+    #[serde(default)]
+    pub oracle_pair: Option<String>,
+    #[serde(default)]
+    pub oracle_trigger_threshold: Option<f64>,
+    #[serde(default)]
+    pub oracle_trigger_direction: Option<String>,
+    #[serde(default)]
+    pub oracle_creation_price: Option<f64>,
+    #[serde(default)]
+    pub escalation_wallet: Option<String>,
+    #[serde(default)]
+    pub escalation_lock_seconds: Option<u64>,
+    #[serde(default)]
+    pub attestors_suspended: bool,
+    #[serde(default)]
+    pub escalation_active: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -394,6 +417,10 @@ pub struct StateDb {
     pub authority_grants: sled::Tree,
     pub escalations: sled::Tree,
     pub attestor_failures: sled::Tree,
+    pub oracle_trigger_history: sled::Tree,
+    pub partial_release_history: sled::Tree,
+    pub pending_drawrequests: sled::Tree,
+    pub escalation_errors: sled::Tree,
     pub bond_slash_cascade: sled::Tree,
     pub hedge_instruments: sled::Tree,
     pub pool_health_scores: sled::Tree,
@@ -538,6 +565,18 @@ impl StateDb {
         let attestor_failures = db
             .open_tree("attestor_failures")
             .expect("Failed to open attestor_failures tree");
+        let oracle_trigger_history = db
+            .open_tree("oracle_trigger_history")
+            .expect("Failed to open oracle_trigger_history tree");
+        let partial_release_history = db
+            .open_tree("partial_release_history")
+            .expect("Failed to open partial_release_history tree");
+        let pending_drawrequests = db
+            .open_tree("pending_drawrequests")
+            .expect("Failed to open pending_drawrequests tree");
+        let escalation_errors = db
+            .open_tree("escalation_errors")
+            .expect("Failed to open escalation_errors tree");
         let bond_slash_cascade = db
             .open_tree("bond_slash_cascade")
             .expect("Failed to open bond_slash_cascade tree");
@@ -593,6 +632,10 @@ impl StateDb {
             authority_grants,
             escalations,
             attestor_failures,
+            oracle_trigger_history,
+            partial_release_history,
+            pending_drawrequests,
+            escalation_errors,
             bond_slash_cascade,
             hedge_instruments,
             pool_health_scores,
@@ -1981,6 +2024,105 @@ impl StateDb {
         self.attestor_failures.insert(id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
         Ok(())
     }
+
+    pub fn save_partial_release(&self, type_v_id: &[u8; 32], data: &[u8]) -> Result<(), ChronxError> {
+        let key = hex::encode(type_v_id);
+        let existing = self.partial_release_history.get(key.as_bytes()).map_err(|_| ChronxError::DatabaseError)?.map(|v| v.to_vec()).unwrap_or_default();
+        let mut history: Vec<serde_json::Value> = if existing.is_empty() { vec![] } else { serde_json::from_slice(&existing).unwrap_or_default() };
+        let entry: serde_json::Value = serde_json::from_slice(data).unwrap_or_default();
+        history.push(entry);
+        let serialized = serde_json::to_vec(&history).map_err(|_| ChronxError::SerializationError)?;
+        self.partial_release_history.insert(key.as_bytes(), serialized).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_partial_release_history(&self, type_v_id: &[u8; 32]) -> Result<Vec<serde_json::Value>, ChronxError> {
+        let key = hex::encode(type_v_id);
+        match self.partial_release_history.get(key.as_bytes()).map_err(|_| ChronxError::DatabaseError)? {
+            Some(data) => Ok(serde_json::from_slice(&data).unwrap_or_default()),
+            None => Ok(vec![]),
+        }
+    }
+
+    pub fn save_oracle_trigger_event(&self, type_v_id: &[u8; 32], data: &[u8]) -> Result<(), ChronxError> {
+        let key = hex::encode(type_v_id);
+        let existing = self.oracle_trigger_history.get(key.as_bytes()).map_err(|_| ChronxError::DatabaseError)?.map(|v| v.to_vec()).unwrap_or_default();
+        let mut history: Vec<serde_json::Value> = if existing.is_empty() { vec![] } else { serde_json::from_slice(&existing).unwrap_or_default() };
+        let entry: serde_json::Value = serde_json::from_slice(data).unwrap_or_default();
+        history.push(entry);
+        let serialized = serde_json::to_vec(&history).map_err(|_| ChronxError::SerializationError)?;
+        self.oracle_trigger_history.insert(key.as_bytes(), serialized).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn save_pending_drawrequest(&self, key: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.pending_drawrequests.insert(key.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn iter_pending_drawrequests(&self) -> Result<Vec<(String, serde_json::Value)>, ChronxError> {
+        let mut results = vec![];
+        for item in self.pending_drawrequests.iter() {
+            let (k, v) = item.map_err(|_| ChronxError::DatabaseError)?;
+            results.push((String::from_utf8_lossy(&k).to_string(), serde_json::from_slice(&v).unwrap_or_default()));
+        }
+        Ok(results)
+    }
+
+    pub fn remove_pending_drawrequest(&self, key: &str) -> Result<(), ChronxError> {
+        self.pending_drawrequests.remove(key.as_bytes()).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn save_escalation_error(&self, lock_id: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.escalation_errors.insert(lock_id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_conditionals_by_attestor_group(&self, _group_id: &str) -> Result<Vec<ConditionalRecord>, ChronxError> {
+        let mut results = vec![];
+        for item in self.conditionals.iter() {
+            let (_k, v) = item.map_err(|_| ChronxError::DatabaseError)?;
+            if let Ok(record) = serde_json::from_slice::<ConditionalRecord>(&v) {
+                if matches!(record.status, ConditionalStatus::Pending | ConditionalStatus::PartiallyReleased) {
+                    results.push(record);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn set_conditional_attestors_suspended(&self, type_v_id: &[u8; 32], suspended: bool) -> Result<(), ChronxError> {
+        let key = hex::encode(type_v_id);
+        if let Some(data) = self.conditionals.get(key.as_bytes()).map_err(|_| ChronxError::DatabaseError)? {
+            let mut record: ConditionalRecord = serde_json::from_slice(&data).map_err(|_| ChronxError::SerializationError)?;
+            record.attestors_suspended = suspended;
+            let serialized = serde_json::to_vec(&record).map_err(|_| ChronxError::SerializationError)?;
+            self.conditionals.insert(key.as_bytes(), serialized).map_err(|_| ChronxError::DatabaseError)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_conditional_escalation_active(&self, type_v_id: &[u8; 32], active: bool) -> Result<(), ChronxError> {
+        let key = hex::encode(type_v_id);
+        if let Some(data) = self.conditionals.get(key.as_bytes()).map_err(|_| ChronxError::DatabaseError)? {
+            let mut record: ConditionalRecord = serde_json::from_slice(&data).map_err(|_| ChronxError::SerializationError)?;
+            record.escalation_active = active;
+            let serialized = serde_json::to_vec(&record).map_err(|_| ChronxError::SerializationError)?;
+            self.conditionals.insert(key.as_bytes(), serialized).map_err(|_| ChronxError::DatabaseError)?;
+        }
+        Ok(())
+    }
+
+    /// Write a ConditionalRecord directly (for engine partial release updates).
+    pub fn put_conditional_raw(&self, type_v_id: &[u8; 32], record: &ConditionalRecord) -> Result<(), ChronxError> {
+        let key = hex::encode(type_v_id);
+        let serialized = serde_json::to_vec(record).map_err(|_| ChronxError::SerializationError)?;
+        self.conditionals.insert(key.as_bytes(), serialized).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+
 
     pub fn get_attestor_failure(&self, id: &str) -> Result<Option<Vec<u8>>, ChronxError> {
         self.attestor_failures.get(id.as_bytes()).map(|opt| opt.map(|v| v.to_vec())).map_err(|_| ChronxError::DatabaseError)

@@ -1918,6 +1918,17 @@ impl StateEngine {
                     created_at: now_u64,
                     success_payment_wallet: None,
                     success_payment_chronos: None,
+                    released_so_far_chronos: 0,
+                    release_count: 0,
+                    condition_type: None,
+                    oracle_pair: None,
+                    oracle_trigger_threshold: None,
+                    oracle_trigger_direction: None,
+                    oracle_creation_price: None,
+                    escalation_wallet: None,
+                    escalation_lock_seconds: None,
+                    attestors_suspended: false,
+                    escalation_active: false,
                 };
                 self.db.put_conditional(&record)?;
                 info!(type_v_id = %hex::encode(action.type_v_id), "Conditional payment created");
@@ -1928,58 +1939,77 @@ impl StateEngine {
                 let now_u64 = now as u64;
                 let cond = self.db.get_conditional(&action.type_v_id)?
                     .ok_or_else(|| ChronxError::ConditionalNotFound(hex::encode(action.type_v_id)))?;
-                if !matches!(cond.status, ConditionalStatus::Pending) {
+                if !matches!(cond.status, ConditionalStatus::Pending | ConditionalStatus::PartiallyReleased) {
                     return Err(ChronxError::ConditionalNotPending);
                 }
                 if now_u64 >= cond.valid_until {
                     return Err(ChronxError::ConditionalExpired);
                 }
-                // Check attestor is authorized
                 let attestor_bytes = action.attestor_pubkey.0.clone();
-                if !cond.attestor_pubkeys.iter().any(|p| *p == attestor_bytes) {
-                    return Err(ChronxError::AttestorNotAuthorized);
+                if cond.attestors_suspended {
+                    if let Some(ref esc_wallet) = cond.escalation_wallet {
+                        let attestor_account = chronx_crypto::hash::account_id_from_pubkey(&action.attestor_pubkey.0);
+                        if attestor_account.to_b58() != *esc_wallet {
+                            return Err(ChronxError::AttestorNotAuthorized);
+                        }
+                    } else {
+                        return Err(ChronxError::AttestorNotAuthorized);
+                    }
+                } else {
+                    if !cond.attestor_pubkeys.iter().any(|p| *p == attestor_bytes) {
+                        return Err(ChronxError::AttestorNotAuthorized);
+                    }
+                    if cond.attestations_received.iter().any(|(p, _)| *p == attestor_bytes) {
+                        return Err(ChronxError::AttestorAlreadyAttested);
+                    }
                 }
-                // Check not already attested
-                if cond.attestations_received.iter().any(|(p, _)| *p == attestor_bytes) {
-                    return Err(ChronxError::AttestorAlreadyAttested);
-                }
-                // Add attestation
                 let updated = self.db.add_attestation(&action.type_v_id, attestor_bytes, now_u64)?;
-                // Check if threshold reached
                 if updated.attestations_received.len() as u32 >= updated.min_attestors {
-                    // Release funds to recipient
+                    let remaining = updated.amount_chronos.saturating_sub(updated.released_so_far_chronos);
+                    if remaining == 0 { return Err(ChronxError::ConditionalFullyReleased); }
+                    let release_amount: u64 = match action.release_amount_chronos {
+                        Some(partial) => {
+                            if partial == 0 { return Err(ChronxError::ZeroAmount); }
+                            if partial > remaining { return Err(ChronxError::ReleaseAmountExceedsLocked); }
+                            partial
+                        }
+                        None => remaining,
+                    };
                     let recipient_account_id = chronx_crypto::hash::account_id_from_pubkey(&updated.recipient_pubkey);
                     let mut recipient = match self.db.get_account(&recipient_account_id)? {
                         Some(acc) => acc,
-                        None => {
-                            // Auto-create recipient account
-                            Account {
-                                account_id: recipient_account_id.clone(),
-                                balance: 0,
-                                auth_policy: chronx_core::account::AuthPolicy::SingleSig {
-                                    public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone())
-                                },
-                                nonce: 0,
-                                recovery_state: Default::default(),
-                                post_recovery_restriction: None,
-                                verifier_stake: 0,
-                                is_verifier: false,
-                                account_version: 3,
-                                created_at: Some(now),
-                                display_name_hash: None,
-                                incoming_locks_count: 0,
-                                outgoing_locks_count: 0,
-                                total_locked_incoming_chronos: 0,
-                                total_locked_outgoing_chronos: 0,
-                                preferred_fiat_currency: None,
-                                lock_marker: None
-                            }
+                        None => Account {
+                            account_id: recipient_account_id.clone(), balance: 0,
+                            auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone())
+                            },
+                            nonce: 0, recovery_state: Default::default(), post_recovery_restriction: None,
+                            verifier_stake: 0, is_verifier: false, account_version: 3, created_at: Some(now),
+                            display_name_hash: None, incoming_locks_count: 0, outgoing_locks_count: 0,
+                            total_locked_incoming_chronos: 0, total_locked_outgoing_chronos: 0,
+                            preferred_fiat_currency: None, lock_marker: None
                         }
                     };
-                    recipient.balance += updated.amount_chronos as u128;
+                    recipient.balance += release_amount as u128;
                     staged.accounts.push(recipient);
-                    self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::Released)?;
-                    info!(type_v_id = %hex::encode(action.type_v_id), "Conditional released — threshold met");
+                    let new_released = updated.released_so_far_chronos + release_amount;
+                    let new_remaining = updated.amount_chronos.saturating_sub(new_released);
+                    let new_count = updated.release_count + 1;
+                    let event = serde_json::json!({"release_amount": release_amount, "released_at": now_u64, "release_number": new_count, "remaining": new_remaining});
+                    let _ = self.db.save_partial_release(&action.type_v_id, &serde_json::to_vec(&event).unwrap_or_default());
+                    if new_remaining == 0 {
+                        self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::Released)?;
+                        info!(type_v_id = %hex::encode(action.type_v_id), "Conditional FULLY released");
+                    } else {
+                        self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::PartiallyReleased)?;
+                        if let Some(mut record) = self.db.get_conditional(&action.type_v_id)? {
+                            record.released_so_far_chronos = new_released;
+                            record.release_count = new_count;
+                            record.attestations_received.clear();
+                            self.db.put_conditional_raw(&action.type_v_id, &record)?;
+                        }
+                        info!(type_v_id = %hex::encode(action.type_v_id), "Conditional PARTIALLY released, {} remaining", new_remaining);
+                    }
                 }
                 Ok(())
             }
@@ -3216,20 +3246,36 @@ impl StateEngine {
             }
 
             Action::DeclareAttestorFailure(ref action) => {
-                let record = serde_json::json!({
-                    "group_id": action.group_id,
-                    "declaring_wallet": action.declaring_wallet,
-                    "failure_type": action.failure_type,
-                    "evidence_hash": hex::encode(&action.evidence_hash),
-                    "memo": action.memo,
-                    "declared_at": now as u64
-                });
-                let data = serde_json::to_vec(&record)
-                    .map_err(|_| ChronxError::SerializationError)?;
+                let now_u64 = now as u64;
+                let record = serde_json::json!({"group_id": action.group_id, "declaring_wallet": action.declaring_wallet, "failure_type": action.failure_type, "evidence_hash": hex::encode(&action.evidence_hash), "memo": action.memo, "declared_at": now_u64});
+                let data = serde_json::to_vec(&record).map_err(|_| ChronxError::SerializationError)?;
                 self.db.save_attestor_failure(&action.group_id, &data)?;
-                info!(group_id = %action.group_id,
-                      failure_type = %action.failure_type,
-                      "[ATTESTOR FAILURE] declared");
+                info!(group_id = %action.group_id, failure_type = %action.failure_type, "[ATTESTOR FAILURE] declared — beginning cascade");
+                let affected = self.db.get_conditionals_by_attestor_group(&action.group_id)?;
+                let mut escalated = 0u32;
+                let mut errors = 0u32;
+                for cond in &affected {
+                    let lid = hex::encode(cond.type_v_id);
+                    let r: Result<(), ChronxError> = (|| {
+                        self.db.set_conditional_attestors_suspended(&cond.type_v_id, true)?;
+                        if let Some(ref ew) = cond.escalation_wallet {
+                            self.db.set_conditional_escalation_active(&cond.type_v_id, true)?;
+                            let esc = serde_json::json!({"conditional_id": lid, "escalation_type": "AttestorIncapacity", "escalated_to": ew, "triggered_by": action.group_id, "evidence_hash": hex::encode(&action.evidence_hash), "escalated_at": now_u64, "auto_generated": true});
+                            self.db.save_escalation(&lid, &serde_json::to_vec(&esc).map_err(|_| ChronxError::SerializationError)?)?;
+                            escalated += 1;
+                        }
+                        Ok(())
+                    })();
+                    if let Err(e) = r {
+                        errors += 1;
+                        let err_rec = serde_json::json!({"lock_id": lid, "error": format!("{}", e), "at": now_u64});
+                        let _ = self.db.save_escalation_error(&lid, &serde_json::to_vec(&err_rec).unwrap_or_default());
+                        warn!(lock_id = %lid, error = %e, "[CASCADE ERROR] continuing");
+                    }
+                }
+                let dr = serde_json::json!({"group_id": action.group_id, "reason": action.memo, "evidence_hash": hex::encode(&action.evidence_hash), "lock_until": now_u64 + 2592000, "queued_at": now_u64, "auto_generated": true, "affected": affected.len(), "escalated": escalated, "errors": errors});
+                self.db.save_pending_drawrequest(&format!("dr:{}:{}", action.group_id, now_u64), &serde_json::to_vec(&dr).map_err(|_| ChronxError::SerializationError)?)?;
+                info!(group_id = %action.group_id, affected = affected.len(), escalated = escalated, errors = errors, "[ATTESTOR FAILURE CASCADE] complete");
                 Ok(())
             }
 
@@ -3911,6 +3957,138 @@ impl StateEngine {
         if count > 0 { self.db.flush()?; }
         Ok(count)
     }
+    /// Sweep conditionals with condition_type="OracleTrigger".
+    /// Reads latest oracle price from oracle_cache sled tree.
+    /// If price crosses threshold in the configured direction, auto-triggers.
+    /// On clean expiry: success_payment then fallback.
+    pub fn sweep_oracle_triggers(&self, now: i64) -> Result<u32, ChronxError> {
+        // Check governance flag
+        let enabled = self.db.get_meta("hedgekx_oracle_trigger_enabled")
+            .ok().flatten()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s == "true")
+            .unwrap_or(false);
+        if !enabled { return Ok(0); }
+
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+
+        // Get latest KX/USD price from oracle_cache
+        let current_price: Option<f64> = self.db.get_meta("oracle_price_kx_usd")
+            .ok().flatten()
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok());
+
+        let price = match current_price {
+            Some(p) if p > 0.0 => p,
+            _ => {
+                // No valid price — skip this cycle, retry next
+                return Ok(0);
+            }
+        };
+
+        for cond in self.db.iter_all_conditionals()? {
+            // Only process OracleTrigger conditionals that are Pending
+            if !matches!(cond.status, ConditionalStatus::Pending | ConditionalStatus::PartiallyReleased) {
+                continue;
+            }
+            let cond_type = cond.condition_type.as_deref().unwrap_or("SingleAttestation");
+            if cond_type != "OracleTrigger" { continue; }
+
+            // Check expiry first
+            if now_u64 >= cond.valid_until {
+                // Clean expiry — condition never fired
+                // Execute success_payment if configured
+                let amount = cond.amount_chronos as u128;
+                let remaining = (cond.amount_chronos - cond.released_so_far_chronos) as u128;
+                let mut success_paid: u128 = 0;
+
+                if let (Some(ref spw), Some(spc)) = (&cond.success_payment_wallet, cond.success_payment_chronos) {
+                    if spc > 0 && !spw.is_empty() && (spc as u128) <= remaining {
+                        if let Ok(sp_id) = chronx_core::types::AccountId::from_b58(spw) {
+                            if let Ok(Some(mut sp_acc)) = self.db.get_account(&sp_id) {
+                                sp_acc.balance += spc as u128;
+                                self.db.put_account(&sp_acc)?;
+                                success_paid = spc as u128;
+                                info!(wallet = %spw, amount = spc,
+                                      "[ORACLE TRIGGER] success_payment on clean expiry");
+                            }
+                        }
+                    }
+                }
+
+                // Return remaining to sender (standard fallback)
+                let return_amount = remaining - success_paid;
+                if return_amount > 0 {
+                    let sender_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
+                    if let Ok(Some(mut sender)) = self.db.get_account(&sender_id) {
+                        sender.balance += return_amount;
+                        self.db.put_account(&sender)?;
+                    }
+                }
+                self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Voided)?;
+                count += 1;
+                info!(lock = %hex::encode(&cond.type_v_id), "[ORACLE TRIGGER] clean expiry — no trigger fired");
+                continue;
+            }
+
+            // Check oracle trigger condition
+            let creation_price = match cond.oracle_creation_price {
+                Some(cp) if cp > 0.0 => cp,
+                _ => continue, // No creation price recorded — skip
+            };
+            let threshold = match cond.oracle_trigger_threshold {
+                Some(t) if t > 0.0 => t,
+                _ => continue, // No threshold set
+            };
+            let direction = cond.oracle_trigger_direction.as_deref().unwrap_or("Below");
+            let trigger_price = creation_price * threshold;
+
+            let triggered = match direction {
+                "Below" => price <= trigger_price,
+                "Above" => price >= trigger_price,
+                _ => false,
+            };
+
+            if triggered {
+                // Oracle trigger fired — release remaining funds to recipient
+                let remaining = cond.amount_chronos.saturating_sub(cond.released_so_far_chronos);
+                if remaining == 0 { continue; }
+
+                let recipient_id = chronx_crypto::hash::account_id_from_pubkey(&cond.recipient_pubkey);
+                if let Ok(Some(mut recipient)) = self.db.get_account(&recipient_id) {
+                    recipient.balance += remaining as u128;
+                    self.db.put_account(&recipient)?;
+                } else {
+                    // Auto-create recipient
+                    let mut new_acc = chronx_core::account::Account {
+                        account_id: recipient_id.clone(), balance: remaining as u128,
+                        auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                            public_key: chronx_core::types::DilithiumPublicKey(cond.recipient_pubkey.clone())
+                        },
+                        nonce: 0, recovery_state: Default::default(), post_recovery_restriction: None,
+                        verifier_stake: 0, is_verifier: false, account_version: 3, created_at: Some(now),
+                        display_name_hash: None, incoming_locks_count: 0, outgoing_locks_count: 0,
+                        total_locked_incoming_chronos: 0, total_locked_outgoing_chronos: 0,
+                        preferred_fiat_currency: None, lock_marker: None
+                    };
+                    self.db.put_account(&new_acc)?;
+                }
+
+                self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Released)?;
+                count += 1;
+                info!(lock = %hex::encode(&cond.type_v_id),
+                      price = price, trigger = trigger_price, direction = direction,
+                      "[ORACLE TRIGGER] FIRED — {} KX released to recipient", remaining / 1_000_000);
+            }
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
 
 }
 

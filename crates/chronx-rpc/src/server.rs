@@ -110,6 +110,10 @@ fn tlc_status_str(status: &TimeLockStatus) -> String {
         TimeLockStatus::Reverted { .. } => "Reverted".to_string(),
         TimeLockStatus::PendingExecutor { .. } => "PendingExecutor".to_string(),
         TimeLockStatus::ExecutorWithdrawn { .. } => "ExecutorWithdrawn".to_string(),
+        TimeLockStatus::PartiallyReleased { .. } => "PartiallyReleased".to_string(),
+        TimeLockStatus::OracleTriggered { .. } => "OracleTriggered".to_string(),
+        TimeLockStatus::OracleExpiredClean { .. } => "OracleExpiredClean".to_string(),
+        TimeLockStatus::AttestorFailed { .. } => "AttestorFailed".to_string(),
     }
 }
 
@@ -2503,6 +2507,26 @@ impl ChronxApiServer for RpcServer {
             }))
         }
     }
+    async fn get_partial_release_history(&self, lock_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&lock_id)?;
+        let db = &self.state.db;
+        match db.get_partial_release_history(&id_bytes) {
+            Ok(releases) => {
+                Ok(serde_json::json!({
+                    "lock_id": lock_id,
+                    "releases": releases,
+                    "count": releases.len()
+                }))
+            }
+            Err(_) => Ok(serde_json::json!({
+                "lock_id": lock_id,
+                "releases": [],
+                "count": 0
+            }))
+        }
+    }
+
+
 
 
 }
@@ -2585,6 +2609,7 @@ fn conditional_to_rpc(r: &chronx_state::db::ConditionalRecord) -> RpcConditional
         ConditionalStatus::Voided => "Voided",
         ConditionalStatus::Returned => "Returned",
         ConditionalStatus::Escrowed => "Escrowed",
+        ConditionalStatus::PartiallyReleased => "PartiallyReleased",
     };
     RpcConditionalRecord {
         type_v_id: hex::encode(r.type_v_id),

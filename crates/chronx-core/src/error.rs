@@ -426,6 +426,15 @@ pub enum ChronxError {
     #[error("action restricted to MISAI executor wallet")]
     MisaiOnlyAction,
 
+    #[error("release amount exceeds remaining locked balance")]
+    ReleaseAmountExceedsLocked,
+
+    #[error("conditional has no remaining balance for partial release")]
+    ConditionalFullyReleased,
+
+    #[error("oracle trigger: price fetch failed or timed out")]
+    OraclePriceFetchFailed,
+
     #[error("{0}")]
     Other(String),
 

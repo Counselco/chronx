@@ -434,4 +434,9 @@ pub trait ChronxApi {
     #[method(name = "getPoolHealthScore")]
     async fn get_pool_health_score(&self, pool_id: String) -> RpcResult<serde_json::Value>;
 
+
+    /// Return partial release history for a conditional lock.
+    #[method(name = "getPartialReleaseHistory")]
+    async fn get_partial_release_history(&self, lock_id: String) -> RpcResult<serde_json::Value>;
+
 }

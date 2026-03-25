@@ -1122,6 +1122,7 @@ async fn main() -> anyhow::Result<()> {
                 attestor_pubkey: kp.public_key.clone(),
                 type_v_id: vid,
                 attestation_memo: None,
+                release_amount_chronos: None,
             });
 
             let tx = build_and_sign(&kp, vec![action], &client).await?;

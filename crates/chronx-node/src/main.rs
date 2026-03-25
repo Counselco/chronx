@@ -408,6 +408,24 @@ async fn main() -> anyhow::Result<()> {
         });
         info!("loan rescission sweep task started (every 300 seconds)");
     }
+    // Oracle trigger sweep (every 60 seconds)
+    {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = chrono::Utc::now().timestamp();
+                match engine.sweep_oracle_triggers(now) {
+                    Ok(n) if n > 0 => tracing::info!(triggered = n, "Oracle trigger sweep completed"),
+                    Err(e) => tracing::warn!(error = %e, "Oracle trigger sweep error"),
+                    _ => {}
+                }
+            }
+        });
+        tracing::info!("oracle trigger sweep started (every 60 seconds)");
+    }
+
 
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);

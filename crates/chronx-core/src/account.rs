@@ -306,6 +306,19 @@ pub enum TimeLockStatus {
     },
     /// MISAI executor withdrawal finalized; KX transferred to executor wallet.
     ExecutorWithdrawn { withdrawn_at: Timestamp },
+
+    /// Conditional payment partially released; remaining amount stays locked.
+    PartiallyReleased {
+        released_chronos: u64,
+        remaining_chronos: u64,
+        release_count: u32,
+    },
+    /// Oracle trigger fired automatically when price threshold crossed.
+    OracleTriggered { price_at_trigger: f64, triggered_at: Timestamp },
+    /// Oracle trigger expired without firing; success payment executed.
+    OracleExpiredClean { expiry_price: f64 },
+    /// Attestor group declared failed; lock escalated or awaiting intervention.
+    AttestorFailed { failed_group_id: String, escalated_to: Option<String> },
 }
 
 impl TimeLockStatus {
@@ -319,6 +332,8 @@ impl TimeLockStatus {
                 | TimeLockStatus::Cancelled { .. }
                 | TimeLockStatus::Reverted { .. }
                 | TimeLockStatus::ExecutorWithdrawn { .. }
+                | TimeLockStatus::OracleTriggered { .. }
+                | TimeLockStatus::OracleExpiredClean { .. }
         )
     }
 }

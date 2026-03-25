@@ -200,6 +200,10 @@ pub struct AttestConditionalAction {
     pub attestor_pubkey: DilithiumPublicKey,
     pub type_v_id: [u8; 32],
     pub attestation_memo: Option<String>,
+    /// If Some(n): release exactly n Chronos (must be <= remaining locked amount).
+    /// If None: release full remaining amount (backward compatible).
+    #[serde(default)]
+    pub release_amount_chronos: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
