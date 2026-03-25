@@ -2266,14 +2266,57 @@ impl StateEngine {
                         let deminimis_chronos: u64 = 3_135_000_000;
 
                         if principal_chronos < deminimis_chronos {
-                            // Skip rescission — activate immediately (no principal transfer yet,
-                            // sweep will handle it on next pass)
+                            // De minimis: transfer KX immediately (no rescission window)
+                            let lender_str = loan_val.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let borrower_str = loan_val.get("borrower_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if principal_chronos > 0 && !lender_str.is_empty() && !borrower_str.is_empty() {
+                                let lender_id = chronx_core::types::AccountId::from_b58(&lender_str)
+                                    .map_err(|_| ChronxError::Other("Invalid lender address".into()))?;
+                                let borrower_id = chronx_core::types::AccountId::from_b58(&borrower_str)
+                                    .map_err(|_| ChronxError::Other("Invalid borrower address".into()))?;
+                                let mut lender_acc = self.db.get_account(&lender_id)?
+                                    .ok_or_else(|| ChronxError::Other("Lender account not found".into()))?;
+                                if lender_acc.balance < principal_chronos as u128 {
+                                    return Err(ChronxError::InsufficientBalance {
+                                        need: principal_chronos as u128,
+                                        have: lender_acc.balance,
+                                    });
+                                }
+                                lender_acc.balance -= principal_chronos as u128;
+                                self.db.put_account(&lender_acc)?;
+                                let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                                    Some(a) => a,
+                                    None => {
+                                        // Auto-create borrower account
+                                        chronx_core::account::Account {
+                                            account_id: borrower_id.clone(), balance: 0,
+                                            auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                                public_key: chronx_core::types::DilithiumPublicKey(Vec::new())
+                                            },
+                                            nonce: 0, recovery_state: Default::default(),
+                                            post_recovery_restriction: None,
+                                            verifier_stake: 0, is_verifier: false, account_version: 3,
+                                            created_at: Some(now), display_name_hash: None,
+                                            incoming_locks_count: 0, outgoing_locks_count: 0,
+                                            total_locked_incoming_chronos: 0,
+                                            total_locked_outgoing_chronos: 0,
+                                            preferred_fiat_currency: None, lock_marker: None
+                                        }
+                                    }
+                                };
+                                borrower_acc.balance += principal_chronos as u128;
+                                self.db.put_account(&borrower_acc)?;
+                                info!(loan_id = %hex::encode(acceptance.loan_id),
+                                      principal_kx = principal_chronos / 1_000_000,
+                                      "[LOAN DISBURSE] de minimis — KX transferred immediately");
+                            }
                             loan_val["status"] = serde_json::json!("active");
+                            loan_val["activated_at"] = serde_json::json!(now as u64);
                             let val = serde_json::to_vec(&loan_val)
                                 .map_err(|_| ChronxError::SerializationError)?;
                             self.db.save_loan(&acceptance.loan_id, &val)?;
                             info!(loan_id = %hex::encode(acceptance.loan_id),
-                                  "De minimis loan accepted — active immediately");
+                                  "De minimis loan accepted — active immediately, KX transferred");
                         } else {
                             // Rescission window: default 72 hours
                             let rescission_window_secs: i64 = 72 * 3600;
