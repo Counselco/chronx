@@ -100,6 +100,18 @@ impl<'a> TimeLockQuery<'a> {
             TimeLockStatus::ExecutorWithdrawn { withdrawn_at } => {
                 format!("ExecutorWithdrawn at Unix timestamp {}", withdrawn_at)
             }
+            TimeLockStatus::PartiallyReleased { released_chronos, remaining_chronos, release_count } => {
+                format!("PartiallyReleased: {} released, {} remaining, {} releases", released_chronos, remaining_chronos, release_count)
+            }
+            TimeLockStatus::OracleTriggered { price_at_trigger, triggered_at } => {
+                format!("OracleTriggered at price {} at Unix timestamp {}", price_at_trigger, triggered_at)
+            }
+            TimeLockStatus::OracleExpiredClean { expiry_price } => {
+                format!("OracleExpiredClean at price {}", expiry_price)
+            }
+            TimeLockStatus::AttestorFailed { ref failed_group_id, ref escalated_to } => {
+                format!("AttestorFailed group={} escalated_to={:?}", failed_group_id, escalated_to)
+            }
         };
 
         Ok(format!(

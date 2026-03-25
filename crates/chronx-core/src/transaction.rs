@@ -200,6 +200,10 @@ pub struct AttestConditionalAction {
     pub attestor_pubkey: DilithiumPublicKey,
     pub type_v_id: [u8; 32],
     pub attestation_memo: Option<String>,
+    /// If Some(n): release exactly n Chronos (must be <= remaining locked amount).
+    /// If None: release full remaining amount (backward compatible).
+    #[serde(default)]
+    pub release_amount_chronos: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -342,6 +346,183 @@ impl Default for OraclePolicy {
             fallback: OracleFallback::UseSevenDayAverage,
         }
     }
+}
+
+
+// -- Genesis Zero -- Obligation Transfer Layer --------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TransferFlag {
+    /// Default -- transferable freely.
+    Free,
+    /// Transferable with conditions.
+    Restricted(TransferConditions),
+    /// Not transferable.
+    Locked,
+}
+
+impl Default for TransferFlag {
+    fn default() -> Self { TransferFlag::Free }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransferConditions {
+    pub accredited_only: bool,
+    pub jurisdiction_blacklist: Vec<String>,
+    pub jurisdiction_whitelist: Vec<String>,
+    pub governance_unlock_at: Option<u64>,
+    pub lender_consent_required: bool,
+    pub borrower_consent_required: bool,
+    pub min_hold_period_days: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TermsVisibility {
+    /// Default -- terms not public.
+    Private,
+    /// Terms visible to all.
+    Public,
+}
+
+impl Default for TermsVisibility {
+    fn default() -> Self { TermsVisibility::Private }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ClaimType {
+    /// Whole obligation (default).
+    Whole,
+    /// Yield stream only.
+    YieldOnly,
+    /// Principal at maturity only.
+    PrincipalOnly,
+}
+
+impl Default for ClaimType {
+    fn default() -> Self { ClaimType::Whole }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum RetirementStatus {
+    Active,
+    PartiallyRetired,
+    FullyRetired,
+}
+
+impl Default for RetirementStatus {
+    fn default() -> Self { RetirementStatus::Active }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransferRecord {
+    pub from_wallet: AccountId,
+    pub to_wallet: AccountId,
+    pub consideration_kx: u64,
+    pub consideration_currency: Option<String>,
+    pub transferred_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrancheInfo {
+    pub parent_obligation_id: TxId,
+    pub tranche_number: u32,
+    pub tranche_total: u32,
+    pub claim_type: ClaimType,
+    pub claim_on_collateral: Option<TxId>,
+}
+
+// -- Genesis Zero -- Obligation Action Structs --------------------------------
+
+/// Transfer ownership of an obligation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObligationTransfer {
+    pub obligation_id: TxId,
+    pub from_wallet: AccountId,
+    pub to_wallet: AccountId,
+    pub consideration_kx: u64,
+    pub consideration_currency: Option<String>,
+    pub signed_by: AccountId,
+}
+
+/// Split one obligation into N tranches.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObligationTranche {
+    pub parent_obligation_id: TxId,
+    pub tranche_count: u32,
+    pub face_value_per_tranche_kx: u64,
+    pub claim_types: Vec<ClaimType>,
+    pub signed_by: AccountId,
+}
+
+/// Retire all or part of an obligation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObligationRetire {
+    pub obligation_id: TxId,
+    pub retiring_wallet: AccountId,
+    pub retire_fraction: f64,
+    pub announcement: Option<String>,
+}
+
+/// Update transfer flag (lender only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransferFlagUpdate {
+    pub obligation_id: TxId,
+    pub lender_wallet: AccountId,
+    pub new_flag: TransferFlag,
+}
+
+/// Update terms visibility (lender only, either direction).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TermsVisibilityUpdate {
+    pub obligation_id: TxId,
+    pub lender_wallet: AccountId,
+    pub new_visibility: TermsVisibility,
+}
+
+
+// -- Escalation and failure actions (scaffold) --------------------------------
+
+/// Escalate a conditional lock (TYPE V) to a higher authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EscalateConditionalAction {
+    /// Lock ID being escalated.
+    pub conditional_id: String,
+    /// Who is escalating.
+    pub escalator_pubkey: Vec<u8>,
+    /// "CourtOrder", "DisputeFiled", "AttestorIncapacity", "BondSlash"
+    pub escalation_type: String,
+    /// BLAKE3 of supporting document.
+    pub evidence_hash: Vec<u8>,
+    /// Required, public, immutable.
+    pub memo: String,
+}
+
+/// Declare an attestor group has failed (KXGC or Foundation only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeclareAttestorFailureAction {
+    /// TYPE G group that has failed.
+    pub group_id: String,
+    /// Must be KXGC or Foundation wallet.
+    pub declaring_wallet: String,
+    /// "CriminalProceeding", "Dissolution", "BondDefaulted", "Incapacitated"
+    pub failure_type: String,
+    /// BLAKE3 of supporting evidence.
+    pub evidence_hash: Vec<u8>,
+    /// Required, public, immutable.
+    pub memo: String,
+}
+
+/// Slash a Tier 1 bond and cascade obligations to KXGC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BondSlashCascadeAction {
+    /// Tier 1 bond lock ID to slash.
+    pub tier1_bond_id: String,
+    /// Amount in chronos to slash.
+    pub slash_amount_chronos: u64,
+    /// KXGC formally assumes the slashed obligations.
+    pub kxgc_assumption: bool,
+    /// Required, public, immutable.
+    pub memo: String,
 }
 
 /// Every state-changing operation in the ChronX DAG is one of these variants.
@@ -564,6 +745,67 @@ pub enum Action {
         /// Free-form text encrypted to Verifas HSM public key.
         #[serde(default)]
         beneficiary_package: Option<Vec<u8>>,
+        // -- Genesis Zero -- Obligation Transfer fields ----------------------
+        #[serde(default)]
+        transferable: Option<TransferFlag>,
+        #[serde(default)]
+        current_owner_account: Option<AccountId>,
+        #[serde(default)]
+        transfer_history: Option<Vec<TransferRecord>>,
+        #[serde(default)]
+        terms_visibility: Option<TermsVisibility>,
+        #[serde(default)]
+        tranche_info: Option<TrancheInfo>,
+        #[serde(default)]
+        retirement_status: Option<RetirementStatus>,
+        #[serde(default)]
+        retired_fraction: Option<f64>,
+        // -- Escalation --
+        #[serde(default)]
+        escalation_wallet: Option<String>,
+        #[serde(default)]
+        escalation_lock_seconds: Option<u64>,
+
+        // -- Attestor group protection --
+        /// Fraction of attestor group that must attest (0.0-1.0). Floor: 0.50.
+        #[serde(default)]
+        min_attestors_pct: Option<f64>,
+
+        // -- Hedge linkage --
+        /// Lock IDs of hedge instruments that must be active before this lock is Active.
+        #[serde(default)]
+        required_hedge_ids: Option<Vec<String>>,
+
+        /// Wallet that receives premium on clean expiry (no trigger fired).
+        #[serde(default)]
+        success_payment_wallet: Option<String>,
+
+        /// Amount in chronos to pay to success_payment_wallet on clean expiry.
+        #[serde(default)]
+        success_payment_chronos: Option<u64>,
+
+        // -- Condition type (scaffold -- not yet functional) --
+        /// "SingleAttestation" (default), "OracleTrigger", "CompoundAND", "LinkedSpring"
+        #[serde(default)]
+        condition_type: Option<String>,
+
+        /// Oracle price pair, e.g. "KX/USD". Used with OracleTrigger.
+        #[serde(default)]
+        oracle_pair: Option<String>,
+
+        /// Fires if price crosses this threshold (e.g. 0.92 = 92% of creation price).
+        #[serde(default)]
+        oracle_trigger_threshold: Option<f64>,
+
+        /// "Below" or "Above".
+        #[serde(default)]
+        oracle_trigger_direction: Option<String>,
+
+        /// Used with LinkedSpring -- instrument that must have already fired.
+        #[serde(default)]
+        linked_instrument_id: Option<String>,
+
+
     },
 
     /// Claim a matured time-lock. Callable only by the registered recipient.
@@ -1010,6 +1252,32 @@ pub enum Action {
         loan_id: String,
         amount_chronos: u64,
     },
+
+    // -- Genesis Zero -- Obligation Transfer actions -------------------------
+    /// Transfer ownership of an obligation.
+    ObligationTransfer(ObligationTransfer),
+
+    /// Split one obligation into N tranches.
+    ObligationTranche(ObligationTranche),
+
+    /// Retire all or part of an obligation.
+    ObligationRetire(ObligationRetire),
+
+    /// Update transfer flag (lender only).
+    TransferFlagUpdate(TransferFlagUpdate),
+
+    /// Update terms visibility (lender only, either direction).
+    TermsVisibilityUpdate(TermsVisibilityUpdate),
+    // -- Escalation and failure actions (scaffold) ----------------------------
+    /// Escalate a conditional lock to higher authority.
+    EscalateConditional(EscalateConditionalAction),
+
+    /// Declare an attestor group has failed.
+    DeclareAttestorFailure(DeclareAttestorFailureAction),
+
+    /// Slash a Tier 1 bond and cascade obligations to KXGC.
+    BondSlashCascade(BondSlashCascadeAction),
+
 }
 
 /// Credit history visibility setting for a wallet.
@@ -1447,6 +1715,21 @@ pub struct LoanOffer {
     pub lender_only_exit: Option<bool>,
     #[serde(default)]
     pub draw_requestor: Option<String>,
+    // -- Genesis Zero -- Obligation Transfer fields --------------------------
+    #[serde(default)]
+    pub transferable: Option<TransferFlag>,
+    #[serde(default)]
+    pub current_owner: Option<AccountId>,
+    #[serde(default)]
+    pub transfer_history: Option<Vec<TransferRecord>>,
+    #[serde(default)]
+    pub terms_visibility: Option<TermsVisibility>,
+    #[serde(default)]
+    pub tranche_info: Option<TrancheInfo>,
+    #[serde(default)]
+    pub retirement_status: Option<RetirementStatus>,
+    #[serde(default)]
+    pub retired_fraction: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

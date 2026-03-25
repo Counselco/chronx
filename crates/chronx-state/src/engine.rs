@@ -113,6 +113,8 @@ impl StateEngine {
     }
 
     /// Validate and apply a transaction. Returns `Ok(())` on success.
+
+
     pub fn apply(&self, tx: &Transaction, now: Timestamp) -> Result<(), ChronxError> {
         // ── DAG-level validation ──────────────────────────────────────────────
         validate_vertex(tx, self.pow_difficulty, |pid| self.db.vertex_exists(pid))?;
@@ -1717,7 +1719,7 @@ impl StateEngine {
                     drawn_chronos: 0,
                     status: CreditStatus::Open,
                     encrypted_terms: action.encrypted_terms.clone(),
-                    created_at: now_u64
+                    created_at: now_u64,
                 };
                 self.db.put_credit(&record)?;
                 info!(credit_id = %hex::encode(action.credit_id), "Credit authorization created");
@@ -1913,7 +1915,20 @@ impl StateEngine {
                     encrypted_terms: action.encrypted_terms.clone(),
                     attestations_received: Vec::new(),
                     status: ConditionalStatus::Pending,
-                    created_at: now_u64
+                    created_at: now_u64,
+                    success_payment_wallet: None,
+                    success_payment_chronos: None,
+                    released_so_far_chronos: 0,
+                    release_count: 0,
+                    condition_type: None,
+                    oracle_pair: None,
+                    oracle_trigger_threshold: None,
+                    oracle_trigger_direction: None,
+                    oracle_creation_price: None,
+                    escalation_wallet: None,
+                    escalation_lock_seconds: None,
+                    attestors_suspended: false,
+                    escalation_active: false,
                 };
                 self.db.put_conditional(&record)?;
                 info!(type_v_id = %hex::encode(action.type_v_id), "Conditional payment created");
@@ -1924,58 +1939,77 @@ impl StateEngine {
                 let now_u64 = now as u64;
                 let cond = self.db.get_conditional(&action.type_v_id)?
                     .ok_or_else(|| ChronxError::ConditionalNotFound(hex::encode(action.type_v_id)))?;
-                if !matches!(cond.status, ConditionalStatus::Pending) {
+                if !matches!(cond.status, ConditionalStatus::Pending | ConditionalStatus::PartiallyReleased) {
                     return Err(ChronxError::ConditionalNotPending);
                 }
                 if now_u64 >= cond.valid_until {
                     return Err(ChronxError::ConditionalExpired);
                 }
-                // Check attestor is authorized
                 let attestor_bytes = action.attestor_pubkey.0.clone();
-                if !cond.attestor_pubkeys.iter().any(|p| *p == attestor_bytes) {
-                    return Err(ChronxError::AttestorNotAuthorized);
+                if cond.attestors_suspended {
+                    if let Some(ref esc_wallet) = cond.escalation_wallet {
+                        let attestor_account = chronx_crypto::hash::account_id_from_pubkey(&action.attestor_pubkey.0);
+                        if attestor_account.to_b58() != *esc_wallet {
+                            return Err(ChronxError::AttestorNotAuthorized);
+                        }
+                    } else {
+                        return Err(ChronxError::AttestorNotAuthorized);
+                    }
+                } else {
+                    if !cond.attestor_pubkeys.iter().any(|p| *p == attestor_bytes) {
+                        return Err(ChronxError::AttestorNotAuthorized);
+                    }
+                    if cond.attestations_received.iter().any(|(p, _)| *p == attestor_bytes) {
+                        return Err(ChronxError::AttestorAlreadyAttested);
+                    }
                 }
-                // Check not already attested
-                if cond.attestations_received.iter().any(|(p, _)| *p == attestor_bytes) {
-                    return Err(ChronxError::AttestorAlreadyAttested);
-                }
-                // Add attestation
                 let updated = self.db.add_attestation(&action.type_v_id, attestor_bytes, now_u64)?;
-                // Check if threshold reached
                 if updated.attestations_received.len() as u32 >= updated.min_attestors {
-                    // Release funds to recipient
+                    let remaining = updated.amount_chronos.saturating_sub(updated.released_so_far_chronos);
+                    if remaining == 0 { return Err(ChronxError::ConditionalFullyReleased); }
+                    let release_amount: u64 = match action.release_amount_chronos {
+                        Some(partial) => {
+                            if partial == 0 { return Err(ChronxError::ZeroAmount); }
+                            if partial > remaining { return Err(ChronxError::ReleaseAmountExceedsLocked); }
+                            partial
+                        }
+                        None => remaining,
+                    };
                     let recipient_account_id = chronx_crypto::hash::account_id_from_pubkey(&updated.recipient_pubkey);
                     let mut recipient = match self.db.get_account(&recipient_account_id)? {
                         Some(acc) => acc,
-                        None => {
-                            // Auto-create recipient account
-                            Account {
-                                account_id: recipient_account_id.clone(),
-                                balance: 0,
-                                auth_policy: chronx_core::account::AuthPolicy::SingleSig {
-                                    public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone())
-                                },
-                                nonce: 0,
-                                recovery_state: Default::default(),
-                                post_recovery_restriction: None,
-                                verifier_stake: 0,
-                                is_verifier: false,
-                                account_version: 3,
-                                created_at: Some(now),
-                                display_name_hash: None,
-                                incoming_locks_count: 0,
-                                outgoing_locks_count: 0,
-                                total_locked_incoming_chronos: 0,
-                                total_locked_outgoing_chronos: 0,
-                                preferred_fiat_currency: None,
-                                lock_marker: None
-                            }
+                        None => Account {
+                            account_id: recipient_account_id.clone(), balance: 0,
+                            auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                public_key: chronx_core::types::DilithiumPublicKey(updated.recipient_pubkey.clone())
+                            },
+                            nonce: 0, recovery_state: Default::default(), post_recovery_restriction: None,
+                            verifier_stake: 0, is_verifier: false, account_version: 3, created_at: Some(now),
+                            display_name_hash: None, incoming_locks_count: 0, outgoing_locks_count: 0,
+                            total_locked_incoming_chronos: 0, total_locked_outgoing_chronos: 0,
+                            preferred_fiat_currency: None, lock_marker: None
                         }
                     };
-                    recipient.balance += updated.amount_chronos as u128;
+                    recipient.balance += release_amount as u128;
                     staged.accounts.push(recipient);
-                    self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::Released)?;
-                    info!(type_v_id = %hex::encode(action.type_v_id), "Conditional released — threshold met");
+                    let new_released = updated.released_so_far_chronos + release_amount;
+                    let new_remaining = updated.amount_chronos.saturating_sub(new_released);
+                    let new_count = updated.release_count + 1;
+                    let event = serde_json::json!({"release_amount": release_amount, "released_at": now_u64, "release_number": new_count, "remaining": new_remaining});
+                    let _ = self.db.save_partial_release(&action.type_v_id, &serde_json::to_vec(&event).unwrap_or_default());
+                    if new_remaining == 0 {
+                        self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::Released)?;
+                        info!(type_v_id = %hex::encode(action.type_v_id), "Conditional FULLY released");
+                    } else {
+                        self.db.update_conditional_status(&action.type_v_id, ConditionalStatus::PartiallyReleased)?;
+                        if let Some(mut record) = self.db.get_conditional(&action.type_v_id)? {
+                            record.released_so_far_chronos = new_released;
+                            record.release_count = new_count;
+                            record.attestations_received.clear();
+                            self.db.put_conditional_raw(&action.type_v_id, &record)?;
+                        }
+                        info!(type_v_id = %hex::encode(action.type_v_id), "Conditional PARTIALLY released, {} remaining", new_remaining);
+                    }
                 }
                 Ok(())
             }
@@ -2891,6 +2925,377 @@ impl StateEngine {
                 Ok(())
             }
 
+
+            // -- Genesis Zero -- Obligation Transfer handlers ---------------------
+
+            Action::ObligationTransfer(ref action) => {
+                // 1. Find obligation (loan) by obligation_id
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify signed_by == current_owner
+                        let current_owner = loan_val.get("current_owner")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                loan_val.get("lender_wallet")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                            });
+                        let signed_by_str = action.signed_by.to_string();
+                        if signed_by_str != current_owner {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_TRANSFER: signed_by does not match current_owner".into()
+                            ));
+                        }
+
+                        // 3. Check transferable flag
+                        let transfer_flag = loan_val.get("transferable")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Free");
+                        if transfer_flag == "Locked" {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_TRANSFER: obligation is not transferable (Locked)".into()
+                            ));
+                        }
+
+                        // 4. If Restricted, check governance_unlock_at
+                        if transfer_flag == "Restricted" {
+                            if let Some(conditions) = loan_val.get("transfer_conditions") {
+                                if let Some(unlock_at) = conditions.get("governance_unlock_at").and_then(|v| v.as_u64()) {
+                                    if (now as u64) < unlock_at {
+                                        return Err(ChronxError::Other(
+                                            "OBLIGATION_TRANSFER: governance unlock date not reached".into()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        // 5. Update current_owner
+                        loan_val["current_owner"] = serde_json::json!(action.to_wallet.to_string());
+
+                        // 6. Append to transfer_history
+                        let record = serde_json::json!({
+                            "from_wallet": action.from_wallet.to_string(),
+                            "to_wallet": action.to_wallet.to_string(),
+                            "consideration_kx": action.consideration_kx,
+                            "consideration_currency": action.consideration_currency,
+                            "transferred_at": now as u64
+                        });
+                        if let Some(history) = loan_val.get_mut("transfer_history") {
+                            if let Some(arr) = history.as_array_mut() {
+                                arr.push(record);
+                            }
+                        } else {
+                            loan_val["transfer_history"] = serde_json::json!([record]);
+                        }
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              from = %action.from_wallet.to_string(),
+                              to = %action.to_wallet.to_string(),
+                              "[OBLIGATION TRANSFER] ownership transferred");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::ObligationTranche(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.parent_obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify signed_by == current_owner
+                        let current_owner = loan_val.get("current_owner")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                loan_val.get("lender_wallet")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                            });
+                        let signed_by_str = action.signed_by.to_string();
+                        if signed_by_str != current_owner {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_TRANCHE: signed_by does not match current_owner".into()
+                            ));
+                        }
+
+                        // 3. Validate tranche_count
+                        let max_tranches: u32 = self.db.get_meta("max_tranches_per_obligation")
+                            .ok().flatten()
+                            .and_then(|b| String::from_utf8(b).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1000);
+                        if action.tranche_count > max_tranches {
+                            return Err(ChronxError::Other(
+                                format!("OBLIGATION_TRANCHE: tranche_count {} exceeds max {}", action.tranche_count, max_tranches)
+                            ));
+                        }
+
+                        // 4. Validate face_value_per_tranche_kx
+                        let min_face: u64 = self.db.get_meta("min_tranche_face_value_kx")
+                            .ok().flatten()
+                            .and_then(|b| String::from_utf8(b).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1000);
+                        if action.face_value_per_tranche_kx < min_face {
+                            return Err(ChronxError::Other(
+                                format!("OBLIGATION_TRANCHE: face_value {} below minimum {}", action.face_value_per_tranche_kx, min_face)
+                            ));
+                        }
+
+                        // 5. Mark parent as tranched, record child count
+                        loan_val["tranched"] = serde_json::json!(true);
+                        loan_val["tranche_count"] = serde_json::json!(action.tranche_count);
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(parent = %hex::encode(&id_bytes),
+                              tranches = action.tranche_count,
+                              face_kx = action.face_value_per_tranche_kx,
+                              "[OBLIGATION TRANCHE] obligation split into tranches");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::ObligationRetire(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify retiring_wallet is borrower or authorized
+                        let borrower = loan_val.get("borrower_wallet")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let retiring_str = action.retiring_wallet.to_string();
+                        if retiring_str != borrower {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_RETIRE: retiring_wallet is not the borrower".into()
+                            ));
+                        }
+
+                        // 3. Validate retire_fraction
+                        if action.retire_fraction < 0.0 || action.retire_fraction > 1.0 {
+                            return Err(ChronxError::Other(
+                                "OBLIGATION_RETIRE: retire_fraction must be between 0.0 and 1.0".into()
+                            ));
+                        }
+
+                        // 4. Update retirement fields
+                        let prev_fraction = loan_val.get("retired_fraction")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let new_fraction = (prev_fraction + action.retire_fraction).min(1.0);
+
+                        loan_val["retired_fraction"] = serde_json::json!(new_fraction);
+                        if (new_fraction - 1.0).abs() < f64::EPSILON {
+                            loan_val["retirement_status"] = serde_json::json!("FullyRetired");
+                            loan_val["status"] = serde_json::json!("closed");
+                        } else if new_fraction > 0.0 {
+                            loan_val["retirement_status"] = serde_json::json!("PartiallyRetired");
+                        }
+
+                        if let Some(ref ann) = action.announcement {
+                            loan_val["retirement_announcement"] = serde_json::json!(ann);
+                        }
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              fraction = new_fraction,
+                              "[OBLIGATION RETIRE] obligation retired");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::TransferFlagUpdate(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify lender_wallet is original lender
+                        let lender = loan_val.get("lender_wallet")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let lender_str = action.lender_wallet.to_string();
+                        if lender_str != lender {
+                            return Err(ChronxError::Other(
+                                "TRANSFER_FLAG_UPDATE: only the original lender may update transfer flag".into()
+                            ));
+                        }
+
+                        // 3. Serialize the new flag
+                        let flag_val = serde_json::to_value(&action.new_flag)
+                            .unwrap_or(serde_json::json!("Free"));
+                        loan_val["transferable"] = flag_val;
+                        loan_val["transfer_flag_updated_at"] = serde_json::json!(now as u64);
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              "[TRANSFER FLAG UPDATE] transfer flag changed");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+            Action::TermsVisibilityUpdate(ref action) => {
+                // 1. Find obligation
+                let id_bytes: [u8; 32] = action.obligation_id.0;
+                if let Ok(Some(existing)) = self.db.get_loan(&id_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        // 2. Verify lender_wallet is original lender
+                        let lender = loan_val.get("lender_wallet")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let lender_str = action.lender_wallet.to_string();
+                        if lender_str != lender {
+                            return Err(ChronxError::Other(
+                                "TERMS_VISIBILITY_UPDATE: only the original lender may update terms visibility".into()
+                            ));
+                        }
+
+                        // 3. Record visibility change history
+                        let prev_visibility = loan_val.get("terms_visibility")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Private")
+                            .to_string();
+                        let new_vis = serde_json::to_value(&action.new_visibility)
+                            .unwrap_or(serde_json::json!("Private"));
+                        let new_vis_str = new_vis.as_str().unwrap_or("Private").to_string();
+
+                        // Append to visibility change log
+                        let change_record = serde_json::json!({
+                            "from": prev_visibility,
+                            "to": new_vis_str,
+                            "changed_at": now as u64
+                        });
+                        if let Some(log) = loan_val.get_mut("visibility_change_log") {
+                            if let Some(arr) = log.as_array_mut() {
+                                arr.push(change_record);
+                            }
+                        } else {
+                            loan_val["visibility_change_log"] = serde_json::json!([change_record]);
+                        }
+
+                        loan_val["terms_visibility"] = new_vis;
+
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&id_bytes, &updated)?;
+
+                        info!(obligation = %hex::encode(&id_bytes),
+                              from = %prev_visibility,
+                              to = %new_vis_str,
+                              "[TERMS VISIBILITY] visibility changed");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Obligation not found".into()))
+                }
+            }
+
+
+            // -- Escalation/failure scaffold handlers (store only) -----------------
+
+            Action::EscalateConditional(ref action) => {
+                let record = serde_json::json!({
+                    "conditional_id": action.conditional_id,
+                    "escalator_pubkey": hex::encode(&action.escalator_pubkey),
+                    "escalation_type": action.escalation_type,
+                    "evidence_hash": hex::encode(&action.evidence_hash),
+                    "memo": action.memo,
+                    "escalated_at": now as u64
+                });
+                let data = serde_json::to_vec(&record)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_escalation(&action.conditional_id, &data)?;
+                info!(conditional = %action.conditional_id,
+                      escalation_type = %action.escalation_type,
+                      "[ESCALATE CONDITIONAL] recorded");
+                Ok(())
+            }
+
+            Action::DeclareAttestorFailure(ref action) => {
+                let now_u64 = now as u64;
+                let record = serde_json::json!({"group_id": action.group_id, "declaring_wallet": action.declaring_wallet, "failure_type": action.failure_type, "evidence_hash": hex::encode(&action.evidence_hash), "memo": action.memo, "declared_at": now_u64});
+                let data = serde_json::to_vec(&record).map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_attestor_failure(&action.group_id, &data)?;
+                info!(group_id = %action.group_id, failure_type = %action.failure_type, "[ATTESTOR FAILURE] declared — beginning cascade");
+                let affected = self.db.get_conditionals_by_attestor_group(&action.group_id)?;
+                let mut escalated = 0u32;
+                let mut errors = 0u32;
+                for cond in &affected {
+                    let lid = hex::encode(cond.type_v_id);
+                    let r: Result<(), ChronxError> = (|| {
+                        self.db.set_conditional_attestors_suspended(&cond.type_v_id, true)?;
+                        if let Some(ref ew) = cond.escalation_wallet {
+                            self.db.set_conditional_escalation_active(&cond.type_v_id, true)?;
+                            let esc = serde_json::json!({"conditional_id": lid, "escalation_type": "AttestorIncapacity", "escalated_to": ew, "triggered_by": action.group_id, "evidence_hash": hex::encode(&action.evidence_hash), "escalated_at": now_u64, "auto_generated": true});
+                            self.db.save_escalation(&lid, &serde_json::to_vec(&esc).map_err(|_| ChronxError::SerializationError)?)?;
+                            escalated += 1;
+                        }
+                        Ok(())
+                    })();
+                    if let Err(e) = r {
+                        errors += 1;
+                        let err_rec = serde_json::json!({"lock_id": lid, "error": format!("{}", e), "at": now_u64});
+                        let _ = self.db.save_escalation_error(&lid, &serde_json::to_vec(&err_rec).unwrap_or_default());
+                        warn!(lock_id = %lid, error = %e, "[CASCADE ERROR] continuing");
+                    }
+                }
+                let dr = serde_json::json!({"group_id": action.group_id, "reason": action.memo, "evidence_hash": hex::encode(&action.evidence_hash), "lock_until": now_u64 + 2592000, "queued_at": now_u64, "auto_generated": true, "affected": affected.len(), "escalated": escalated, "errors": errors});
+                self.db.save_pending_drawrequest(&format!("dr:{}:{}", action.group_id, now_u64), &serde_json::to_vec(&dr).map_err(|_| ChronxError::SerializationError)?)?;
+                info!(group_id = %action.group_id, affected = affected.len(), escalated = escalated, errors = errors, "[ATTESTOR FAILURE CASCADE] complete");
+                Ok(())
+            }
+
+            Action::BondSlashCascade(ref action) => {
+                let record = serde_json::json!({
+                    "tier1_bond_id": action.tier1_bond_id,
+                    "slash_amount_chronos": action.slash_amount_chronos,
+                    "kxgc_assumption": action.kxgc_assumption,
+                    "memo": action.memo,
+                    "slashed_at": now as u64
+                });
+                let data = serde_json::to_vec(&record)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_bond_slash(&action.tier1_bond_id, &data)?;
+                info!(bond_id = %action.tier1_bond_id,
+                      slash_chronos = action.slash_amount_chronos,
+                      "[BOND SLASH CASCADE] recorded");
+                Ok(())
+            }
+
             Action::PartialExit { .. } => {
                 Err(ChronxError::FeatureNotActive(
                     "Partial loan exit requires governance activation.".into()
@@ -3230,19 +3635,50 @@ impl StateEngine {
                 let amount = cond.amount_chronos as u128;
                 match cond.fallback.as_str() {
                     "Void" => {
-                        // Return held funds to sender
+                        // Check for success_payment (hedge premium on clean expiry)
+                        let mut success_paid: u128 = 0;
+                        if let (Some(spw), Some(spc)) = (&cond.success_payment_wallet, cond.success_payment_chronos) {
+                            if spc > 0 && !spw.is_empty() && (spc as u128) <= amount {
+                                if let Ok(sp_id) = chronx_core::types::AccountId::from_b58(spw) {
+                                    if let Ok(Some(mut sp_acc)) = self.db.get_account(&sp_id) {
+                                        sp_acc.balance += spc as u128;
+                                        self.db.put_account(&sp_acc)?;
+                                        success_paid = spc as u128;
+                                        info!(wallet = %spw, amount = spc,
+                                              "[SUCCESS PAYMENT] hedge premium paid on clean expiry");
+                                    }
+                                }
+                            }
+                        }
+                        // Return remaining funds to sender
                         let sender_account_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
                         if let Ok(Some(mut sender)) = self.db.get_account(&sender_account_id) {
-                            sender.balance += amount;
+                            sender.balance += amount - success_paid;
                             self.db.put_account(&sender)?;
                         }
                         self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Voided)?;
                         count += 1;
                     }
                     "Return" => {
+                        // Check for success_payment (hedge premium on clean expiry)
+                        let mut success_paid: u128 = 0;
+                        if let (Some(spw), Some(spc)) = (&cond.success_payment_wallet, cond.success_payment_chronos) {
+                            if spc > 0 && !spw.is_empty() && (spc as u128) <= amount {
+                                if let Ok(sp_id) = chronx_core::types::AccountId::from_b58(spw) {
+                                    if let Ok(Some(mut sp_acc)) = self.db.get_account(&sp_id) {
+                                        sp_acc.balance += spc as u128;
+                                        self.db.put_account(&sp_acc)?;
+                                        success_paid = spc as u128;
+                                        info!(wallet = %spw, amount = spc,
+                                              "[SUCCESS PAYMENT] hedge premium paid on clean expiry");
+                                    }
+                                }
+                            }
+                        }
+                        // Return remaining funds to sender
                         let sender_account_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
                         if let Ok(Some(mut sender)) = self.db.get_account(&sender_account_id) {
-                            sender.balance += amount;
+                            sender.balance += amount - success_paid;
                             self.db.put_account(&sender)?;
                         }
                         self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Returned)?;
@@ -3521,6 +3957,138 @@ impl StateEngine {
         if count > 0 { self.db.flush()?; }
         Ok(count)
     }
+    /// Sweep conditionals with condition_type="OracleTrigger".
+    /// Reads latest oracle price from oracle_cache sled tree.
+    /// If price crosses threshold in the configured direction, auto-triggers.
+    /// On clean expiry: success_payment then fallback.
+    pub fn sweep_oracle_triggers(&self, now: i64) -> Result<u32, ChronxError> {
+        // Check governance flag
+        let enabled = self.db.get_meta("hedgekx_oracle_trigger_enabled")
+            .ok().flatten()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s == "true")
+            .unwrap_or(false);
+        if !enabled { return Ok(0); }
+
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+
+        // Get latest KX/USD price from oracle_cache
+        let current_price: Option<f64> = self.db.get_meta("oracle_price_kx_usd")
+            .ok().flatten()
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok());
+
+        let price = match current_price {
+            Some(p) if p > 0.0 => p,
+            _ => {
+                // No valid price — skip this cycle, retry next
+                return Ok(0);
+            }
+        };
+
+        for cond in self.db.iter_all_conditionals()? {
+            // Only process OracleTrigger conditionals that are Pending
+            if !matches!(cond.status, ConditionalStatus::Pending | ConditionalStatus::PartiallyReleased) {
+                continue;
+            }
+            let cond_type = cond.condition_type.as_deref().unwrap_or("SingleAttestation");
+            if cond_type != "OracleTrigger" { continue; }
+
+            // Check expiry first
+            if now_u64 >= cond.valid_until {
+                // Clean expiry — condition never fired
+                // Execute success_payment if configured
+                let amount = cond.amount_chronos as u128;
+                let remaining = (cond.amount_chronos - cond.released_so_far_chronos) as u128;
+                let mut success_paid: u128 = 0;
+
+                if let (Some(ref spw), Some(spc)) = (&cond.success_payment_wallet, cond.success_payment_chronos) {
+                    if spc > 0 && !spw.is_empty() && (spc as u128) <= remaining {
+                        if let Ok(sp_id) = chronx_core::types::AccountId::from_b58(spw) {
+                            if let Ok(Some(mut sp_acc)) = self.db.get_account(&sp_id) {
+                                sp_acc.balance += spc as u128;
+                                self.db.put_account(&sp_acc)?;
+                                success_paid = spc as u128;
+                                info!(wallet = %spw, amount = spc,
+                                      "[ORACLE TRIGGER] success_payment on clean expiry");
+                            }
+                        }
+                    }
+                }
+
+                // Return remaining to sender (standard fallback)
+                let return_amount = remaining - success_paid;
+                if return_amount > 0 {
+                    let sender_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
+                    if let Ok(Some(mut sender)) = self.db.get_account(&sender_id) {
+                        sender.balance += return_amount;
+                        self.db.put_account(&sender)?;
+                    }
+                }
+                self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Voided)?;
+                count += 1;
+                info!(lock = %hex::encode(&cond.type_v_id), "[ORACLE TRIGGER] clean expiry — no trigger fired");
+                continue;
+            }
+
+            // Check oracle trigger condition
+            let creation_price = match cond.oracle_creation_price {
+                Some(cp) if cp > 0.0 => cp,
+                _ => continue, // No creation price recorded — skip
+            };
+            let threshold = match cond.oracle_trigger_threshold {
+                Some(t) if t > 0.0 => t,
+                _ => continue, // No threshold set
+            };
+            let direction = cond.oracle_trigger_direction.as_deref().unwrap_or("Below");
+            let trigger_price = creation_price * threshold;
+
+            let triggered = match direction {
+                "Below" => price <= trigger_price,
+                "Above" => price >= trigger_price,
+                _ => false,
+            };
+
+            if triggered {
+                // Oracle trigger fired — release remaining funds to recipient
+                let remaining = cond.amount_chronos.saturating_sub(cond.released_so_far_chronos);
+                if remaining == 0 { continue; }
+
+                let recipient_id = chronx_crypto::hash::account_id_from_pubkey(&cond.recipient_pubkey);
+                if let Ok(Some(mut recipient)) = self.db.get_account(&recipient_id) {
+                    recipient.balance += remaining as u128;
+                    self.db.put_account(&recipient)?;
+                } else {
+                    // Auto-create recipient
+                    let mut new_acc = chronx_core::account::Account {
+                        account_id: recipient_id.clone(), balance: remaining as u128,
+                        auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                            public_key: chronx_core::types::DilithiumPublicKey(cond.recipient_pubkey.clone())
+                        },
+                        nonce: 0, recovery_state: Default::default(), post_recovery_restriction: None,
+                        verifier_stake: 0, is_verifier: false, account_version: 3, created_at: Some(now),
+                        display_name_hash: None, incoming_locks_count: 0, outgoing_locks_count: 0,
+                        total_locked_incoming_chronos: 0, total_locked_outgoing_chronos: 0,
+                        preferred_fiat_currency: None, lock_marker: None
+                    };
+                    self.db.put_account(&new_acc)?;
+                }
+
+                self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Released)?;
+                count += 1;
+                info!(lock = %hex::encode(&cond.type_v_id),
+                      price = price, trigger = trigger_price, direction = direction,
+                      "[ORACLE TRIGGER] FIRED — {} KX released to recipient", remaining / 1_000_000);
+            }
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
 
 }
 
@@ -3730,7 +4298,27 @@ mod tests {
             email_recipient_hash: None,
             claim_window_secs: None,
             unclaimed_action: None,
-        }
+        
+            transferable: None,
+            current_owner_account: None,
+            transfer_history: None,
+            terms_visibility: None,
+            tranche_info: None,
+            retirement_status: None,
+            retired_fraction: None,
+
+            escalation_wallet: None,
+            escalation_lock_seconds: None,
+            min_attestors_pct: None,
+            required_hedge_ids: None,
+            success_payment_wallet: None,
+            success_payment_chronos: None,
+            condition_type: None,
+            oracle_pair: None,
+            oracle_trigger_threshold: None,
+            oracle_trigger_direction: None,
+            linked_instrument_id: None,
+}
     }
 
     fn seed_oracle(db: &StateDb, price_cents: u64) {
