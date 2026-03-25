@@ -2145,6 +2145,71 @@ impl ChronxApiServer for RpcServer {
     }
 
 
+
+    // ── TYPE A — Authority Grant queries ────────────────────────────────────
+
+    async fn get_authority_grants(&self, wallet_b58: String) -> RpcResult<serde_json::Value> {
+        let db = &self.state.db;
+        let mut grants = Vec::new();
+        for item in db.iter_authority_grants() {
+            if let Ok(grant) = serde_json::from_slice::<serde_json::Value>(&item.1) {
+                let grantor = grant.get("grantor_wallet").and_then(|v| v.as_str()).unwrap_or("");
+                let grantee = grant.get("grantee_wallet").and_then(|v| v.as_str()).unwrap_or("");
+                if grantor == wallet_b58 || grantee == wallet_b58 {
+                    grants.push(grant);
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "wallet": wallet_b58,
+            "grants": grants,
+            "count": grants.len()
+        }))
+    }
+
+    async fn get_kxgc_capacity(&self) -> RpcResult<serde_json::Value> {
+        let db = &self.state.db;
+        let kxgc_b58 = db.get_meta("kxgc_bond_wallet")
+            .ok().flatten()
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
+        let kxgc_balance_kx: u64 = if !kxgc_b58.is_empty() {
+            if let Ok(id) = chronx_core::types::AccountId::from_b58(&kxgc_b58) {
+                if let Ok(Some(acc)) = db.get_account(&id) {
+                    (acc.balance / 1_000_000) as u64
+                } else { 0 }
+            } else { 0 }
+        } else { 0 };
+        let mut total_obligations_kx: u64 = 0;
+        let mut active_grants: Vec<serde_json::Value> = Vec::new();
+        for item in db.iter_authority_grants() {
+            if let Ok(grant) = serde_json::from_slice::<serde_json::Value>(&item.1) {
+                let status = grant.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                if status == "Active" || status == "PendingRevocation" {
+                    let max_kx = grant.get("max_obligations_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+                    total_obligations_kx = total_obligations_kx.saturating_add(max_kx);
+                    active_grants.push(grant);
+                }
+            }
+        }
+        let available_kx = kxgc_balance_kx.saturating_sub(total_obligations_kx);
+        let reserve_ratio: f64 = if total_obligations_kx > 0 {
+            kxgc_balance_kx as f64 / total_obligations_kx as f64
+        } else if kxgc_balance_kx > 0 { -1.0 } else { 0.0 };
+        let warning_level = if total_obligations_kx == 0 || reserve_ratio >= 1.0 || reserve_ratio < 0.0 {
+            "GREEN"
+        } else if reserve_ratio >= 0.5 { "YELLOW" } else { "RED" };
+        Ok(serde_json::json!({
+            "kxgc_wallet": kxgc_b58,
+            "kxgc_balance_kx": kxgc_balance_kx,
+            "total_granted_obligations_kx": total_obligations_kx,
+            "available_capacity_kx": available_kx,
+            "reserve_ratio": reserve_ratio,
+            "warning_level": warning_level,
+            "active_grant_count": active_grants.len(),
+            "active_grants": active_grants,
+        }))
+    }
 }
 
 

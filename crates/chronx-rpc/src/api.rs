@@ -368,4 +368,16 @@ pub trait ChronxApi {
     async fn get_channel_info(&self, channel_id_hex: String) -> RpcResult<serde_json::Value>;
 
 
+
+
+    // ── TYPE A — Authority Grant queries ────────────────────────────────────
+
+    /// Return all authority grants where the wallet is grantor or grantee.
+    #[method(name = "getAuthorityGrants")]
+    async fn get_authority_grants(&self, wallet_b58: String) -> RpcResult<serde_json::Value>;
+
+    /// Return KXGC bond wallet capacity and reserve status.
+    #[method(name = "getKXGCCapacity")]
+    async fn get_kxgc_capacity(&self) -> RpcResult<serde_json::Value>;
+
 }

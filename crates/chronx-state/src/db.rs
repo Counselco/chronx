@@ -386,6 +386,7 @@ pub struct StateDb {
     pub escrow_deposits: sled::Tree,
     pub micro_loans: sled::Tree,
     pub governance_params: sled::Tree,
+    pub authority_grants: sled::Tree,
 }
 
 impl StateDb {
@@ -516,6 +517,9 @@ impl StateDb {
         let governance_params = db
             .open_tree("governance_params")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let authority_grants = db
+            .open_tree("authority_grants")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(Self {
             _db: db,
             accounts,
@@ -559,6 +563,7 @@ impl StateDb {
             escrow_deposits,
             micro_loans,
             governance_params,
+            authority_grants,
         })
     }
 
@@ -774,6 +779,32 @@ impl StateDb {
             .get(key.as_bytes())
             .map(|v| v.map(|iv| iv.to_vec()))
             .map_err(|e| ChronxError::Storage(e.to_string()))
+    }
+
+
+    // ── Authority Grants ─────────────────────────────────────────────────────
+
+    /// Save an authority grant keyed by its vertex/tx ID.
+    pub fn save_authority_grant(&self, grant_id: &[u8; 32], data: &[u8]) -> Result<(), ChronxError> {
+        self.authority_grants.insert(grant_id.as_ref(), data)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get an authority grant by its vertex/tx ID.
+    pub fn get_authority_grant(&self, grant_id: &[u8; 32]) -> Result<Option<Vec<u8>>, ChronxError> {
+        match self.authority_grants.get(grant_id.as_ref()) {
+            Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    /// Iterate all authority grants.
+    pub fn iter_authority_grants(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        self.authority_grants.iter().filter_map(|r| {
+            r.ok().map(|(k, v)| (k.to_vec(), v.to_vec()))
+        })
     }
 
     /// Flush all pending writes to disk.
