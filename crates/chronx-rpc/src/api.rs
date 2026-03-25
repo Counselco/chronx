@@ -407,4 +407,31 @@ pub trait ChronxApi {
     #[method(name = "getObligationStatus")]
     async fn get_obligation_status(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
 
+
+    // -- Escalation/failure/hedge scaffold RPC methods ------------------------
+
+    /// Get escalation status for a conditional lock.
+    #[method(name = "getEscalationStatus")]
+    async fn get_escalation_status(&self, conditional_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get all declared attestor failures.
+    #[method(name = "getAttestorFailures")]
+    async fn get_attestor_failures(&self) -> RpcResult<serde_json::Value>;
+
+    /// Get all locks affected by a group failure.
+    #[method(name = "getAffectedPolicies")]
+    async fn get_affected_policies(&self, group_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get hedge instruments linked to a pool.
+    #[method(name = "getHedgeInstruments")]
+    async fn get_hedge_instruments(&self, pool_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get linked spring instrument status.
+    #[method(name = "getLinkedSpringStatus")]
+    async fn get_linked_spring_status(&self, instrument_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get pool health score (cached, null until MISAI populates).
+    #[method(name = "getPoolHealthScore")]
+    async fn get_pool_health_score(&self, pool_id: String) -> RpcResult<serde_json::Value>;
+
 }

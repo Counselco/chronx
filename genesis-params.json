@@ -18486,7 +18486,7 @@
   "sweep_guardian_transition_interval_seconds": 3600,
   "sweep_promise_chain_interval_seconds": 86400,
   "sweep_executor_interval_seconds": 60,
-  "pay_as_max_usd": 100.0,
+  "pay_as_max_usd": 250.0,
   "pay_as_enabled": true,
   "loan_warn_principal_usd": 100,
   "loan_block_principal_usd": 250,
@@ -18575,5 +18575,17 @@
     ],
     "pilot_wallets": []
   },
-  "genesis_description": "The complete ChronX Protocol. Designed from first principles before any public investment. All obligation types, transfer mechanisms, governance parameters, and axioms encoded from block zero. The foundation that will not need to change."
+  "genesis_description": "The complete ChronX Protocol. Designed from first principles before any public investment. All obligation types, transfer mechanisms, governance parameters, and axioms encoded from block zero. The foundation that will not need to change.",
+  "hedgekx_max_daily_exposure_usd": 250.0,
+  "hedgekx_max_instrument_duration_seconds": 86400,
+  "hedgekx_oracle_trigger_enabled": false,
+  "hedgekx_compound_condition_enabled": false,
+  "hedgekx_third_party_licensing_enabled": false,
+  "misai_hedge_monitoring_enabled": false,
+  "misai_pool_health_score_enabled": false,
+  "misai_fair_value_publishing_enabled": false,
+  "misai_conservative_batch_only": true,
+  "escalation_lock_seconds_default": 2592000,
+  "min_attestors_pct_floor": 0.5,
+  "pool_health_score_enabled": false
 }

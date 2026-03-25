@@ -240,6 +240,11 @@ pub struct ConditionalRecord {
     pub attestations_received: Vec<(Vec<u8>, u64)>,
     pub status: ConditionalStatus,
     pub created_at: u64,
+    // -- Success payment (hedge premium on clean expiry) --
+    #[serde(default)]
+    pub success_payment_wallet: Option<String>,
+    #[serde(default)]
+    pub success_payment_chronos: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -387,6 +392,12 @@ pub struct StateDb {
     pub micro_loans: sled::Tree,
     pub governance_params: sled::Tree,
     pub authority_grants: sled::Tree,
+    pub escalations: sled::Tree,
+    pub attestor_failures: sled::Tree,
+    pub bond_slash_cascade: sled::Tree,
+    pub hedge_instruments: sled::Tree,
+    pub pool_health_scores: sled::Tree,
+
 }
 
 impl StateDb {
@@ -520,6 +531,22 @@ impl StateDb {
         let authority_grants = db
             .open_tree("authority_grants")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+
+        let escalations = db
+            .open_tree("escalations")
+            .expect("Failed to open escalations tree");
+        let attestor_failures = db
+            .open_tree("attestor_failures")
+            .expect("Failed to open attestor_failures tree");
+        let bond_slash_cascade = db
+            .open_tree("bond_slash_cascade")
+            .expect("Failed to open bond_slash_cascade tree");
+        let hedge_instruments = db
+            .open_tree("hedge_instruments")
+            .expect("Failed to open hedge_instruments tree");
+        let pool_health_scores = db
+            .open_tree("pool_health_scores")
+            .expect("Failed to open pool_health_scores tree");
         Ok(Self {
             _db: db,
             accounts,
@@ -564,6 +591,12 @@ impl StateDb {
             micro_loans,
             governance_params,
             authority_grants,
+            escalations,
+            attestor_failures,
+            bond_slash_cascade,
+            hedge_instruments,
+            pool_health_scores,
+
         })
     }
 
@@ -1932,6 +1965,62 @@ impl StateDb {
     }
 
     /// Iterate all raw loan entries (for RPC scan)
+
+    // -- Escalation/failure/hedge scaffold trees --
+
+    pub fn save_escalation(&self, id: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.escalations.insert(id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_escalation(&self, id: &str) -> Result<Option<Vec<u8>>, ChronxError> {
+        self.escalations.get(id.as_bytes()).map(|opt| opt.map(|v| v.to_vec())).map_err(|_| ChronxError::DatabaseError)
+    }
+
+    pub fn save_attestor_failure(&self, id: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.attestor_failures.insert(id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_attestor_failure(&self, id: &str) -> Result<Option<Vec<u8>>, ChronxError> {
+        self.attestor_failures.get(id.as_bytes()).map(|opt| opt.map(|v| v.to_vec())).map_err(|_| ChronxError::DatabaseError)
+    }
+
+    pub fn iter_attestor_failures(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        self.attestor_failures.iter().filter_map(|r| r.ok()).map(|(k, v)| (k.to_vec(), v.to_vec()))
+    }
+
+    pub fn save_bond_slash(&self, id: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.bond_slash_cascade.insert(id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_bond_slash(&self, id: &str) -> Result<Option<Vec<u8>>, ChronxError> {
+        self.bond_slash_cascade.get(id.as_bytes()).map(|opt| opt.map(|v| v.to_vec())).map_err(|_| ChronxError::DatabaseError)
+    }
+
+    pub fn save_hedge_instrument(&self, id: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.hedge_instruments.insert(id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_hedge_instrument(&self, id: &str) -> Result<Option<Vec<u8>>, ChronxError> {
+        self.hedge_instruments.get(id.as_bytes()).map(|opt| opt.map(|v| v.to_vec())).map_err(|_| ChronxError::DatabaseError)
+    }
+
+    pub fn iter_hedge_instruments(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        self.hedge_instruments.iter().filter_map(|r| r.ok()).map(|(k, v)| (k.to_vec(), v.to_vec()))
+    }
+
+    pub fn save_pool_health_score(&self, pool_id: &str, data: &[u8]) -> Result<(), ChronxError> {
+        self.pool_health_scores.insert(pool_id.as_bytes(), data).map_err(|_| ChronxError::DatabaseError)?;
+        Ok(())
+    }
+
+    pub fn get_pool_health_score(&self, pool_id: &str) -> Result<Option<Vec<u8>>, ChronxError> {
+        self.pool_health_scores.get(pool_id.as_bytes()).map(|opt| opt.map(|v| v.to_vec())).map_err(|_| ChronxError::DatabaseError)
+    }
+
     pub fn iter_loans(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
         self.loans.iter()
             .filter_map(|r| r.ok())

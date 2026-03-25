@@ -451,6 +451,18 @@ async fn main() -> anyhow::Result<()> {
                     tranche_info: None,
                     retirement_status: None,
                     retired_fraction: None,
+
+                    escalation_wallet: None,
+                    escalation_lock_seconds: None,
+                    min_attestors_pct: None,
+                    required_hedge_ids: None,
+                    success_payment_wallet: None,
+                    success_payment_chronos: None,
+                    condition_type: None,
+                    oracle_pair: None,
+                    oracle_trigger_threshold: None,
+                    oracle_trigger_direction: None,
+                    linked_instrument_id: None,
 }],
                 &client,
             )
@@ -548,6 +560,18 @@ async fn main() -> anyhow::Result<()> {
                     tranche_info: None,
                     retirement_status: None,
                     retired_fraction: None,
+
+                    escalation_wallet: None,
+                    escalation_lock_seconds: None,
+                    min_attestors_pct: None,
+                    required_hedge_ids: None,
+                    success_payment_wallet: None,
+                    success_payment_chronos: None,
+                    condition_type: None,
+                    oracle_pair: None,
+                    oracle_trigger_threshold: None,
+                    oracle_trigger_direction: None,
+                    linked_instrument_id: None,
 }],
                 &client,
             )
@@ -799,6 +823,18 @@ async fn main() -> anyhow::Result<()> {
                         tranche_info: None,
                         retirement_status: None,
                         retired_fraction: None,
+
+                        escalation_wallet: None,
+                        escalation_lock_seconds: None,
+                        min_attestors_pct: None,
+                        required_hedge_ids: None,
+                        success_payment_wallet: None,
+                        success_payment_chronos: None,
+                        condition_type: None,
+                        oracle_pair: None,
+                        oracle_trigger_threshold: None,
+                        oracle_trigger_direction: None,
+                        linked_instrument_id: None,
 }
                 })
                 .collect();

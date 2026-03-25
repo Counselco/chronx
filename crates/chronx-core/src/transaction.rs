@@ -475,6 +475,52 @@ pub struct TermsVisibilityUpdate {
     pub new_visibility: TermsVisibility,
 }
 
+
+// -- Escalation and failure actions (scaffold) --------------------------------
+
+/// Escalate a conditional lock (TYPE V) to a higher authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EscalateConditionalAction {
+    /// Lock ID being escalated.
+    pub conditional_id: String,
+    /// Who is escalating.
+    pub escalator_pubkey: Vec<u8>,
+    /// "CourtOrder", "DisputeFiled", "AttestorIncapacity", "BondSlash"
+    pub escalation_type: String,
+    /// BLAKE3 of supporting document.
+    pub evidence_hash: Vec<u8>,
+    /// Required, public, immutable.
+    pub memo: String,
+}
+
+/// Declare an attestor group has failed (KXGC or Foundation only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeclareAttestorFailureAction {
+    /// TYPE G group that has failed.
+    pub group_id: String,
+    /// Must be KXGC or Foundation wallet.
+    pub declaring_wallet: String,
+    /// "CriminalProceeding", "Dissolution", "BondDefaulted", "Incapacitated"
+    pub failure_type: String,
+    /// BLAKE3 of supporting evidence.
+    pub evidence_hash: Vec<u8>,
+    /// Required, public, immutable.
+    pub memo: String,
+}
+
+/// Slash a Tier 1 bond and cascade obligations to KXGC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BondSlashCascadeAction {
+    /// Tier 1 bond lock ID to slash.
+    pub tier1_bond_id: String,
+    /// Amount in chronos to slash.
+    pub slash_amount_chronos: u64,
+    /// KXGC formally assumes the slashed obligations.
+    pub kxgc_assumption: bool,
+    /// Required, public, immutable.
+    pub memo: String,
+}
+
 /// Every state-changing operation in the ChronX DAG is one of these variants.
 // TimeLockCreate carries a full DilithiumPublicKey (1312 bytes for Dilithium2). Boxing it
 // would push derefs into every match arm across the entire codebase. The size is intentional.
@@ -710,6 +756,51 @@ pub enum Action {
         retirement_status: Option<RetirementStatus>,
         #[serde(default)]
         retired_fraction: Option<f64>,
+        // -- Escalation --
+        #[serde(default)]
+        escalation_wallet: Option<String>,
+        #[serde(default)]
+        escalation_lock_seconds: Option<u64>,
+
+        // -- Attestor group protection --
+        /// Fraction of attestor group that must attest (0.0-1.0). Floor: 0.50.
+        #[serde(default)]
+        min_attestors_pct: Option<f64>,
+
+        // -- Hedge linkage --
+        /// Lock IDs of hedge instruments that must be active before this lock is Active.
+        #[serde(default)]
+        required_hedge_ids: Option<Vec<String>>,
+
+        /// Wallet that receives premium on clean expiry (no trigger fired).
+        #[serde(default)]
+        success_payment_wallet: Option<String>,
+
+        /// Amount in chronos to pay to success_payment_wallet on clean expiry.
+        #[serde(default)]
+        success_payment_chronos: Option<u64>,
+
+        // -- Condition type (scaffold -- not yet functional) --
+        /// "SingleAttestation" (default), "OracleTrigger", "CompoundAND", "LinkedSpring"
+        #[serde(default)]
+        condition_type: Option<String>,
+
+        /// Oracle price pair, e.g. "KX/USD". Used with OracleTrigger.
+        #[serde(default)]
+        oracle_pair: Option<String>,
+
+        /// Fires if price crosses this threshold (e.g. 0.92 = 92% of creation price).
+        #[serde(default)]
+        oracle_trigger_threshold: Option<f64>,
+
+        /// "Below" or "Above".
+        #[serde(default)]
+        oracle_trigger_direction: Option<String>,
+
+        /// Used with LinkedSpring -- instrument that must have already fired.
+        #[serde(default)]
+        linked_instrument_id: Option<String>,
+
 
     },
 
@@ -1173,6 +1264,16 @@ pub enum Action {
 
     /// Update terms visibility (lender only, either direction).
     TermsVisibilityUpdate(TermsVisibilityUpdate),
+    // -- Escalation and failure actions (scaffold) ----------------------------
+    /// Escalate a conditional lock to higher authority.
+    EscalateConditional(EscalateConditionalAction),
+
+    /// Declare an attestor group has failed.
+    DeclareAttestorFailure(DeclareAttestorFailureAction),
+
+    /// Slash a Tier 1 bond and cascade obligations to KXGC.
+    BondSlashCascade(BondSlashCascadeAction),
+
 }
 
 /// Credit history visibility setting for a wallet.

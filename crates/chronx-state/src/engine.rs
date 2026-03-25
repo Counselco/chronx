@@ -113,6 +113,8 @@ impl StateEngine {
     }
 
     /// Validate and apply a transaction. Returns `Ok(())` on success.
+
+
     pub fn apply(&self, tx: &Transaction, now: Timestamp) -> Result<(), ChronxError> {
         // ── DAG-level validation ──────────────────────────────────────────────
         validate_vertex(tx, self.pow_difficulty, |pid| self.db.vertex_exists(pid))?;
@@ -1717,7 +1719,7 @@ impl StateEngine {
                     drawn_chronos: 0,
                     status: CreditStatus::Open,
                     encrypted_terms: action.encrypted_terms.clone(),
-                    created_at: now_u64
+                    created_at: now_u64,
                 };
                 self.db.put_credit(&record)?;
                 info!(credit_id = %hex::encode(action.credit_id), "Credit authorization created");
@@ -1913,7 +1915,9 @@ impl StateEngine {
                     encrypted_terms: action.encrypted_terms.clone(),
                     attestations_received: Vec::new(),
                     status: ConditionalStatus::Pending,
-                    created_at: now_u64
+                    created_at: now_u64,
+                    success_payment_wallet: None,
+                    success_payment_chronos: None,
                 };
                 self.db.put_conditional(&record)?;
                 info!(type_v_id = %hex::encode(action.type_v_id), "Conditional payment created");
@@ -3190,6 +3194,62 @@ impl StateEngine {
                 }
             }
 
+
+            // -- Escalation/failure scaffold handlers (store only) -----------------
+
+            Action::EscalateConditional(ref action) => {
+                let record = serde_json::json!({
+                    "conditional_id": action.conditional_id,
+                    "escalator_pubkey": hex::encode(&action.escalator_pubkey),
+                    "escalation_type": action.escalation_type,
+                    "evidence_hash": hex::encode(&action.evidence_hash),
+                    "memo": action.memo,
+                    "escalated_at": now as u64
+                });
+                let data = serde_json::to_vec(&record)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_escalation(&action.conditional_id, &data)?;
+                info!(conditional = %action.conditional_id,
+                      escalation_type = %action.escalation_type,
+                      "[ESCALATE CONDITIONAL] recorded");
+                Ok(())
+            }
+
+            Action::DeclareAttestorFailure(ref action) => {
+                let record = serde_json::json!({
+                    "group_id": action.group_id,
+                    "declaring_wallet": action.declaring_wallet,
+                    "failure_type": action.failure_type,
+                    "evidence_hash": hex::encode(&action.evidence_hash),
+                    "memo": action.memo,
+                    "declared_at": now as u64
+                });
+                let data = serde_json::to_vec(&record)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_attestor_failure(&action.group_id, &data)?;
+                info!(group_id = %action.group_id,
+                      failure_type = %action.failure_type,
+                      "[ATTESTOR FAILURE] declared");
+                Ok(())
+            }
+
+            Action::BondSlashCascade(ref action) => {
+                let record = serde_json::json!({
+                    "tier1_bond_id": action.tier1_bond_id,
+                    "slash_amount_chronos": action.slash_amount_chronos,
+                    "kxgc_assumption": action.kxgc_assumption,
+                    "memo": action.memo,
+                    "slashed_at": now as u64
+                });
+                let data = serde_json::to_vec(&record)
+                    .map_err(|_| ChronxError::SerializationError)?;
+                self.db.save_bond_slash(&action.tier1_bond_id, &data)?;
+                info!(bond_id = %action.tier1_bond_id,
+                      slash_chronos = action.slash_amount_chronos,
+                      "[BOND SLASH CASCADE] recorded");
+                Ok(())
+            }
+
             Action::PartialExit { .. } => {
                 Err(ChronxError::FeatureNotActive(
                     "Partial loan exit requires governance activation.".into()
@@ -3529,19 +3589,50 @@ impl StateEngine {
                 let amount = cond.amount_chronos as u128;
                 match cond.fallback.as_str() {
                     "Void" => {
-                        // Return held funds to sender
+                        // Check for success_payment (hedge premium on clean expiry)
+                        let mut success_paid: u128 = 0;
+                        if let (Some(spw), Some(spc)) = (&cond.success_payment_wallet, cond.success_payment_chronos) {
+                            if spc > 0 && !spw.is_empty() && (spc as u128) <= amount {
+                                if let Ok(sp_id) = chronx_core::types::AccountId::from_b58(spw) {
+                                    if let Ok(Some(mut sp_acc)) = self.db.get_account(&sp_id) {
+                                        sp_acc.balance += spc as u128;
+                                        self.db.put_account(&sp_acc)?;
+                                        success_paid = spc as u128;
+                                        info!(wallet = %spw, amount = spc,
+                                              "[SUCCESS PAYMENT] hedge premium paid on clean expiry");
+                                    }
+                                }
+                            }
+                        }
+                        // Return remaining funds to sender
                         let sender_account_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
                         if let Ok(Some(mut sender)) = self.db.get_account(&sender_account_id) {
-                            sender.balance += amount;
+                            sender.balance += amount - success_paid;
                             self.db.put_account(&sender)?;
                         }
                         self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Voided)?;
                         count += 1;
                     }
                     "Return" => {
+                        // Check for success_payment (hedge premium on clean expiry)
+                        let mut success_paid: u128 = 0;
+                        if let (Some(spw), Some(spc)) = (&cond.success_payment_wallet, cond.success_payment_chronos) {
+                            if spc > 0 && !spw.is_empty() && (spc as u128) <= amount {
+                                if let Ok(sp_id) = chronx_core::types::AccountId::from_b58(spw) {
+                                    if let Ok(Some(mut sp_acc)) = self.db.get_account(&sp_id) {
+                                        sp_acc.balance += spc as u128;
+                                        self.db.put_account(&sp_acc)?;
+                                        success_paid = spc as u128;
+                                        info!(wallet = %spw, amount = spc,
+                                              "[SUCCESS PAYMENT] hedge premium paid on clean expiry");
+                                    }
+                                }
+                            }
+                        }
+                        // Return remaining funds to sender
                         let sender_account_id = chronx_crypto::hash::account_id_from_pubkey(&cond.sender_pubkey);
                         if let Ok(Some(mut sender)) = self.db.get_account(&sender_account_id) {
-                            sender.balance += amount;
+                            sender.balance += amount - success_paid;
                             self.db.put_account(&sender)?;
                         }
                         self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Returned)?;
@@ -4037,6 +4128,18 @@ mod tests {
             tranche_info: None,
             retirement_status: None,
             retired_fraction: None,
+
+            escalation_wallet: None,
+            escalation_lock_seconds: None,
+            min_attestors_pct: None,
+            required_hedge_ids: None,
+            success_payment_wallet: None,
+            success_payment_chronos: None,
+            condition_type: None,
+            oracle_pair: None,
+            oracle_trigger_threshold: None,
+            oracle_trigger_direction: None,
+            linked_instrument_id: None,
 }
     }
 
