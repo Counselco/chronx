@@ -18587,5 +18587,20 @@
   "misai_conservative_batch_only": true,
   "escalation_lock_seconds_default": 2592000,
   "min_attestors_pct_floor": 0.5,
-  "pool_health_score_enabled": false
+  "pool_health_score_enabled": false,
+  "auto_sweep_enabled": false,
+  "auto_sweep_min_kx": 100,
+  "auto_sweep_interval_minutes": 5,
+  "xchan_min_reserve_for_auto_sweep_usd": 5000,
+  "xchan_buy_kx_enabled": true,
+  "savings_enabled": true,
+  "savings_max_per_wallet_usd": 50.0,
+  "savings_max_total_exposure_usd": 1500.0,
+  "savings_hedgekx_yield_enabled": true,
+  "savings_max_annual_yield_pct": 5.0,
+  "savings_min_deposit_kx": 100,
+  "superseding_hedger_required": true,
+  "superseding_hedger_weekly_usd": 1600.0,
+  "superseding_hedger_daily_capacity_usd": 250.0,
+  "sweep_savings_yield_interval_seconds": 60
 }

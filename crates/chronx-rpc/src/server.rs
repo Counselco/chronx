@@ -2153,6 +2153,45 @@ impl ChronxApiServer for RpcServer {
     }
 
     /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
+    /// `chronx_getSavingsBalance` -- savings account balance and yield info.
+    async fn get_savings_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value> {
+        use chronx_core::types::AccountId;
+        let account_id = AccountId::from_b58(&wallet_b58)
+            .map_err(|e| rpc_err(-32602, format!("Invalid wallet: {}", e)))?;
+        let account = self.state.db.get_account(&account_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        match account {
+            Some(acc) => {
+                let savings_kx = acc.savings_balance / 1_000_000;
+                let annual_rate = if acc.savings_invested { 2.1 } else { 0.0 };
+                let daily_yield = (acc.savings_balance as f64) * (annual_rate / 100.0 / 365.0);
+
+                Ok(serde_json::json!({
+                    "wallet": wallet_b58,
+                    "savings_chronos": acc.savings_balance.to_string(),
+                    "savings_kx": savings_kx,
+                    "invested": acc.savings_invested,
+                    "withdrawal_pending": acc.savings_withdrawal_pending,
+                    "annual_rate_pct": annual_rate,
+                    "daily_yield_chronos": (daily_yield as u64).to_string(),
+                    "daily_yield_kx": daily_yield / 1_000_000.0,
+                }))
+            }
+            None => Ok(serde_json::json!({
+                "wallet": wallet_b58,
+                "savings_chronos": "0",
+                "savings_kx": 0,
+                "invested": false,
+                "withdrawal_pending": false,
+                "annual_rate_pct": 0.0,
+                "daily_yield_chronos": "0",
+                "daily_yield_kx": 0.0,
+            }))
+        }
+    }
+
+
     async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
         let key = hex::decode(&loan_id_hex).unwrap_or_default();
         match self.state.db.micro_loans.get(&key) {

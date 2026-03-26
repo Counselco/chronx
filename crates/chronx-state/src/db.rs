@@ -800,6 +800,21 @@ impl StateDb {
     }
 
     /// Count accounts in the DB.
+    /// Iterate all raw account entries (key bytes, value bytes).
+    pub fn iter_accounts_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.accounts.iter()
+            .filter_map(|r| r.ok())
+            .map(|(k, v)| (k.to_vec(), v.to_vec()))
+            .collect()
+    }
+
+    /// Re-write a raw account entry by key.
+    pub fn put_account_raw(&self, key: &[u8], value: &[u8]) -> Result<(), ChronxError> {
+        self.accounts.insert(key, value)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn count_accounts(&self) -> u64 {
         self.accounts.len() as u64
     }

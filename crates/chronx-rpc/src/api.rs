@@ -367,6 +367,10 @@ pub trait ChronxApi {
     #[method(name = "getLoanEscrowBalance")]
     async fn get_loan_escrow_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value>;
 
+    /// Return savings account balance and yield info for a wallet.
+    #[method(name = "getSavingsBalance")]
+    async fn get_savings_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value>;
+
     /// Return channel info by channel_id hex.
     #[method(name = "getChannelInfo")]
     async fn get_channel_info(&self, channel_id_hex: String) -> RpcResult<serde_json::Value>;

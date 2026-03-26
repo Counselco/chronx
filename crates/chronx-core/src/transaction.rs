@@ -1298,6 +1298,14 @@ pub enum Action {
     /// Slash a Tier 1 bond and cascade obligations to KXGC.
     BondSlashCascade(BondSlashCascadeAction),
 
+    // ── Savings account actions ──────────────────────────────────────────────
+    /// Move KX from spendable balance to savings bucket.
+    CreateSavingsDeposit { amount_chronos: u64 },
+
+    /// Move KX from savings bucket back to spendable balance.
+    /// If savings is invested, queues withdrawal for next instrument expiry.
+    WithdrawSavings { amount_chronos: u64 },
+
 }
 
 /// Credit history visibility setting for a wallet.
