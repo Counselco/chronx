@@ -2125,7 +2125,34 @@ impl ChronxApiServer for RpcServer {
         Ok(loans)
     }
 
-        /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
+    
+    /// `chronx_getLoanEscrowBalance` -- escrow balance for a wallet during rescission.
+    async fn get_loan_escrow_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value> {
+        let escrows = self.state.db.get_loan_escrows_by_wallet(&wallet_b58)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let mut total_locked: u128 = 0;
+        let mut loans = Vec::new();
+        for (loan_id_hex, amount, expires_at) in &escrows {
+            total_locked += amount;
+            loans.push(serde_json::json!({
+                "loan_id": loan_id_hex,
+                "amount_chronos": amount.to_string(),
+                "amount_kx": amount / 1_000_000,
+                "expires_at": expires_at,
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "wallet": wallet_b58,
+            "total_locked_chronos": total_locked.to_string(),
+            "total_locked_kx": total_locked / 1_000_000,
+            "loan_count": escrows.len(),
+            "loans": loans,
+        }))
+    }
+
+    /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
     async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
         let key = hex::decode(&loan_id_hex).unwrap_or_default();
         match self.state.db.micro_loans.get(&key) {

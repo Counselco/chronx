@@ -166,6 +166,13 @@ async fn main() -> anyhow::Result<()> {
     // Share the same DB handle — sled uses an Arc internally so this is safe.
     let engine = Arc::new(StateEngine::new(Arc::clone(&db), args.pow_difficulty));
 
+    // ── One-time escrow migration for pre-fix rescission loans ────────────
+    match engine.migrate_rescission_escrows() {
+        Ok(0) => {},
+        Ok(n) => tracing::info!("[STARTUP] Migrated {n} rescission loans to escrow"),
+        Err(e) => tracing::warn!("[STARTUP] Escrow migration error: {e}"),
+    }
+
     // ── Inbound transaction queue ─────────────────────────────────────────────
     let (tx_sender, mut tx_receiver) =
         tokio::sync::mpsc::channel::<chronx_core::transaction::Transaction>(512);

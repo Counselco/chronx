@@ -363,6 +363,10 @@ pub trait ChronxApi {
     #[method(name = "getLoansByStatus")]
     async fn get_loans_by_status(&self, wallet_b58: String, status: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// Return loan escrow balance for a wallet (funds locked during rescission).
+    #[method(name = "getLoanEscrowBalance")]
+    async fn get_loan_escrow_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value>;
+
     /// Return channel info by channel_id hex.
     #[method(name = "getChannelInfo")]
     async fn get_channel_info(&self, channel_id_hex: String) -> RpcResult<serde_json::Value>;
