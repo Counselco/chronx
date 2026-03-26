@@ -2760,6 +2760,106 @@ impl StateEngine {
                 }
             }
 
+
+            // ── Rescission waive — skip wait, activate immediately ────────
+            Action::LoanRescissionWaive { ref loan_id, ref waived_by, .. } => {
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+
+                let lid_bytes: [u8; 32] = {
+                    let decoded = hex::decode(loan_id)
+                        .map_err(|_| ChronxError::Other("Bad loan_id hex".into()))?;
+                    if decoded.len() != 32 {
+                        return Err(ChronxError::Other("loan_id must be 32 bytes".into()));
+                    }
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&decoded);
+                    arr
+                };
+
+                if let Ok(Some(existing)) = self.db.get_loan(&lid_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        if status != "accepted_pending_rescission" {
+                            return Err(ChronxError::Other(
+                                "Loan is not in rescission window.".into()
+                            ));
+                        }
+
+                        // Verify submitter is lender or borrower
+                        let lender = loan_val.get("lender_wallet").and_then(|s| s.as_str()).unwrap_or("");
+                        let borrower = loan_val.get("borrower_wallet").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        let submitter_str = sender.account_id.to_string();
+                        if submitter_str != lender && submitter_str != borrower {
+                            return Err(ChronxError::Other(
+                                "Only loan parties may waive rescission.".into()
+                            ));
+                        }
+
+                        // Transfer principal immediately
+                        let lender_str = lender.to_string();
+                        let principal_kx = loan_val.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let principal_chronos = loan_val.get("principal_chronos").and_then(|v| v.as_u64())
+                            .unwrap_or(principal_kx * 1_000_000) as u128;
+
+                        if principal_chronos > 0 && !lender_str.is_empty() && !borrower.is_empty() {
+                            let lender_id = chronx_core::types::AccountId::from_b58(&lender_str)
+                                .map_err(|_| ChronxError::Other("Invalid lender address".into()))?;
+                            let borrower_id = chronx_core::types::AccountId::from_b58(&borrower)
+                                .map_err(|_| ChronxError::Other("Invalid borrower address".into()))?;
+
+                            let mut lender_acc = self.db.get_account(&lender_id)?
+                                .ok_or_else(|| ChronxError::Other("Lender account not found".into()))?;
+                            if lender_acc.balance < principal_chronos {
+                                return Err(ChronxError::InsufficientBalance {
+                                    need: principal_chronos,
+                                    have: lender_acc.balance,
+                                });
+                            }
+                            lender_acc.balance -= principal_chronos;
+                            self.db.put_account(&lender_acc)?;
+
+                            let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                                Some(a) => a,
+                                None => {
+                                    chronx_core::account::Account {
+                                        account_id: borrower_id.clone(), balance: 0,
+                                        auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                            public_key: chronx_core::types::DilithiumPublicKey(Vec::new())
+                                        },
+                                        nonce: 0, recovery_state: Default::default(),
+                                        post_recovery_restriction: None,
+                                        verifier_stake: 0, is_verifier: false, account_version: 3,
+                                        created_at: Some(now), display_name_hash: None,
+                                        incoming_locks_count: 0, outgoing_locks_count: 0,
+                                        total_locked_incoming_chronos: 0,
+                                        total_locked_outgoing_chronos: 0,
+                                        preferred_fiat_currency: None, lock_marker: None
+                                    }
+                                }
+                            };
+                            borrower_acc.balance += principal_chronos;
+                            self.db.put_account(&borrower_acc)?;
+                        }
+
+                        // Activate the loan
+                        loan_val["status"] = serde_json::json!("active");
+                        loan_val["activated_at"] = serde_json::json!(now as u64);
+                        loan_val["rescission_waived_by"] = serde_json::json!(waived_by);
+                        loan_val["rescission_waived_at"] = serde_json::json!(now as u64);
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&lid_bytes, &updated)?;
+                        info!(loan_id = %loan_id, waived_by = %waived_by,
+                              "[RESCISSION WAIVE] Loan activated immediately, KX transferred");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Loan not found".into()))
+                }
+            }
+
             Action::DrawRequest { .. } => {
                 Err(ChronxError::FeatureNotActive(
                     "Milestone draw loans require governance activation.".into()

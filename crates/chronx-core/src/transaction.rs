@@ -1189,6 +1189,13 @@ pub enum Action {
         reason: Option<String>,
     },
 
+    /// Waive the rescission period — skip the remaining wait and
+    /// activate the loan immediately. Either party may call this.
+    LoanRescissionWaive {
+        loan_id: String,
+        waived_by: String,
+    },
+
     /// Credit history visibility preference.
     /// Latest entry for a wallet wins.
     /// Governed by: credit_visibility_enabled = false (dormant)
