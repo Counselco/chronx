@@ -1834,7 +1834,10 @@ impl StateEngine {
                     penalty_basis_points: action.penalty_basis_points,
                     status: DepositStatus::Active,
                     created_at: now_u64,
-                    settled_at: None
+                    settled_at: None,
+                    auto_renew: true,
+                    renewal_count: 0,
+                    accrued_yield_chronos: 0,
                 };
                 self.db.put_deposit(&record)?;
                 info!(deposit_id = %hex::encode(action.deposit_id), total_due, "Deposit created");
@@ -3552,6 +3555,36 @@ impl StateEngine {
             Action::WithdrawSavings { amount_chronos } => {
                 self.handle_savings_withdrawal(&sender, *amount_chronos, now as i64)
             }
+
+            // ── TYPE_Y: Explicit deposit default declaration ─────────
+            Action::DepositDefault { ref deposit_id } => {
+                let deposit = self.db.get_deposit(deposit_id)?
+                    .ok_or_else(|| ChronxError::DepositNotFound(hex::encode(deposit_id)))?;
+                if !matches!(deposit.status, DepositStatus::Active | DepositStatus::Matured) {
+                    return Err(ChronxError::Other("Deposit is not active or matured".into()));
+                }
+                // Verify sender is depositor or obligor
+                let sender_id = sender.account_id.to_b58();
+                let depositor_id = chronx_crypto::hash::account_id_from_pubkey(&deposit.depositor_pubkey).to_b58();
+                let obligor_id = chronx_crypto::hash::account_id_from_pubkey(&deposit.obligor_pubkey).to_b58();
+                let is_depositor = sender_id == depositor_id;
+                let is_obligor = sender_id == obligor_id;
+                if !is_depositor && !is_obligor {
+                    return Err(ChronxError::Other("Only depositor or obligor can declare default".into()));
+                }
+                // Must be past maturity + grace period
+                let grace = DEPOSIT_DEFAULT_GRACE_SECONDS;
+                let now_u64 = now as u64;
+                if now_u64 < deposit.maturity_timestamp + grace {
+                    return Err(ChronxError::Other(format!(
+                        "Cannot declare default until {} seconds after maturity",
+                        deposit.maturity_timestamp + grace - now_u64
+                    )));
+                }
+                self.db.update_deposit_status(deposit_id, DepositStatus::Defaulted, None)?;
+                info!(deposit_id = %hex::encode(deposit_id), "[DEPOSIT DEFAULT] Declared by party");
+                Ok(())
+            }
         }
     }
 }
@@ -4681,6 +4714,50 @@ impl StateEngine {
         Ok(count)
     }
 
+    /// Sweep matured deposits: auto-renew or mark as Matured.
+    /// Called periodically by the node. Modifies sled only — no DAG vertex.
+    pub fn sweep_matured_deposits(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let all_deposits = self.db.iter_all_deposits()?;
+        let mut count = 0u32;
+
+        for deposit in all_deposits {
+            if !matches!(deposit.status, DepositStatus::Active) {
+                continue;
+            }
+            if now_u64 < deposit.maturity_timestamp {
+                continue;
+            }
+
+            let mut updated = deposit.clone();
+            if deposit.auto_renew {
+                // Auto-renew: roll into next term
+                updated.maturity_timestamp += deposit.term_seconds;
+                updated.renewal_count += 1;
+                updated.status = DepositStatus::Active;
+                info!(
+                    deposit_id = %hex::encode(deposit.deposit_id),
+                    renewal = updated.renewal_count,
+                    next_maturity = updated.maturity_timestamp,
+                    "Deposit auto-renewed"
+                );
+            } else {
+                // Mark as matured — user must call SettleDeposit manually
+                updated.status = DepositStatus::Matured;
+                info!(
+                    deposit_id = %hex::encode(deposit.deposit_id),
+                    "Deposit matured (no auto-renew)"
+                );
+            }
+            self.db.put_deposit(&updated)?;
+            count += 1;
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
 
 }
 

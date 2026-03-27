@@ -16,7 +16,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 /// Current node software version. Compared against https://chronx.io/version.json at startup.
-const NODE_VERSION: &str = "9.0.1";
+const NODE_VERSION: &str = "1.0.0";
 
 use chronx_consensus::DifficultyConfig;
 use chronx_core::constants::POW_INITIAL_DIFFICULTY;
@@ -495,7 +495,23 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("pending draw request sweep started (every 60 seconds)");
     }
 
-
+    // ── Background sweep: auto-renew matured deposits (every 60 seconds) ────
+    {
+        let deposit_sweep_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                match deposit_sweep_engine.sweep_matured_deposits(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {} // nothing to process — silent
+                    Ok(n) => tracing::info!(count = n, "sweep: processed matured deposits"),
+                    Err(e) => tracing::warn!(error = %e, "sweep: failed to sweep matured deposits"),
+                }
+            }
+        });
+        tracing::info!("deposit maturity sweep started (every 60 seconds)");
+    }
 
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);

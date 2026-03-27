@@ -1,3 +1,4 @@
+use tracing;
 use serde_json;
 use hex;
 use chronx_core::account::{Account, TimeLockContract};
@@ -214,6 +215,12 @@ pub struct DepositRecord {
     pub status: DepositStatus,
     pub created_at: u64,
     pub settled_at: Option<u64>,
+    #[serde(default)]
+    pub auto_renew: bool,
+    #[serde(default)]
+    pub renewal_count: u32,
+    #[serde(default)]
+    pub accrued_yield_chronos: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -586,7 +593,7 @@ impl StateDb {
         let pool_health_scores = db
             .open_tree("pool_health_scores")
             .expect("Failed to open pool_health_scores tree");
-        Ok(Self {
+        let result = Ok(Self {
             _db: db,
             accounts,
             vertices,
@@ -640,7 +647,25 @@ impl StateDb {
             hedge_instruments,
             pool_health_scores,
 
-        })
+        });
+
+        // ── One-time bincode→JSON migration for deposits tree ────────────
+        // Safe: any record that fails serde_json parse is old bincode format.
+        // Remove this block after one deploy.
+        if let Ok(ref s) = result {
+            let needs_migration = if let Some(Ok((_, v))) = s.deposits.iter().next() {
+                serde_json::from_slice::<DepositRecord>(&v).is_err()
+            } else {
+                false
+            };
+            if needs_migration {
+                let _ = s.deposits.clear();
+                let _ = s.deposits.flush();
+                tracing::info!("deposits tree cleared (bincode→JSON migration)");
+            }
+        }
+
+        result
     }
 
     // ── Accounts ─────────────────────────────────────────────────────────────
@@ -1569,7 +1594,7 @@ impl StateDb {
         match self.deposits.get(deposit_id) {
             Ok(Some(bytes)) => {
                 let record: DepositRecord =
-                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                    serde_json::from_slice(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
                 Ok(Some(record))
             }
             Ok(None) => Ok(None),
@@ -1578,7 +1603,7 @@ impl StateDb {
     }
 
     pub fn put_deposit(&self, record: &DepositRecord) -> Result<(), ChronxError> {
-        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        let bytes = serde_json::to_vec(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
         self.deposits.insert(&record.deposit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -1598,7 +1623,7 @@ impl StateDb {
         for kv in self.deposits.iter() {
             let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
             let record: DepositRecord =
-                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                serde_json::from_slice(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
             if matches!(record.status, DepositStatus::Active | DepositStatus::Matured) &&
                (record.depositor_pubkey == wallet_pubkey || record.obligor_pubkey == wallet_pubkey) {
                 results.push(record);
@@ -1612,7 +1637,7 @@ impl StateDb {
         for kv in self.deposits.iter() {
             let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
             let record: DepositRecord =
-                bincode::deserialize(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                serde_json::from_slice(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
             results.push(record);
         }
         Ok(results)

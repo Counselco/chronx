@@ -257,6 +257,10 @@ pub trait ChronxApi {
     #[method(name = "getActiveDeposits")]
     async fn get_active_deposits(&self, wallet: String) -> RpcResult<Vec<RpcDepositRecord>>;
 
+    /// Return ALL deposits for a wallet (all statuses).
+    #[method(name = "getDepositsByWallet")]
+    async fn get_deposits_by_wallet(&self, wallet: String) -> RpcResult<Vec<RpcDepositRecord>>;
+
     /// Return a conditional payment by its type_v_id (hex).
     #[method(name = "getConditionalPayment")]
     async fn get_conditional_payment(&self, type_v_id_hex: String) -> RpcResult<Option<RpcConditionalRecord>>;

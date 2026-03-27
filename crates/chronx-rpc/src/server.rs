@@ -469,6 +469,56 @@ impl ChronxApiServer for RpcServer {
                                 lock_id: None,
                             }
                         },
+                        Action::CreateDeposit(ref d) => RpcActionSummary {
+                            action_type: "DepositCreate".to_string(),
+                            to_address: Some("Savings".to_string()),
+                            amount_chronos: Some(d.principal_chronos.to_string()),
+                            amount_kx: Some((d.principal_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: Some(d.term_seconds as i64),
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                        Action::SettleDeposit(ref s) => RpcActionSummary {
+                            action_type: "DepositSettle".to_string(),
+                            to_address: Some("Available Balance".to_string()),
+                            amount_chronos: Some(s.amount_chronos.to_string()),
+                            amount_kx: Some((s.amount_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(hex::encode(s.deposit_id)),
+                        },
+                        Action::DepositDefault { ref deposit_id } => RpcActionSummary {
+                            action_type: "DepositDefault".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(hex::encode(deposit_id)),
+                        },
+                        Action::CreateSavingsDeposit { amount_chronos } => RpcActionSummary {
+                            action_type: "SavingsDeposit".to_string(),
+                            to_address: None,
+                            amount_chronos: Some(amount_chronos.to_string()),
+                            amount_kx: Some((*amount_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                        Action::WithdrawSavings { amount_chronos } => RpcActionSummary {
+                            action_type: "SavingsWithdraw".to_string(),
+                            to_address: None,
+                            amount_chronos: Some(amount_chronos.to_string()),
+                            amount_kx: Some((*amount_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
                         _ => RpcActionSummary {
                             action_type: "Other".to_string(),
                             to_address: None,
@@ -834,7 +884,7 @@ impl ChronxApiServer for RpcServer {
     /// `chronx_getVersion` — node version, protocol version ("3.3"), and API version.
     async fn get_version(&self) -> RpcResult<RpcVersionInfo> {
         Ok(RpcVersionInfo {
-            node_version: "1.3.2".to_string(),
+            node_version: "1.0.0".to_string(),
             protocol_version: "3.3".to_string(),
             api_version: "3".to_string(),
         })
@@ -1632,6 +1682,56 @@ impl ChronxApiServer for RpcServer {
                                 lock_id: None,
                             }
                         },
+                        Action::CreateDeposit(ref d) => RpcActionSummary {
+                            action_type: "DepositCreate".to_string(),
+                            to_address: Some("Savings".to_string()),
+                            amount_chronos: Some(d.principal_chronos.to_string()),
+                            amount_kx: Some((d.principal_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: Some(d.term_seconds as i64),
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                        Action::SettleDeposit(ref s) => RpcActionSummary {
+                            action_type: "DepositSettle".to_string(),
+                            to_address: Some("Available Balance".to_string()),
+                            amount_chronos: Some(s.amount_chronos.to_string()),
+                            amount_kx: Some((s.amount_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(hex::encode(s.deposit_id)),
+                        },
+                        Action::DepositDefault { ref deposit_id } => RpcActionSummary {
+                            action_type: "DepositDefault".to_string(),
+                            to_address: None,
+                            amount_chronos: None,
+                            amount_kx: None,
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: Some(hex::encode(deposit_id)),
+                        },
+                        Action::CreateSavingsDeposit { amount_chronos } => RpcActionSummary {
+                            action_type: "SavingsDeposit".to_string(),
+                            to_address: None,
+                            amount_chronos: Some(amount_chronos.to_string()),
+                            amount_kx: Some((*amount_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
+                        Action::WithdrawSavings { amount_chronos } => RpcActionSummary {
+                            action_type: "SavingsWithdraw".to_string(),
+                            to_address: None,
+                            amount_chronos: Some(amount_chronos.to_string()),
+                            amount_kx: Some((*amount_chronos as u128 / CHRONOS_PER_KX).to_string()),
+                            lock_until: None,
+                            memo: None,
+                            email_hash: None,
+                            lock_id: None,
+                        },
                         _ => RpcActionSummary {
                             action_type: "Other".to_string(),
                             to_address: None,
@@ -1736,6 +1836,28 @@ impl ChronxApiServer for RpcServer {
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         Ok(records.iter().map(deposit_to_rpc).collect())
     }
+
+    /// `chronx_getDepositsByWallet` — all deposits for a wallet (all statuses).
+    async fn get_deposits_by_wallet(&self, wallet: String) -> RpcResult<Vec<RpcDepositRecord>> {
+        let all = self.state.db.iter_all_deposits()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        // Get the wallet's pubkey bytes for matching against deposit records
+        let wallet_id = chronx_core::types::AccountId::from_b58(&wallet)
+            .map_err(|e| rpc_err(-32602, format!("Invalid wallet: {}", e)))?;
+        let wallet_pubkey = self.state.db.get_account(&wallet_id)
+            .ok().flatten()
+            .map(|acc| match acc.auth_policy {
+                chronx_core::account::AuthPolicy::SingleSig { ref public_key } => public_key.0.clone(),
+                _ => vec![],
+            })
+            .unwrap_or_default();
+        let filtered: Vec<_> = all.into_iter()
+            .filter(|d| d.depositor_pubkey == wallet_pubkey || d.obligor_pubkey == wallet_pubkey)
+            .map(|d| deposit_to_rpc(&d))
+            .collect();
+        Ok(filtered)
+    }
+
 
     async fn get_conditional_payment(&self, type_v_id_hex: String) -> RpcResult<Option<RpcConditionalRecord>> {
         let bytes = hex::decode(&type_v_id_hex).map_err(|e| rpc_err(-32602, e.to_string()))?;
@@ -2751,14 +2873,14 @@ fn deposit_to_rpc(r: &chronx_state::db::DepositRecord) -> RpcDepositRecord {
         deposit_id: hex::encode(r.deposit_id),
         depositor_pubkey: hex::encode(&r.depositor_pubkey),
         obligor_pubkey: hex::encode(&r.obligor_pubkey),
-        principal_chronos: r.principal_chronos.to_string(),
-        principal_kx: format!("{}", r.principal_chronos / CHRONOS_PER_KX as u64),
+        principal_chronos: r.principal_chronos,
+        principal_kx: r.principal_chronos as f64 / CHRONOS_PER_KX as f64,
         rate_basis_points: r.rate_basis_points,
         term_seconds: r.term_seconds,
         compounding: r.compounding.clone(),
         maturity_timestamp: r.maturity_timestamp,
-        total_due_chronos: r.total_due_chronos.to_string(),
-        total_due_kx: format!("{}", r.total_due_chronos / CHRONOS_PER_KX as u64),
+        total_due_chronos: r.total_due_chronos,
+        total_due_kx: r.total_due_chronos as f64 / CHRONOS_PER_KX as f64,
         status: status.to_string(),
         created_at: r.created_at,
         settled_at: r.settled_at,

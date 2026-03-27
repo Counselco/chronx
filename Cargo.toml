@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "9.0.1"
+version = "1.0.0"
 edition = "2021"
 authors = ["ChronX Protocol"]
 license = "MIT"
