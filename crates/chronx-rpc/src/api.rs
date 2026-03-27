@@ -460,4 +460,16 @@ pub trait ChronxApi {
     #[method(name = "getPendingDrawRequests")]
     async fn get_pending_draw_requests(&self) -> RpcResult<serde_json::Value>;
 
+    /// Get a friendly loan by ID.
+    #[method(name = "getFriendlyLoan")]
+    async fn get_friendly_loan(&self, loan_id: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Get friendly loans by wallet address (lender or borrower).
+    #[method(name = "getFriendlyLoansByWallet")]
+    async fn get_friendly_loans_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Get active friendly loans by wallet.
+    #[method(name = "getActiveFriendlyLoans")]
+    async fn get_active_friendly_loans(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
 }

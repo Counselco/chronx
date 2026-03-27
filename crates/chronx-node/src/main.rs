@@ -513,6 +513,24 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("deposit maturity sweep started (every 60 seconds)");
     }
 
+    // ── Background sweep: friendly loan write-offs (every 60 seconds) ────
+    {
+        let fl_sweep_engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match fl_sweep_engine.sweep_friendly_loan_writeoffs(chrono::Utc::now().timestamp()) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(count = n, "sweep: wrote off expired friendly loans"),
+                    Err(e) => tracing::warn!(error = %e, "sweep: friendly loan write-off failed"),
+                }
+            }
+        });
+        tracing::info!("friendly loan write-off sweep started (every 60 seconds)");
+    }
+
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
 

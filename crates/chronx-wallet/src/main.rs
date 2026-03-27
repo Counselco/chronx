@@ -21,9 +21,9 @@ use chronx_core::{
     constants::{CHRONOS_PER_KX, POW_INITIAL_DIFFICULTY},
     transaction::{
         Action, AuthScheme, Transaction,
-        CreateInvoiceAction, FulfillInvoiceAction, CancelInvoiceAction,
-        CreateCreditAction, DrawCreditAction, RevokeCreditAction,
-        CreateDepositAction, SettleDepositAction, Compounding,
+        CreateInvoiceAction,
+        CreateCreditAction, DrawCreditAction,
+        CreateDepositAction, Compounding,
         CreateConditionalAction, AttestConditionalAction, ConditionalFallback,
         CreateLedgerEntryAction, LedgerEntryType,
     },
@@ -445,6 +445,7 @@ async fn main() -> anyhow::Result<()> {
                     claim_window_secs: None,
                     unclaimed_action: None,
                 lock_type: None,
+                yield_opt_out: None,
                 lock_metadata: None,
                     agent_managed: None,
                     grantor_axiom_consent_hash: None,
@@ -554,6 +555,7 @@ async fn main() -> anyhow::Result<()> {
                     claim_window_secs: Some(259_200),
                     unclaimed_action: Some(UnclaimedAction::RevertToSender),
                     lock_type: None,
+                    yield_opt_out: None,
                     lock_metadata: None,
                     agent_managed: None,
                     grantor_axiom_consent_hash: None,
@@ -817,6 +819,7 @@ async fn main() -> anyhow::Result<()> {
                         claim_window_secs: Some(259_200),
                         unclaimed_action: Some(UnclaimedAction::RevertToSender),
                         lock_type: None,
+                        yield_opt_out: None,
                         lock_metadata: None,
                         agent_managed: None,
                         grantor_axiom_consent_hash: None,
@@ -925,7 +928,7 @@ async fn main() -> anyhow::Result<()> {
             let now = chrono::Utc::now().timestamp();
             let actions: Vec<Action> = locks.iter()
                 .filter(|l| l["status"].as_str() == Some("Pending"))
-                .filter(|l| l["unlock_at"].as_i64().map_or(false, |u| now >= u))
+                .filter(|l| l["unlock_at"].as_i64().is_some_and(|u| now >= u))
                 .filter_map(|l| {
                     let id_hex = l["lock_id"].as_str()?;
                     let lock_txid = TxId::from_hex(id_hex).ok()?;
@@ -975,7 +978,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
 
-        Command::CreateInvoice { amount, expiry_days, payer, memo } => {
+        Command::CreateInvoice { amount, expiry_days, payer: _, memo } => {
             let kp = load_keypair(&keyfile)?;
             let amount_chronos = kx_to_chronos(amount) as u64;
             let now = std::time::SystemTime::now()
@@ -1094,7 +1097,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::CreateConditional { recipient, amount, attestor, min_attestors, expiry_days, fallback, condition_type, oracle_pair, oracle_trigger_threshold, oracle_trigger_direction, success_payment_wallet, success_payment_kx, expiry_seconds } => {
+        Command::CreateConditional { recipient, amount, attestor: _, min_attestors, expiry_days, fallback, condition_type, oracle_pair, oracle_trigger_threshold, oracle_trigger_direction, success_payment_wallet, success_payment_kx, expiry_seconds } => {
             let kp = load_keypair(&keyfile)?;
             let amount_chronos = kx_to_chronos(amount) as u64;
             let now = std::time::SystemTime::now()
@@ -1132,7 +1135,7 @@ async fn main() -> anyhow::Result<()> {
                 attestor_group: None,
                 condition_type: condition_type.clone(),
                 oracle_pair: oracle_pair.clone(),
-                oracle_trigger_threshold: oracle_trigger_threshold.clone(),
+                oracle_trigger_threshold: oracle_trigger_threshold,
                 oracle_trigger_direction: oracle_trigger_direction.clone(),
                 success_payment_wallet: success_payment_wallet.clone(),
                 success_payment_chronos: spc,

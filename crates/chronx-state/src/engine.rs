@@ -26,14 +26,15 @@ use chronx_dag::vertex::Vertex;
 use tracing::{info, warn};
 
 use crate::db::{
-     
+
     StateDb,
     InvoiceRecord, InvoiceStatus,
     CreditRecord, CreditStatus,
     DepositRecord, DepositStatus,
     ConditionalRecord, ConditionalStatus,
     LedgerEntryRecord,
-      LoanDefaultRecord
+      LoanDefaultRecord,
+    FriendlyLoanRecord
 };
 
 // ── Staged mutations ──────────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ impl StateEngine {
         validate_vertex(tx, self.pow_difficulty, |pid| self.db.vertex_exists(pid))?;
 
         // ── General tx rate limit ─────────────────────────────────────────
-        self.check_tx_rate_limit(&tx.from.to_string(), now as i64)?;
+        self.check_tx_rate_limit(&tx.from.to_string(), now)?;
 
         // ── Duplicate check ───────────────────────────────────────────────────
         if self.db.vertex_exists(&tx.tx_id) {
@@ -310,7 +311,7 @@ impl StateEngine {
                 cancellation_window_secs,
                 notify_recipient,
                 tags,
-                private, memo_encrypted: _, memo_public, pay_as_amount: _pay_as_amount,
+                private, memo_encrypted: _, memo_public: _, pay_as_amount: _pay_as_amount,
                 expiry_policy,
                 split_policy,
                 claim_attempts_max,
@@ -324,6 +325,7 @@ impl StateEngine {
                 claim_window_secs,
                 unclaimed_action,
                 lock_type,
+                yield_opt_out,
                 lock_metadata,
                 agent_managed: _,
                 grantor_axiom_consent_hash: _,
@@ -498,7 +500,12 @@ impl StateEngine {
                     condition_disputed: false,
                     condition_dispute_window_secs: None,
                     // ── V8 fields ───────────────────────────────────────────
-                    lock_type: lock_type.clone(),
+                    lock_type: Some(match lock_type.as_deref() {
+                        Some("S") => "S".to_string(),
+                        Some("M") => "M".to_string(),
+                        _ => "Y".to_string(),
+                    }),
+                    yield_opt_out: *yield_opt_out,
                     lock_metadata: lock_metadata.clone()
 
                 };
@@ -1881,7 +1888,7 @@ impl StateEngine {
                 let is_oracle_trigger = action.condition_type.as_deref() == Some("OracleTrigger");
                 // OracleTrigger conditions do not require human attestors
                 if !is_oracle_trigger {
-                    if attestor_count < CONDITIONAL_MIN_ATTESTORS || attestor_count > CONDITIONAL_MAX_ATTESTORS {
+                    if !(CONDITIONAL_MIN_ATTESTORS..=CONDITIONAL_MAX_ATTESTORS).contains(&attestor_count) {
                         return Err(ChronxError::AttestorCountOutOfRange);
                     }
                     if action.min_attestors > attestor_count {
@@ -1969,7 +1976,7 @@ impl StateEngine {
                         return Err(ChronxError::AttestorNotAuthorized);
                     }
                 } else {
-                    if !cond.attestor_pubkeys.iter().any(|p| *p == attestor_bytes) {
+                    if !cond.attestor_pubkeys.contains(&attestor_bytes) {
                         return Err(ChronxError::AttestorNotAuthorized);
                     }
                     if cond.attestations_received.iter().any(|(p, _)| *p == attestor_bytes) {
@@ -2044,11 +2051,10 @@ impl StateEngine {
                     }
                 } else {
                     // Non-identity entries require bonded agent or verifier
-                    if self.db.get_agent(&author_wallet)?.is_none() {
-                        if self.db.get_verifier(&author_b58)?.is_none() {
+                    if self.db.get_agent(&author_wallet)?.is_none()
+                        && self.db.get_verifier(&author_b58)?.is_none() {
                             return Err(ChronxError::NotBondedAgent);
                         }
-                    }
                 }
                 if action.content_summary.len() > LEDGER_MAX_SUMMARY_BYTES {
                     return Err(ChronxError::ContentSummaryTooLarge { max: LEDGER_MAX_SUMMARY_BYTES });
@@ -2224,12 +2230,12 @@ impl StateEngine {
 
             Action::LoanOffer(offer) => {
                 // Loan action rate limit
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
                 // LoanOffer stores the offer as pending -- no funds move yet
                 if sender.account_id != offer.lender_wallet {
                     return Err(ChronxError::AuthPolicyViolation);
                 }
-                let mut offer_data = serde_json::to_value(&offer)
+                let mut offer_data = serde_json::to_value(offer)
                     .map_err(|_| ChronxError::SerializationError)?;
                 offer_data["status"] = serde_json::json!("pending");
                 offer_data["created_at"] = serde_json::json!(now as u64);
@@ -2248,7 +2254,7 @@ impl StateEngine {
             }
             Action::LoanAcceptance(acceptance) => {
                 // Loan action rate limit
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
                 // Activate the loan: debit lender, credit borrower
                 if let Ok(Some(existing)) = self.db.get_loan(&acceptance.loan_id) {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
@@ -2326,7 +2332,7 @@ impl StateEngine {
                             // Rescission window: default 72 hours
                             // CRITICAL: Lock lender funds in escrow immediately
                             let rescission_window_secs: i64 = 72 * 3600;
-                            let rescission_expires_at = now as i64 + rescission_window_secs;
+                            let rescission_expires_at = now + rescission_window_secs;
 
                             // Debit lender → escrow
                             let lender_str = loan_val.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -2369,7 +2375,7 @@ impl StateEngine {
                 Ok(())
             }
             Action::LoanDecline(decline) => {
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
                 if let Ok(Some(existing)) = self.db.get_loan(&decline.loan_id) {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
                         loan_val["status"] = serde_json::json!("declined");
@@ -2385,7 +2391,7 @@ impl StateEngine {
                 Ok(())
             }
             Action::LoanOfferWithdrawn(withdrawal) => {
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
                 if let Ok(Some(existing)) = self.db.get_loan(&withdrawal.loan_id) {
                     if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
                         if loan_val.get("status").and_then(|s| s.as_str()) == Some("pending") {
@@ -2476,7 +2482,7 @@ impl StateEngine {
                 }
 
                 loan_val["status"] = serde_json::json!({"Reinstated": {"reinstated_at": now as u64}});
-                loan_val["stages"] = serde_json::to_value(&new_stages).unwrap_or(serde_json::Value::Null);
+                loan_val["stages"] = serde_json::to_value(new_stages).unwrap_or(serde_json::Value::Null);
                 if let Some(m) = memo { loan_val["memo"] = serde_json::json!(m); }
                 let updated_bytes = serde_json::to_vec(&loan_val)
                     .map_err(|_| ChronxError::SerializationError)?;
@@ -2615,7 +2621,7 @@ impl StateEngine {
             // ── LoanExit (with pro-rata settlement) ─────────────
             Action::LoanExit { ref loan_id, .. } => {
                 // Rate limit
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
 
                 // Load raw loan JSON
                 if let Ok(Some(existing)) = self.db.get_loan(loan_id) {
@@ -2637,7 +2643,7 @@ impl StateEngine {
                             .or_else(|| loan_val.get("accepted_at").and_then(|v| v.as_i64()))
                             .or_else(|| loan_val.get("created_at").and_then(|v| v.as_i64()))
                             .unwrap_or(0);
-                        let elapsed = (now as i64 - last_at).max(0) as u64;
+                        let elapsed = (now - last_at).max(0) as u64;
 
                         if rate_bps > 0 && principal_chronos > 0 && elapsed > 0 {
                             let accrued = (principal_chronos as u128)
@@ -2733,7 +2739,7 @@ impl StateEngine {
 
             // ── v2.5.29: Rescission cancel ───────────────────────────────
             Action::LoanRescissionCancel { ref loan_id, ref cancelled_by, .. } => {
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
 
                 // Parse loan_id string as hex into [u8; 32]
                 let lid_bytes: [u8; 32] = {
@@ -2771,7 +2777,7 @@ impl StateEngine {
                         // Check window not expired
                         let expires = loan_val.get("rescission_expires_at")
                             .and_then(|v| v.as_i64()).unwrap_or(0);
-                        if (now as i64) > expires {
+                        if now > expires {
                             return Err(ChronxError::Other(
                                 "Rescission window has closed. Loan is now active.".into()
                             ));
@@ -2819,7 +2825,7 @@ impl StateEngine {
 
             // ── Rescission waive — skip wait, activate immediately ────────
             Action::LoanRescissionWaive { ref loan_id, ref waived_by, .. } => {
-                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now)?;
 
                 let lid_bytes: [u8; 32] = {
                     let decoded = hex::decode(loan_id)
@@ -3239,7 +3245,7 @@ impl StateEngine {
                             .map_err(|_| ChronxError::SerializationError)?;
                         self.db.save_loan(&id_bytes, &updated)?;
 
-                        info!(obligation = %hex::encode(&id_bytes),
+                        info!(obligation = %hex::encode(id_bytes),
                               from = %action.from_wallet.to_string(),
                               to = %action.to_wallet.to_string(),
                               "[OBLIGATION TRANSFER] ownership transferred");
@@ -3304,7 +3310,7 @@ impl StateEngine {
                             .map_err(|_| ChronxError::SerializationError)?;
                         self.db.save_loan(&id_bytes, &updated)?;
 
-                        info!(parent = %hex::encode(&id_bytes),
+                        info!(parent = %hex::encode(id_bytes),
                               tranches = action.tranche_count,
                               face_kx = action.face_value_per_tranche_kx,
                               "[OBLIGATION TRANCHE] obligation split into tranches");
@@ -3362,7 +3368,7 @@ impl StateEngine {
                             .map_err(|_| ChronxError::SerializationError)?;
                         self.db.save_loan(&id_bytes, &updated)?;
 
-                        info!(obligation = %hex::encode(&id_bytes),
+                        info!(obligation = %hex::encode(id_bytes),
                               fraction = new_fraction,
                               "[OBLIGATION RETIRE] obligation retired");
                         Ok(())
@@ -3400,7 +3406,7 @@ impl StateEngine {
                             .map_err(|_| ChronxError::SerializationError)?;
                         self.db.save_loan(&id_bytes, &updated)?;
 
-                        info!(obligation = %hex::encode(&id_bytes),
+                        info!(obligation = %hex::encode(id_bytes),
                               "[TRANSFER FLAG UPDATE] transfer flag changed");
                         Ok(())
                     } else {
@@ -3456,7 +3462,7 @@ impl StateEngine {
                             .map_err(|_| ChronxError::SerializationError)?;
                         self.db.save_loan(&id_bytes, &updated)?;
 
-                        info!(obligation = %hex::encode(&id_bytes),
+                        info!(obligation = %hex::encode(id_bytes),
                               from = %prev_visibility,
                               to = %new_vis_str,
                               "[TERMS VISIBILITY] visibility changed");
@@ -3549,11 +3555,11 @@ impl StateEngine {
 
             // ── Savings account ──────────────────────────────────────────
             Action::CreateSavingsDeposit { amount_chronos } => {
-                self.handle_savings_deposit(&sender, *amount_chronos, now as i64)
+                self.handle_savings_deposit(sender, *amount_chronos, now)
             }
 
             Action::WithdrawSavings { amount_chronos } => {
-                self.handle_savings_withdrawal(&sender, *amount_chronos, now as i64)
+                self.handle_savings_withdrawal(sender, *amount_chronos, now)
             }
 
             // ── TYPE_Y: Explicit deposit default declaration ─────────
@@ -3583,6 +3589,156 @@ impl StateEngine {
                 }
                 self.db.update_deposit_status(deposit_id, DepositStatus::Defaulted, None)?;
                 info!(deposit_id = %hex::encode(deposit_id), "[DEPOSIT DEFAULT] Declared by party");
+                Ok(())
+            }
+
+            // ── FriendlyLoanCreate ─────────────────────────────────────────
+            Action::FriendlyLoanCreate {
+                ref borrower_email_hash,
+                ref borrower_wallet,
+                principal_usd,
+                term_days,
+                kx_collateral_chronos,
+                locked_kx_usd_rate,
+                ref repayment_base_address,
+                ref memo,
+            } => {
+                let now_u64 = now as u64;
+                // Governance checks
+                let max_usd: f64 = self.db.get_meta("friendly_loan_max_usd")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(250.0);
+                let max_days: u32 = self.db.get_meta("friendly_loan_max_days")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30);
+                let min_days: u32 = self.db.get_meta("friendly_loan_min_days")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1);
+                let fee_pct: f64 = self.db.get_meta("friendly_loan_fee_pct")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1.0);
+                let min_fee: f64 = self.db.get_meta("friendly_loan_min_fee_usd")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.01);
+                let grace_days: u32 = self.db.get_meta("friendly_loan_grace_days")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(3);
+
+                if *principal_usd > max_usd {
+                    return Err(ChronxError::Other(format!("friendly loan principal ${} exceeds max ${}", principal_usd, max_usd)));
+                }
+                if *term_days < min_days || *term_days > max_days {
+                    return Err(ChronxError::Other(format!("friendly loan term {} days outside {}-{} range", term_days, min_days, max_days)));
+                }
+
+                let collateral = *kx_collateral_chronos as u128;
+                if sender.balance < collateral {
+                    return Err(ChronxError::InsufficientBalance { need: collateral, have: sender.balance });
+                }
+                sender.balance -= collateral;
+
+                let fee_usd = f64::max(principal_usd * (fee_pct / 100.0) * (*term_days as f64 / 30.0), min_fee);
+                let total_repayment_usd = principal_usd + fee_usd;
+                let due_at = now_u64 + (*term_days as u64) * 86400;
+                let write_off_at = due_at + (grace_days as u64) * 86400;
+
+                // Derive loan_id from tx_id + action_idx like TimeLockCreate
+                let loan_id = if action_idx == 0 {
+                    tx_id.0
+                } else {
+                    let mut hasher = blake3::Hasher::new();
+                    hasher.update(&tx_id.0);
+                    hasher.update(&(action_idx as u32).to_le_bytes());
+                    let h = hasher.finalize();
+                    *h.as_bytes()
+                };
+
+                let record = FriendlyLoanRecord {
+                    loan_id,
+                    lender: sender.account_id.to_b58(),
+                    borrower_email_hash: hex::encode(borrower_email_hash),
+                    borrower_wallet: borrower_wallet.as_ref().map(|w| w.to_b58()),
+                    principal_usd: *principal_usd,
+                    fee_usd,
+                    total_repayment_usd,
+                    term_days: *term_days,
+                    grace_days,
+                    kx_collateral_chronos: *kx_collateral_chronos,
+                    locked_kx_usd_rate: *locked_kx_usd_rate,
+                    repayment_base_address: repayment_base_address.clone(),
+                    created_at: now_u64,
+                    due_at,
+                    write_off_at,
+                    status: "Active".to_string(),
+                    repayment_usdc: None,
+                    base_tx_hash: None,
+                    write_off_tx_id: None,
+                    memo: memo.clone(),
+                };
+                self.db.put_friendly_loan(&record)?;
+                info!(loan_id = %hex::encode(loan_id), principal_usd, term_days, fee_usd, "Friendly loan created");
+                Ok(())
+            }
+
+            // ── FriendlyLoanRepay ──────────────────────────────────────────
+            Action::FriendlyLoanRepay {
+                ref loan_id,
+                repayment_usdc,
+                ref base_tx_hash,
+            } => {
+                let mut record = self.db.get_friendly_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("friendly loan not found: {}", hex::encode(loan_id))))?;
+                if record.status != "Active" {
+                    return Err(ChronxError::Other(format!("friendly loan {} is not Active", hex::encode(loan_id))));
+                }
+                if *repayment_usdc < record.total_repayment_usd {
+                    return Err(ChronxError::Other(format!("repayment ${} < required ${}", repayment_usdc, record.total_repayment_usd)));
+                }
+                // Release collateral back to lender
+                let lender_account_id = chronx_core::types::AccountId::from_b58(&record.lender)
+                    .map_err(|_| ChronxError::Other("invalid lender address".into()))?;
+                let mut lender = self.db.get_account(&lender_account_id)?
+                    .ok_or_else(|| ChronxError::UnknownAccount(record.lender.clone()))?;
+                lender.balance += record.kx_collateral_chronos as u128;
+                staged.accounts.push(lender);
+
+                record.status = "Repaid".to_string();
+                record.repayment_usdc = Some(*repayment_usdc);
+                record.base_tx_hash = Some(base_tx_hash.clone());
+                self.db.put_friendly_loan(&record)?;
+                info!(loan_id = %hex::encode(loan_id), "Friendly loan repaid");
+                Ok(())
+            }
+
+            // ── FriendlyLoanWriteOff ───────────────────────────────────────
+            Action::FriendlyLoanWriteOff { ref loan_id } => {
+                let now_u64 = now as u64;
+                let mut record = self.db.get_friendly_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("friendly loan not found: {}", hex::encode(loan_id))))?;
+                if record.status != "Active" {
+                    return Err(ChronxError::Other(format!("friendly loan {} is not Active", hex::encode(loan_id))));
+                }
+                if now_u64 < record.write_off_at {
+                    return Err(ChronxError::Other(format!("friendly loan {} grace period not expired", hex::encode(loan_id))));
+                }
+                // Collateral is lost — lender accepted credit risk
+                // KX stays in protocol (already deducted at creation)
+                record.status = "WrittenOff".to_string();
+                record.write_off_tx_id = Some(hex::encode(tx_id.0));
+                self.db.put_friendly_loan(&record)?;
+                info!(loan_id = %hex::encode(loan_id), "Friendly loan written off — grace period expired");
                 Ok(())
             }
         }
@@ -4251,7 +4407,7 @@ impl StateEngine {
             };
 
             if lender_acc.balance < principal_chronos {
-                warn!(loan_id = %hex::encode(&lid),
+                warn!(loan_id = %hex::encode(lid),
                       "[ESCROW MIGRATION] lender balance {} < principal {}, skipping",
                       lender_acc.balance, principal_chronos);
                 continue;
@@ -4261,7 +4417,7 @@ impl StateEngine {
             self.db.put_account(&lender_acc)?;
             self.db.put_loan_escrow(&lid, &lender_str, principal_chronos, expires)?;
 
-            info!(loan_id = %hex::encode(&lid),
+            info!(loan_id = %hex::encode(lid),
                   principal_kx = principal_chronos / 1_000_000,
                   lender = %lender_str,
                   "[ESCROW MIGRATION] Retroactively locked lender funds in escrow");
@@ -4273,7 +4429,7 @@ impl StateEngine {
 
     // ── Savings account actions ─────────────────────────────────────────────
 
-    fn handle_savings_deposit(&self, sender: &chronx_core::account::Account, amount_chronos: u64, now: i64) -> Result<(), ChronxError> {
+    fn handle_savings_deposit(&self, sender: &chronx_core::account::Account, amount_chronos: u64, _now: i64) -> Result<(), ChronxError> {
         let amount = amount_chronos as u128;
         if amount == 0 {
             return Err(ChronxError::Other("Savings deposit amount must be > 0".into()));
@@ -4623,7 +4779,7 @@ impl StateEngine {
             if now_u64 >= cond.valid_until {
                 // Clean expiry — condition never fired
                 // Execute success_payment if configured
-                let amount = cond.amount_chronos as u128;
+                let _amount = cond.amount_chronos as u128;
                 let remaining = (cond.amount_chronos - cond.released_so_far_chronos) as u128;
                 let mut success_paid: u128 = 0;
 
@@ -4652,7 +4808,7 @@ impl StateEngine {
                 }
                 self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Voided)?;
                 count += 1;
-                info!(lock = %hex::encode(&cond.type_v_id), "[ORACLE TRIGGER] clean expiry — no trigger fired");
+                info!(lock = %hex::encode(cond.type_v_id), "[ORACLE TRIGGER] clean expiry — no trigger fired");
                 continue;
             }
 
@@ -4685,7 +4841,7 @@ impl StateEngine {
                     self.db.put_account(&recipient)?;
                 } else {
                     // Auto-create recipient
-                    let mut new_acc = chronx_core::account::Account {
+                    let new_acc = chronx_core::account::Account {
                         account_id: recipient_id.clone(), balance: remaining as u128,
                         auth_policy: chronx_core::account::AuthPolicy::SingleSig {
                             public_key: chronx_core::types::DilithiumPublicKey(cond.recipient_pubkey.clone())
@@ -4702,7 +4858,7 @@ impl StateEngine {
 
                 self.db.update_conditional_status(&cond.type_v_id, ConditionalStatus::Released)?;
                 count += 1;
-                info!(lock = %hex::encode(&cond.type_v_id),
+                info!(lock = %hex::encode(cond.type_v_id),
                       price = price, trigger = trigger_price, direction = direction,
                       "[ORACLE TRIGGER] FIRED — {} KX released to recipient", remaining / 1_000_000);
             }
@@ -4751,6 +4907,33 @@ impl StateEngine {
             }
             self.db.put_deposit(&updated)?;
             count += 1;
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
+    /// Sweep friendly loans past write-off date.
+    pub fn sweep_friendly_loan_writeoffs(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let active = self.db.iter_active_friendly_loans()?;
+        let mut count = 0u32;
+
+        for record in active {
+            if now_u64 >= record.write_off_at {
+                let mut updated = record.clone();
+                updated.status = "WrittenOff".to_string();
+                self.db.put_friendly_loan(&updated)?;
+                info!(
+                    loan_id = %hex::encode(record.loan_id),
+                    lender = %record.lender,
+                    principal_usd = record.principal_usd,
+                    "Friendly loan written off by sweep — grace period expired"
+                );
+                count += 1;
+            }
         }
 
         if count > 0 {
@@ -4873,6 +5056,7 @@ mod tests {
             condition_disputed: false,
             condition_dispute_window_secs: None,
             lock_type: None,
+            yield_opt_out: None,
             lock_metadata: None,
         };
         db.put_timelock(&contract).unwrap();
@@ -4933,6 +5117,7 @@ mod tests {
             condition_disputed: false,
             condition_dispute_window_secs: None,
             lock_type: None,
+            yield_opt_out: None,
             lock_metadata: None,
         };
         db.put_timelock(&contract).unwrap();

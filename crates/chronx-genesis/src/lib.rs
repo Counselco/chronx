@@ -448,6 +448,7 @@ fn genesis_lock(
         condition_dispute_window_secs: None,
         // ── V8 fields ───────────────────────────────────────────────────────
         lock_type: None,
+        yield_opt_out: None,
         lock_metadata: None,
     }
 }

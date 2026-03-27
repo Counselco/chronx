@@ -131,7 +131,7 @@ fn tlc_to_rpc(tlc: chronx_core::account::TimeLockContract) -> RpcTimeLock {
         }
     });
 
-    let email_recipient_hash = tlc.email_recipient_hash.map(|h| hex::encode(h));
+    let email_recipient_hash = tlc.email_recipient_hash.map(hex::encode);
     let cancellation_window_secs = tlc.cancellation_window_secs;
     let claim_window_secs_val = tlc.claim_window_secs;
     let unclaimed_action_str = tlc.unclaimed_action.as_ref().map(|ua| {
@@ -309,7 +309,7 @@ impl ChronxApiServer for RpcServer {
                         Action::TimeLockCreate {
                             amount, unlock_at, memo, email_recipient_hash, ..
                         } => {
-                            let email_hash_hex = email_recipient_hash.map(|h| hex::encode(h));
+                            let email_hash_hex = email_recipient_hash.map(hex::encode);
                             let atype = if email_hash_hex.is_some() { "EmailLock" } else { "TimeLock" };
                             RpcActionSummary {
                                 action_type: atype.to_string(),
@@ -1057,24 +1057,21 @@ impl ChronxApiServer for RpcServer {
             .map_err(|e| rpc_err(-32603, e.to_string()))?;
         for tlc in incoming_locks {
             if tlc.sender == id { continue; }
-            match &tlc.status {
-                TimeLockStatus::Claimed { .. } => {
-                    let tx_type = if tlc.email_recipient_hash.is_some() {
-                        "email_claim"
-                    } else {
-                        "timelock_claim"
-                    };
-                    results.push(RpcIncomingTransfer {
-                        tx_id: tlc.id.to_hex(),
-                        from: tlc.sender.to_b58(),
-                        amount_chronos: tlc.amount.to_string(),
-                        amount_kx: format!("{}.{:06}", tlc.amount / CHRONOS_PER_KX, tlc.amount % CHRONOS_PER_KX),
-                        timestamp: tlc.created_at,
-                        tx_type: tx_type.to_string(),
-                        memo: tlc.memo.clone(),
-                    });
-                }
-                _ => {}
+            if let TimeLockStatus::Claimed { .. } = &tlc.status {
+                let tx_type = if tlc.email_recipient_hash.is_some() {
+                    "email_claim"
+                } else {
+                    "timelock_claim"
+                };
+                results.push(RpcIncomingTransfer {
+                    tx_id: tlc.id.to_hex(),
+                    from: tlc.sender.to_b58(),
+                    amount_chronos: tlc.amount.to_string(),
+                    amount_kx: format!("{}.{:06}", tlc.amount / CHRONOS_PER_KX, tlc.amount % CHRONOS_PER_KX),
+                    timestamp: tlc.created_at,
+                    tx_type: tx_type.to_string(),
+                    memo: tlc.memo.clone(),
+                });
             }
         }
 
@@ -1263,7 +1260,7 @@ impl ChronxApiServer for RpcServer {
         let id_bytes = hex::decode(&lock_id)
             .map_err(|_| rpc_err(-32602, "invalid lock_id hex"))?;
         if id_bytes.len() != 32 {
-            return Err(rpc_err(-32602, "lock_id must be 32 bytes (64 hex chars)").into());
+            return Err(rpc_err(-32602, "lock_id must be 32 bytes (64 hex chars)"));
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&id_bytes);
@@ -1300,7 +1297,7 @@ impl ChronxApiServer for RpcServer {
             .map_err(|e: ChronxError| rpc_err(-32603, e.to_string()))?;
         let pool_address = match pool_bytes {
             Some(ref b) => String::from_utf8_lossy(b).to_string(),
-            None => return Err(rpc_err(-32603, "Humanity Stake Pool address not found in genesis metadata").into()),
+            None => return Err(rpc_err(-32603, "Humanity Stake Pool address not found in genesis metadata")),
         };
         let pool_id = AccountId::from_b58(&pool_address)
             .map_err(|_e| rpc_err(-32603, "invalid Humanity Stake Pool address"))?;
@@ -1522,7 +1519,7 @@ impl ChronxApiServer for RpcServer {
                         Action::TimeLockCreate {
                             amount, unlock_at, memo, email_recipient_hash, ..
                         } => {
-                            let email_hash_hex = email_recipient_hash.map(|h| hex::encode(h));
+                            let email_hash_hex = email_recipient_hash.map(hex::encode);
                             let atype = if email_hash_hex.is_some() { "EmailLock" } else { "TimeLock" };
                             RpcActionSummary {
                                 action_type: atype.to_string(),
@@ -1904,7 +1901,7 @@ impl ChronxApiServer for RpcServer {
         Ok(record.map(|r| RpcPromiseChainRecord {
             promise_id: hex::encode(r.promise_id),
             entry_count: r.entries.len() as u32,
-            last_anchor_hash: r.last_anchor_hash.map(|h| hex::encode(h)),
+            last_anchor_hash: r.last_anchor_hash.map(hex::encode),
             last_anchor_at: r.last_anchor_at,
             created_at: r.created_at,
         }))
@@ -2388,7 +2385,7 @@ impl ChronxApiServer for RpcServer {
         let reserve_ratio: f64 = if total_obligations_kx > 0 {
             kxgc_balance_kx as f64 / total_obligations_kx as f64
         } else if kxgc_balance_kx > 0 { -1.0 } else { 0.0 };
-        let warning_level = if total_obligations_kx == 0 || reserve_ratio >= 1.0 || reserve_ratio < 0.0 {
+        let warning_level = if total_obligations_kx == 0 || !(0.0..1.0).contains(&reserve_ratio) {
             "GREEN"
         } else if reserve_ratio >= 0.5 { "YELLOW" } else { "RED" };
         Ok(serde_json::json!({
@@ -2671,7 +2668,7 @@ impl ChronxApiServer for RpcServer {
         // Scaffold: return hedge instruments linked to pool
         let db = &self.state.db;
         let mut instruments = Vec::new();
-        for (key, val) in db.iter_hedge_instruments() {
+        for (_key, val) in db.iter_hedge_instruments() {
             let record: serde_json::Value = serde_json::from_slice(&val)
                 .unwrap_or(serde_json::json!(null));
             if let Some(pid) = record.get("pool_id").and_then(|v| v.as_str()) {
@@ -2811,8 +2808,31 @@ impl ChronxApiServer for RpcServer {
         }
     }
 
+    async fn get_friendly_loan(&self, loan_id: String) -> RpcResult<Option<serde_json::Value>> {
+        let id = hex_to_32(&loan_id)?;
+        match self.state.db.get_friendly_loan(&id) {
+            Ok(Some(r)) => Ok(Some(serde_json::to_value(&r).unwrap_or_default())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
 
+    async fn get_friendly_loans_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>> {
+        match self.state.db.iter_friendly_loans_by_wallet(&wallet) {
+            Ok(records) => Ok(records.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect()),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
 
+    async fn get_active_friendly_loans(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>> {
+        match self.state.db.iter_friendly_loans_by_wallet(&wallet) {
+            Ok(records) => Ok(records.iter()
+                .filter(|r| r.status == "Active")
+                .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .collect()),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
 
 }
 
@@ -2830,7 +2850,7 @@ fn invoice_to_rpc(r: &chronx_state::db::InvoiceRecord) -> RpcInvoiceRecord {
     RpcInvoiceRecord {
         invoice_id: hex::encode(r.invoice_id),
         issuer_pubkey: hex::encode(&r.issuer_pubkey),
-        payer_pubkey: r.payer_pubkey.as_ref().map(|p| hex::encode(p)),
+        payer_pubkey: r.payer_pubkey.as_ref().map(hex::encode),
         amount_chronos: r.amount_chronos.to_string(),
         amount_kx: format!("{}", r.amount_chronos / CHRONOS_PER_KX as u64),
         expiry: r.expiry,
@@ -2915,7 +2935,7 @@ fn ledger_entry_to_rpc(r: &chronx_state::db::LedgerEntryRecord) -> RpcLedgerEntr
     RpcLedgerEntryRecord {
         entry_id: hex::encode(r.entry_id),
         author_pubkey: hex::encode(&r.author_pubkey),
-        promise_id: r.promise_id.map(|id| hex::encode(id)),
+        promise_id: r.promise_id.map(hex::encode),
         entry_type: r.entry_type.clone(),
         content_hash: hex::encode(r.content_hash),
         content_summary: String::from_utf8_lossy(&r.content_summary).to_string(),

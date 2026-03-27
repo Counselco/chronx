@@ -555,9 +555,12 @@ pub struct TimeLockContract {
     pub condition_dispute_window_secs: Option<u64>,
 
     // ── V6 lock classification fields ─────────────────────────────────────
-    /// Lock type tag (e.g. "S" = standard, "M" = AI-managed). Open string field.
+    /// Lock type tag (e.g. "S" = standard, "M" = AI-managed, "Y" = yield-bearing default). Open string field.
     #[serde(default)]
     pub lock_type: Option<String>,
+    /// If true, suppress HedgeKX minting mandate even for TYPE_Y locks.
+    #[serde(default)]
+    pub yield_opt_out: Option<bool>,
     /// Arbitrary JSON metadata associated with this lock.
     #[serde(default)]
     pub lock_metadata: Option<String>,

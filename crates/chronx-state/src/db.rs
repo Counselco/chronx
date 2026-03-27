@@ -224,6 +224,30 @@ pub struct DepositRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FriendlyLoanRecord {
+    pub loan_id: [u8; 32],
+    pub lender: String,
+    pub borrower_email_hash: String,
+    pub borrower_wallet: Option<String>,
+    pub principal_usd: f64,
+    pub fee_usd: f64,
+    pub total_repayment_usd: f64,
+    pub term_days: u32,
+    pub grace_days: u32,
+    pub kx_collateral_chronos: u64,
+    pub locked_kx_usd_rate: f64,
+    pub repayment_base_address: String,
+    pub created_at: u64,
+    pub due_at: u64,
+    pub write_off_at: u64,
+    pub status: String,
+    pub repayment_usdc: Option<f64>,
+    pub base_tx_hash: Option<String>,
+    pub write_off_tx_id: Option<String>,
+    pub memo: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ConditionalStatus {
     Pending,
     Released,
@@ -432,6 +456,9 @@ pub struct StateDb {
     pub hedge_instruments: sled::Tree,
     pub pool_health_scores: sled::Tree,
 
+    // protocol — Friendly Loan tree
+    pub friendly_loans: sled::Tree,
+
 }
 
 impl StateDb {
@@ -593,6 +620,9 @@ impl StateDb {
         let pool_health_scores = db
             .open_tree("pool_health_scores")
             .expect("Failed to open pool_health_scores tree");
+        let friendly_loans = db
+            .open_tree("friendly_loans")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let result = Ok(Self {
             _db: db,
             accounts,
@@ -646,6 +676,7 @@ impl StateDb {
             bond_slash_cascade,
             hedge_instruments,
             pool_health_scores,
+            friendly_loans,
 
         });
 
@@ -1110,13 +1141,12 @@ impl StateDb {
         let mut lock_ids = Vec::new();
         for item in self.email_claim_hashes.iter() {
             let (key, val) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
-            if val.len() == 32 && val.as_ref() == hash.as_slice() {
-                if key.len() == 32 {
+            if val.len() == 32 && val.as_ref() == hash.as_slice()
+                && key.len() == 32 {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&key);
                     lock_ids.push(TxId::from_bytes(arr));
                 }
-            }
         }
         Ok(lock_ids)
     }
@@ -1475,7 +1505,7 @@ impl StateDb {
 
     pub fn put_invoice(&self, record: &InvoiceRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.invoices.insert(&record.invoice_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.invoices.insert(record.invoice_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1537,7 +1567,7 @@ impl StateDb {
 
     pub fn put_credit(&self, record: &CreditRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.credits.insert(&record.credit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.credits.insert(record.credit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1604,7 +1634,7 @@ impl StateDb {
 
     pub fn put_deposit(&self, record: &DepositRecord) -> Result<(), ChronxError> {
         let bytes = serde_json::to_vec(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.deposits.insert(&record.deposit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.deposits.insert(record.deposit_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1643,6 +1673,51 @@ impl StateDb {
         Ok(results)
     }
 
+    // ── Friendly Loan accessors ───────────────────────────────────────
+    pub fn get_friendly_loan(&self, loan_id: &[u8; 32]) -> Result<Option<FriendlyLoanRecord>, ChronxError> {
+        match self.friendly_loans.get(loan_id) {
+            Ok(Some(bytes)) => {
+                let record: FriendlyLoanRecord =
+                    serde_json::from_slice(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn put_friendly_loan(&self, record: &FriendlyLoanRecord) -> Result<(), ChronxError> {
+        let bytes = serde_json::to_vec(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.friendly_loans.insert(&record.loan_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn iter_friendly_loans_by_wallet(&self, wallet: &str) -> Result<Vec<FriendlyLoanRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.friendly_loans.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: FriendlyLoanRecord =
+                serde_json::from_slice(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.lender == wallet || record.borrower_wallet.as_deref() == Some(wallet) {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn iter_active_friendly_loans(&self) -> Result<Vec<FriendlyLoanRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.friendly_loans.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: FriendlyLoanRecord =
+                serde_json::from_slice(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.status == "Active" {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
     // ── protocol — Conditional accessors ─────────────────────────────────
 
     pub fn get_conditional(&self, type_v_id: &[u8; 32]) -> Result<Option<ConditionalRecord>, ChronxError> {
@@ -1659,7 +1734,7 @@ impl StateDb {
 
     pub fn put_conditional(&self, record: &ConditionalRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.conditionals.insert(&record.type_v_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.conditionals.insert(record.type_v_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1697,7 +1772,7 @@ impl StateDb {
 
     pub fn put_ledger_entry(&self, record: &LedgerEntryRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.ledger_entries.insert(&record.entry_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.ledger_entries.insert(record.entry_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
 
         // Update promise_id secondary index
         if let Some(promise_id) = &record.promise_id {
@@ -1896,7 +1971,7 @@ impl StateDb {
 
     pub fn put_promise_chain(&self, record: &PromiseChainRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.promise_chains.insert(&record.promise_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.promise_chains.insert(record.promise_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1927,7 +2002,7 @@ impl StateDb {
 
     pub fn put_group(&self, record: &chronx_core::transaction::GroupRecord) -> Result<(), ChronxError> {
         let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
-        self.groups.insert(&record.group_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        self.groups.insert(record.group_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
         Ok(())
     }
 

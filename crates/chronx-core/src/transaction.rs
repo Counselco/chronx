@@ -365,8 +365,10 @@ impl Default for OraclePolicy {
 // -- Genesis Zero -- Obligation Transfer Layer --------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum TransferFlag {
     /// Default -- transferable freely.
+    #[default]
     Free,
     /// Transferable with conditions.
     Restricted(TransferConditions),
@@ -374,9 +376,6 @@ pub enum TransferFlag {
     Locked,
 }
 
-impl Default for TransferFlag {
-    fn default() -> Self { TransferFlag::Free }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TransferConditions {
@@ -390,20 +389,21 @@ pub struct TransferConditions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum TermsVisibility {
     /// Default -- terms not public.
+    #[default]
     Private,
     /// Terms visible to all.
     Public,
 }
 
-impl Default for TermsVisibility {
-    fn default() -> Self { TermsVisibility::Private }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum ClaimType {
     /// Whole obligation (default).
+    #[default]
     Whole,
     /// Yield stream only.
     YieldOnly,
@@ -411,20 +411,16 @@ pub enum ClaimType {
     PrincipalOnly,
 }
 
-impl Default for ClaimType {
-    fn default() -> Self { ClaimType::Whole }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum RetirementStatus {
+    #[default]
     Active,
     PartiallyRetired,
     FullyRetired,
 }
 
-impl Default for RetirementStatus {
-    fn default() -> Self { RetirementStatus::Active }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TransferRecord {
@@ -685,9 +681,12 @@ pub enum Action {
         /// What happens if the claim window expires without a claim.
         #[serde(default)]
         unclaimed_action: Option<crate::account::UnclaimedAction>,
-        /// Lock type tag (e.g. "S" = standard, "M" = AI-managed). Open string field.
+        /// Lock type tag (e.g. "S" = standard, "M" = AI-managed, "Y" = yield-bearing default). Open string field.
         #[serde(default)]
         lock_type: Option<String>,
+        /// If true, suppress HedgeKX minting mandate even for TYPE_Y locks.
+        #[serde(default)]
+        yield_opt_out: Option<bool>,
         /// Arbitrary JSON metadata associated with this lock.
         #[serde(default)]
         lock_metadata: Option<String>,
@@ -1312,6 +1311,26 @@ pub enum Action {
         deposit_id: [u8; 32],
     },
 
+    // ── Friendly Loan ──────────────────────────────────────────────────────
+    FriendlyLoanCreate {
+        borrower_email_hash: [u8; 32],
+        borrower_wallet: Option<AccountId>,
+        principal_usd: f64,
+        term_days: u32,
+        kx_collateral_chronos: u64,
+        locked_kx_usd_rate: f64,
+        repayment_base_address: String,
+        memo: Option<String>,
+    },
+    FriendlyLoanRepay {
+        loan_id: [u8; 32],
+        repayment_usdc: f64,
+        base_tx_hash: String,
+    },
+    FriendlyLoanWriteOff {
+        loan_id: [u8; 32],
+    },
+
 }
 
 /// Credit history visibility setting for a wallet.
@@ -1613,8 +1632,10 @@ pub struct MicroLoanCreate {
 
 /// Who can exit a revolving loan and under what conditions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ExitRights {
     /// Either party may exit with min_notice_seconds notice.
+    #[default]
     EitherParty,
     /// Only the lender may call the loan.
     LenderOnly,
@@ -1624,15 +1645,14 @@ pub enum ExitRights {
     MutualConsent,
 }
 
-impl Default for ExitRights {
-    fn default() -> Self { ExitRights::EitherParty }
-}
 
 /// Condition checked by MISAI at each renewal period.
 /// If condition fails, loan enters min_notice_seconds wind-down.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum RevivalCondition {
     /// Always renews unconditionally. Default.
+    #[default]
     Always,
     /// Renews only if oracle reading is strictly below threshold_bps.
     OracleBelow {
@@ -1658,14 +1678,13 @@ pub enum RevivalCondition {
     },
 }
 
-impl Default for RevivalCondition {
-    fn default() -> Self { RevivalCondition::Always }
-}
 
 /// The complete loan type field on LoanCreate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum LoanType {
     /// Standard fixed payment schedule. Default.
+    #[default]
     FixedSchedule,
     /// Revolving credit line.
     Revolving {
@@ -1681,9 +1700,6 @@ pub enum LoanType {
     },
 }
 
-impl Default for LoanType {
-    fn default() -> Self { LoanType::FixedSchedule }
-}
 
 /// Filed by an eligible party to initiate exit from a revolving loan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1815,14 +1831,13 @@ pub struct AuthorizedPayer {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum PaymentSourcePolicy {
+    #[default]
     Open,
     Restricted,
     ExclusiveDelegate { payer: AccountId, description: String },
 }
 
-impl Default for PaymentSourcePolicy {
-    fn default() -> Self { PaymentSourcePolicy::Open }
-}
 
 fn default_true() -> bool { true }
