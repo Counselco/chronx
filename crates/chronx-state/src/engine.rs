@@ -1835,6 +1835,9 @@ impl StateEngine {
                     status: DepositStatus::Active,
                     created_at: now_u64,
                     settled_at: None,
+                    auto_renew: true,
+                    renewal_count: 0,
+                    accrued_yield_chronos: 0,
                 };
                 self.db.put_deposit(&record)?;
                 info!(deposit_id = %hex::encode(action.deposit_id), total_due, "Deposit created");
@@ -4711,6 +4714,50 @@ impl StateEngine {
         Ok(count)
     }
 
+    /// Sweep matured deposits: auto-renew or mark as Matured.
+    /// Called periodically by the node. Modifies sled only — no DAG vertex.
+    pub fn sweep_matured_deposits(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let all_deposits = self.db.iter_all_deposits()?;
+        let mut count = 0u32;
+
+        for deposit in all_deposits {
+            if !matches!(deposit.status, DepositStatus::Active) {
+                continue;
+            }
+            if now_u64 < deposit.maturity_timestamp {
+                continue;
+            }
+
+            let mut updated = deposit.clone();
+            if deposit.auto_renew {
+                // Auto-renew: roll into next term
+                updated.maturity_timestamp += deposit.term_seconds;
+                updated.renewal_count += 1;
+                updated.status = DepositStatus::Active;
+                info!(
+                    deposit_id = %hex::encode(deposit.deposit_id),
+                    renewal = updated.renewal_count,
+                    next_maturity = updated.maturity_timestamp,
+                    "Deposit auto-renewed"
+                );
+            } else {
+                // Mark as matured — user must call SettleDeposit manually
+                updated.status = DepositStatus::Matured;
+                info!(
+                    deposit_id = %hex::encode(deposit.deposit_id),
+                    "Deposit matured (no auto-renew)"
+                );
+            }
+            self.db.put_deposit(&updated)?;
+            count += 1;
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
 
 }
 
