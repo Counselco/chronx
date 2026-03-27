@@ -1834,7 +1834,7 @@ impl StateEngine {
                     penalty_basis_points: action.penalty_basis_points,
                     status: DepositStatus::Active,
                     created_at: now_u64,
-                    settled_at: None
+                    settled_at: None,
                 };
                 self.db.put_deposit(&record)?;
                 info!(deposit_id = %hex::encode(action.deposit_id), total_due, "Deposit created");
@@ -3551,6 +3551,36 @@ impl StateEngine {
 
             Action::WithdrawSavings { amount_chronos } => {
                 self.handle_savings_withdrawal(&sender, *amount_chronos, now as i64)
+            }
+
+            // ── TYPE_Y: Explicit deposit default declaration ─────────
+            Action::DepositDefault { ref deposit_id } => {
+                let deposit = self.db.get_deposit(deposit_id)?
+                    .ok_or_else(|| ChronxError::DepositNotFound(hex::encode(deposit_id)))?;
+                if !matches!(deposit.status, DepositStatus::Active | DepositStatus::Matured) {
+                    return Err(ChronxError::Other("Deposit is not active or matured".into()));
+                }
+                // Verify sender is depositor or obligor
+                let sender_id = sender.account_id.to_b58();
+                let depositor_id = chronx_crypto::hash::account_id_from_pubkey(&deposit.depositor_pubkey).to_b58();
+                let obligor_id = chronx_crypto::hash::account_id_from_pubkey(&deposit.obligor_pubkey).to_b58();
+                let is_depositor = sender_id == depositor_id;
+                let is_obligor = sender_id == obligor_id;
+                if !is_depositor && !is_obligor {
+                    return Err(ChronxError::Other("Only depositor or obligor can declare default".into()));
+                }
+                // Must be past maturity + grace period
+                let grace = DEPOSIT_DEFAULT_GRACE_SECONDS;
+                let now_u64 = now as u64;
+                if now_u64 < deposit.maturity_timestamp + grace {
+                    return Err(ChronxError::Other(format!(
+                        "Cannot declare default until {} seconds after maturity",
+                        deposit.maturity_timestamp + grace - now_u64
+                    )));
+                }
+                self.db.update_deposit_status(deposit_id, DepositStatus::Defaulted, None)?;
+                info!(deposit_id = %hex::encode(deposit_id), "[DEPOSIT DEFAULT] Declared by party");
+                Ok(())
             }
         }
     }

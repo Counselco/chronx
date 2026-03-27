@@ -1306,6 +1306,12 @@ pub enum Action {
     /// If savings is invested, queues withdrawal for next instrument expiry.
     WithdrawSavings { amount_chronos: u64 },
 
+    // ── TYPE_Y: Interest Bearing Deposit — explicit default declaration ──
+    /// Either depositor or obligor can declare default after grace period.
+    DepositDefault {
+        deposit_id: [u8; 32],
+    },
+
 }
 
 /// Credit history visibility setting for a wallet.

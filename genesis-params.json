@@ -18602,5 +18602,8 @@
   "superseding_hedger_required": true,
   "superseding_hedger_weekly_usd": 1600.0,
   "superseding_hedger_daily_capacity_usd": 250.0,
-  "sweep_savings_yield_interval_seconds": 60
+  "sweep_savings_yield_interval_seconds": 60,
+  "deposit_grace_period_seconds": 86400,
+  "deposit_max_rate_basis_points": 5000,
+  "type_y_enabled": true
 }
