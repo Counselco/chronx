@@ -1,0 +1,16 @@
+
+[package]
+name = "dump-accounts"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dump-accounts"
+path = "dump_accounts.rs"
+
+[dependencies]
+chronx-core = { path = "crates/chronx-core" }
+chronx-state = { path = "crates/chronx-state" }
+bs58 = "0.5"
+bincode = "1"
+sled = "0.34"

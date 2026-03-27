@@ -800,6 +800,21 @@ impl StateDb {
     }
 
     /// Count accounts in the DB.
+    /// Iterate all raw account entries (key bytes, value bytes).
+    pub fn iter_accounts_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.accounts.iter()
+            .filter_map(|r| r.ok())
+            .map(|(k, v)| (k.to_vec(), v.to_vec()))
+            .collect()
+    }
+
+    /// Re-write a raw account entry by key.
+    pub fn put_account_raw(&self, key: &[u8], value: &[u8]) -> Result<(), ChronxError> {
+        self.accounts.insert(key, value)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn count_accounts(&self) -> u64 {
         self.accounts.len() as u64
     }
@@ -2249,5 +2264,70 @@ impl StateDb {
             Ok(None) => Ok(None),
             Err(e) => Err(ChronxError::Storage(e.to_string())),
         }
+    }
+
+    // ── Loan escrow deposit methods ──────────────────────────────────────────
+    // Key: loan_id bytes (32), Value: JSON { lender_wallet, amount_chronos, expires_at }
+
+    /// Store a loan escrow deposit (lender funds held during rescission window).
+    pub fn put_loan_escrow(&self, loan_id: &[u8; 32], lender_wallet: &str, amount_chronos: u128, expires_at: i64) -> Result<(), ChronxError> {
+        let record = serde_json::json!({
+            "lender_wallet": lender_wallet,
+            "amount_chronos": amount_chronos.to_string(),
+            "expires_at": expires_at,
+        });
+        let val = serde_json::to_vec(&record)
+            .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.escrow_deposits.insert(loan_id.as_ref(), val)
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get a loan escrow deposit by loan_id.
+    pub fn get_loan_escrow(&self, loan_id: &[u8; 32]) -> Result<Option<serde_json::Value>, ChronxError> {
+        match self.escrow_deposits.get(loan_id.as_ref()) {
+            Ok(Some(bytes)) => {
+                let val: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(val))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    /// Remove a loan escrow deposit (after release to borrower or return to lender).
+    pub fn remove_loan_escrow(&self, loan_id: &[u8; 32]) -> Result<(), ChronxError> {
+        self.escrow_deposits.remove(loan_id.as_ref())
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Iterate all loan escrow deposits. Returns (loan_id_bytes, JSON value).
+    pub fn iter_loan_escrows(&self) -> Vec<(Vec<u8>, serde_json::Value)> {
+        self.escrow_deposits.iter()
+            .filter_map(|r| r.ok())
+            .filter_map(|(k, v)| {
+                let val: serde_json::Value = serde_json::from_slice(&v).ok()?;
+                Some((k.to_vec(), val))
+            })
+            .collect()
+    }
+
+    /// Get all loan escrow deposits for a specific wallet (as lender).
+    pub fn get_loan_escrows_by_wallet(&self, wallet: &str) -> Result<Vec<(String, u128, i64)>, ChronxError> {
+        let mut results = Vec::new();
+        for (key, val) in self.iter_loan_escrows() {
+            if val.get("lender_wallet").and_then(|v| v.as_str()) == Some(wallet) {
+                let amount: u128 = val.get("amount_chronos")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let expires = val.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
+                let loan_id_hex = hex::encode(&key);
+                results.push((loan_id_hex, amount, expires));
+            }
+        }
+        Ok(results)
     }
 }

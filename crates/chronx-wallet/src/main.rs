@@ -301,6 +301,27 @@ enum Command {
         /// Fallback: void, return, escrow.
         #[arg(long, default_value = "return")]
         fallback: String,
+        /// Condition type: SingleAttestation (default), OracleTrigger
+        #[arg(long)]
+        condition_type: Option<String>,
+        /// Oracle pair (e.g. "KX/USD")
+        #[arg(long)]
+        oracle_pair: Option<String>,
+        /// Oracle trigger threshold (e.g. 0.99 = fires at 99% of creation price)
+        #[arg(long)]
+        oracle_trigger_threshold: Option<f64>,
+        /// Oracle trigger direction: Below or Above
+        #[arg(long)]
+        oracle_trigger_direction: Option<String>,
+        /// Wallet that receives success payment on clean expiry
+        #[arg(long)]
+        success_payment_wallet: Option<String>,
+        /// Success payment amount in KX
+        #[arg(long)]
+        success_payment_kx: Option<f64>,
+        /// Expiry in seconds (overrides --expiry-days if set)
+        #[arg(long)]
+        expiry_seconds: Option<u64>,
     },
 
     /// Attest (approve) a conditional payment.
@@ -443,7 +464,27 @@ async fn main() -> anyhow::Result<()> {
                     memo_public: false,
                     pay_as_amount: None,
                     beneficiary_package: None,
-                }],
+                
+                    transferable: None,
+                    current_owner_account: None,
+                    transfer_history: None,
+                    terms_visibility: None,
+                    tranche_info: None,
+                    retirement_status: None,
+                    retired_fraction: None,
+
+                    escalation_wallet: None,
+                    escalation_lock_seconds: None,
+                    min_attestors_pct: None,
+                    required_hedge_ids: None,
+                    success_payment_wallet: None,
+                    success_payment_chronos: None,
+                    condition_type: None,
+                    oracle_pair: None,
+                    oracle_trigger_threshold: None,
+                    oracle_trigger_direction: None,
+                    linked_instrument_id: None,
+}],
                 &client,
             )
             .await?;
@@ -532,7 +573,27 @@ async fn main() -> anyhow::Result<()> {
                     memo_public: false,
                     pay_as_amount: None,
                     beneficiary_package: None,
-                }],
+                
+                    transferable: None,
+                    current_owner_account: None,
+                    transfer_history: None,
+                    terms_visibility: None,
+                    tranche_info: None,
+                    retirement_status: None,
+                    retired_fraction: None,
+
+                    escalation_wallet: None,
+                    escalation_lock_seconds: None,
+                    min_attestors_pct: None,
+                    required_hedge_ids: None,
+                    success_payment_wallet: None,
+                    success_payment_chronos: None,
+                    condition_type: None,
+                    oracle_pair: None,
+                    oracle_trigger_threshold: None,
+                    oracle_trigger_direction: None,
+                    linked_instrument_id: None,
+}],
                 &client,
             )
             .await?;
@@ -775,7 +836,27 @@ async fn main() -> anyhow::Result<()> {
                         memo_public: false,
                         pay_as_amount: None,
                         beneficiary_package: None,
-                    }
+                    
+                        transferable: None,
+                        current_owner_account: None,
+                        transfer_history: None,
+                        terms_visibility: None,
+                        tranche_info: None,
+                        retirement_status: None,
+                        retired_fraction: None,
+
+                        escalation_wallet: None,
+                        escalation_lock_seconds: None,
+                        min_attestors_pct: None,
+                        required_hedge_ids: None,
+                        success_payment_wallet: None,
+                        success_payment_chronos: None,
+                        condition_type: None,
+                        oracle_pair: None,
+                        oracle_trigger_threshold: None,
+                        oracle_trigger_direction: None,
+                        linked_instrument_id: None,
+}
                 })
                 .collect();
 
@@ -1013,7 +1094,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::CreateConditional { recipient, amount, attestor, min_attestors, expiry_days, fallback } => {
+        Command::CreateConditional { recipient, amount, attestor, min_attestors, expiry_days, fallback, condition_type, oracle_pair, oracle_trigger_threshold, oracle_trigger_direction, success_payment_wallet, success_payment_kx, expiry_seconds } => {
             let kp = load_keypair(&keyfile)?;
             let amount_chronos = kx_to_chronos(amount) as u64;
             let now = std::time::SystemTime::now()
@@ -1031,18 +1112,30 @@ async fn main() -> anyhow::Result<()> {
             let _recipient_id = AccountId::from_b58(&recipient)
                 .map_err(|e| anyhow::anyhow!("invalid recipient address: {e}"))?;
 
+            let valid_until_final = if let Some(secs) = expiry_seconds {
+                now + secs
+            } else {
+                valid_until
+            };
+            let spc = success_payment_kx.map(|kx| (kx * 1_000_000.0) as u64);
             let action = Action::CreateConditional(CreateConditionalAction {
                 sender_pubkey: kp.public_key.clone(),
                 recipient_pubkey: DilithiumPublicKey(Vec::new()),
                 amount_chronos,
-                attestor_pubkeys: Vec::new(), // Attestor pubkey resolution deferred to wallet GUI
+                attestor_pubkeys: Vec::new(),
                 min_attestors,
                 attestation_memo: None,
-                valid_until,
+                valid_until: valid_until_final,
                 fallback: fb,
                 encrypted_terms: None,
                 type_v_id,
                 attestor_group: None,
+                condition_type: condition_type.clone(),
+                oracle_pair: oracle_pair.clone(),
+                oracle_trigger_threshold: oracle_trigger_threshold.clone(),
+                oracle_trigger_direction: oracle_trigger_direction.clone(),
+                success_payment_wallet: success_payment_wallet.clone(),
+                success_payment_chronos: spc,
             });
 
             let tx = build_and_sign(&kp, vec![action], &client).await?;
@@ -1062,6 +1155,7 @@ async fn main() -> anyhow::Result<()> {
                 attestor_pubkey: kp.public_key.clone(),
                 type_v_id: vid,
                 attestation_memo: None,
+                release_amount_chronos: None,
             });
 
             let tx = build_and_sign(&kp, vec![action], &client).await?;

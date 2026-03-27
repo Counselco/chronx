@@ -1875,11 +1875,15 @@ impl StateEngine {
             Action::CreateConditional(ref action) => {
                 let now_u64 = now as u64;
                 let attestor_count = action.attestor_pubkeys.len() as u32;
-                if attestor_count < CONDITIONAL_MIN_ATTESTORS || attestor_count > CONDITIONAL_MAX_ATTESTORS {
-                    return Err(ChronxError::AttestorCountOutOfRange);
-                }
-                if action.min_attestors > attestor_count {
-                    return Err(ChronxError::MinAttestorsExceedsCount);
+                let is_oracle_trigger = action.condition_type.as_deref() == Some("OracleTrigger");
+                // OracleTrigger conditions do not require human attestors
+                if !is_oracle_trigger {
+                    if attestor_count < CONDITIONAL_MIN_ATTESTORS || attestor_count > CONDITIONAL_MAX_ATTESTORS {
+                        return Err(ChronxError::AttestorCountOutOfRange);
+                    }
+                    if action.min_attestors > attestor_count {
+                        return Err(ChronxError::MinAttestorsExceedsCount);
+                    }
                 }
                 if action.valid_until <= now_u64 {
                     return Err(ChronxError::ConditionalExpiryInPast);
@@ -1916,15 +1920,21 @@ impl StateEngine {
                     attestations_received: Vec::new(),
                     status: ConditionalStatus::Pending,
                     created_at: now_u64,
-                    success_payment_wallet: None,
-                    success_payment_chronos: None,
+                    success_payment_wallet: action.success_payment_wallet.clone(),
+                    success_payment_chronos: action.success_payment_chronos,
                     released_so_far_chronos: 0,
                     release_count: 0,
-                    condition_type: None,
-                    oracle_pair: None,
-                    oracle_trigger_threshold: None,
-                    oracle_trigger_direction: None,
-                    oracle_creation_price: None,
+                    condition_type: action.condition_type.clone(),
+                    oracle_pair: action.oracle_pair.clone(),
+                    oracle_trigger_threshold: action.oracle_trigger_threshold,
+                    oracle_trigger_direction: action.oracle_trigger_direction.clone(),
+                    oracle_creation_price: if action.condition_type.as_deref() == Some("OracleTrigger") {
+                        // Record creation price from oracle cache
+                        self.db.get_meta("oracle_price_kx_usd")
+                            .ok().flatten()
+                            .and_then(|b| String::from_utf8(b).ok())
+                            .and_then(|s| s.parse::<f64>().ok())
+                    } else { None },
                     escalation_wallet: None,
                     escalation_lock_seconds: None,
                     attestors_suspended: false,
@@ -1987,7 +1997,8 @@ impl StateEngine {
                             verifier_stake: 0, is_verifier: false, account_version: 3, created_at: Some(now),
                             display_name_hash: None, incoming_locks_count: 0, outgoing_locks_count: 0,
                             total_locked_incoming_chronos: 0, total_locked_outgoing_chronos: 0,
-                            preferred_fiat_currency: None, lock_marker: None
+                            preferred_fiat_currency: None, lock_marker: None,
+                                            savings_balance: 0, savings_invested: false, savings_withdrawal_pending: false
                         }
                     };
                     recipient.balance += release_amount as u128;
@@ -2256,18 +2267,92 @@ impl StateEngine {
                         let deminimis_chronos: u64 = 3_135_000_000;
 
                         if principal_chronos < deminimis_chronos {
-                            // Skip rescission — activate immediately (no principal transfer yet,
-                            // sweep will handle it on next pass)
+                            // De minimis: transfer KX immediately (no rescission window)
+                            let lender_str = loan_val.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let borrower_str = loan_val.get("borrower_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if principal_chronos > 0 && !lender_str.is_empty() && !borrower_str.is_empty() {
+                                let lender_id = chronx_core::types::AccountId::from_b58(&lender_str)
+                                    .map_err(|_| ChronxError::Other("Invalid lender address".into()))?;
+                                let borrower_id = chronx_core::types::AccountId::from_b58(&borrower_str)
+                                    .map_err(|_| ChronxError::Other("Invalid borrower address".into()))?;
+                                let mut lender_acc = self.db.get_account(&lender_id)?
+                                    .ok_or_else(|| ChronxError::Other("Lender account not found".into()))?;
+                                if lender_acc.balance < principal_chronos as u128 {
+                                    return Err(ChronxError::InsufficientBalance {
+                                        need: principal_chronos as u128,
+                                        have: lender_acc.balance,
+                                    });
+                                }
+                                lender_acc.balance -= principal_chronos as u128;
+                                self.db.put_account(&lender_acc)?;
+                                let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                                    Some(a) => a,
+                                    None => {
+                                        // Auto-create borrower account
+                                        chronx_core::account::Account {
+                                            account_id: borrower_id.clone(), balance: 0,
+                                            auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                                public_key: chronx_core::types::DilithiumPublicKey(Vec::new())
+                                            },
+                                            nonce: 0, recovery_state: Default::default(),
+                                            post_recovery_restriction: None,
+                                            verifier_stake: 0, is_verifier: false, account_version: 3,
+                                            created_at: Some(now), display_name_hash: None,
+                                            incoming_locks_count: 0, outgoing_locks_count: 0,
+                                            total_locked_incoming_chronos: 0,
+                                            total_locked_outgoing_chronos: 0,
+                                            preferred_fiat_currency: None, lock_marker: None,
+                                            savings_balance: 0, savings_invested: false, savings_withdrawal_pending: false
+                                        }
+                                    }
+                                };
+                                borrower_acc.balance += principal_chronos as u128;
+                                self.db.put_account(&borrower_acc)?;
+                                info!(loan_id = %hex::encode(acceptance.loan_id),
+                                      principal_kx = principal_chronos / 1_000_000,
+                                      "[LOAN DISBURSE] de minimis — KX transferred immediately");
+                            }
                             loan_val["status"] = serde_json::json!("active");
+                            loan_val["activated_at"] = serde_json::json!(now as u64);
                             let val = serde_json::to_vec(&loan_val)
                                 .map_err(|_| ChronxError::SerializationError)?;
                             self.db.save_loan(&acceptance.loan_id, &val)?;
                             info!(loan_id = %hex::encode(acceptance.loan_id),
-                                  "De minimis loan accepted — active immediately");
+                                  "De minimis loan accepted — active immediately, KX transferred");
                         } else {
                             // Rescission window: default 72 hours
+                            // CRITICAL: Lock lender funds in escrow immediately
                             let rescission_window_secs: i64 = 72 * 3600;
                             let rescission_expires_at = now as i64 + rescission_window_secs;
+
+                            // Debit lender → escrow
+                            let lender_str = loan_val.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if principal_chronos > 0 && !lender_str.is_empty() {
+                                let lender_id = chronx_core::types::AccountId::from_b58(&lender_str)
+                                    .map_err(|_| ChronxError::Other("Invalid lender address".into()))?;
+                                let mut lender_acc = self.db.get_account(&lender_id)?
+                                    .ok_or_else(|| ChronxError::Other("Lender account not found".into()))?;
+                                if lender_acc.balance < principal_chronos as u128 {
+                                    return Err(ChronxError::InsufficientBalance {
+                                        need: principal_chronos as u128,
+                                        have: lender_acc.balance,
+                                    });
+                                }
+                                lender_acc.balance -= principal_chronos as u128;
+                                self.db.put_account(&lender_acc)?;
+
+                                // Store escrow deposit keyed by loan_id
+                                self.db.put_loan_escrow(
+                                    &acceptance.loan_id,
+                                    &lender_str,
+                                    principal_chronos as u128,
+                                    rescission_expires_at,
+                                )?;
+                                info!(loan_id = %hex::encode(acceptance.loan_id),
+                                      principal_kx = principal_chronos / 1_000_000,
+                                      "[ESCROW LOCK] Lender funds locked in escrow during rescission");
+                            }
+
                             loan_val["status"] = serde_json::json!("accepted_pending_rescission");
                             loan_val["rescission_expires_at"] = serde_json::json!(rescission_expires_at);
                             let val = serde_json::to_vec(&loan_val)
@@ -2689,7 +2774,28 @@ impl StateEngine {
                             ));
                         }
 
-                        // Cancel: revert to declined, no principal transfer
+                        // Cancel: return escrow to lender, revert to declined
+                        if let Ok(Some(escrow_val)) = self.db.get_loan_escrow(&lid_bytes) {
+                            let escrow_amount: u128 = escrow_val.get("amount_chronos")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
+                            let escrow_lender = escrow_val.get("lender_wallet")
+                                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if escrow_amount > 0 && !escrow_lender.is_empty() {
+                                let lender_id = chronx_core::types::AccountId::from_b58(&escrow_lender)
+                                    .map_err(|_| ChronxError::Other("Invalid lender address".into()))?;
+                                let mut lender_acc = self.db.get_account(&lender_id)?
+                                    .ok_or_else(|| ChronxError::Other("Lender account not found".into()))?;
+                                lender_acc.balance += escrow_amount;
+                                self.db.put_account(&lender_acc)?;
+                                self.db.remove_loan_escrow(&lid_bytes)?;
+                                info!(loan_id = %loan_id,
+                                      amount_kx = escrow_amount / 1_000_000,
+                                      "[ESCROW RETURN] Funds returned to lender on rescission cancel");
+                            }
+                        }
+
                         loan_val["status"] = serde_json::json!("declined");
                         loan_val["rescission_cancelled_at"] = serde_json::json!(now as u64);
                         loan_val["rescission_cancelled_by"] = serde_json::json!(cancelled_by);
@@ -2698,6 +2804,142 @@ impl StateEngine {
                         self.db.save_loan(&lid_bytes, &updated)?;
                         info!(loan_id = %loan_id, cancelled_by = %cancelled_by,
                               "[RESCISSION CANCEL] Loan cancelled during rescission window");
+                        Ok(())
+                    } else {
+                        Err(ChronxError::SerializationError)
+                    }
+                } else {
+                    Err(ChronxError::Other("Loan not found".into()))
+                }
+            }
+
+
+            // ── Rescission waive — skip wait, activate immediately ────────
+            Action::LoanRescissionWaive { ref loan_id, ref waived_by, .. } => {
+                self.check_loan_rate_limit(&sender.account_id.to_string(), now as i64)?;
+
+                let lid_bytes: [u8; 32] = {
+                    let decoded = hex::decode(loan_id)
+                        .map_err(|_| ChronxError::Other("Bad loan_id hex".into()))?;
+                    if decoded.len() != 32 {
+                        return Err(ChronxError::Other("loan_id must be 32 bytes".into()));
+                    }
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&decoded);
+                    arr
+                };
+
+                if let Ok(Some(existing)) = self.db.get_loan(&lid_bytes) {
+                    if let Ok(mut loan_val) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                        let status = loan_val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        if status != "accepted_pending_rescission" {
+                            return Err(ChronxError::Other(
+                                "Loan is not in rescission window.".into()
+                            ));
+                        }
+
+                        // Verify submitter is lender or borrower
+                        let lender = loan_val.get("lender_wallet").and_then(|s| s.as_str()).unwrap_or("");
+                        let borrower = loan_val.get("borrower_wallet").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        let submitter_str = sender.account_id.to_string();
+                        if submitter_str != lender && submitter_str != borrower {
+                            return Err(ChronxError::Other(
+                                "Only loan parties may waive rescission.".into()
+                            ));
+                        }
+
+                        // Release escrow to borrower immediately
+                        let borrower_str = borrower.clone();
+                        if let Ok(Some(escrow_val)) = self.db.get_loan_escrow(&lid_bytes) {
+                            let escrow_amount: u128 = escrow_val.get("amount_chronos")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
+                            if escrow_amount > 0 && !borrower_str.is_empty() {
+                                let borrower_id = chronx_core::types::AccountId::from_b58(&borrower_str)
+                                    .map_err(|_| ChronxError::Other("Invalid borrower address".into()))?;
+                                let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                                    Some(a) => a,
+                                    None => {
+                                        chronx_core::account::Account {
+                                            account_id: borrower_id.clone(), balance: 0,
+                                            auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                                public_key: chronx_core::types::DilithiumPublicKey(Vec::new())
+                                            },
+                                            nonce: 0, recovery_state: Default::default(),
+                                            post_recovery_restriction: None,
+                                            verifier_stake: 0, is_verifier: false, account_version: 3,
+                                            created_at: Some(now), display_name_hash: None,
+                                            incoming_locks_count: 0, outgoing_locks_count: 0,
+                                            total_locked_incoming_chronos: 0,
+                                            total_locked_outgoing_chronos: 0,
+                                            preferred_fiat_currency: None, lock_marker: None,
+                                            savings_balance: 0, savings_invested: false, savings_withdrawal_pending: false
+                                        }
+                                    }
+                                };
+                                borrower_acc.balance += escrow_amount;
+                                self.db.put_account(&borrower_acc)?;
+                                self.db.remove_loan_escrow(&lid_bytes)?;
+                                info!(loan_id = %loan_id,
+                                      amount_kx = escrow_amount / 1_000_000,
+                                      "[ESCROW RELEASE] Funds released to borrower on rescission waive");
+                            }
+                        } else {
+                            // Fallback for pre-fix loans without escrow record
+                            let lender_str = lender.to_string();
+                            let principal_kx = loan_val.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let principal_chronos = loan_val.get("principal_chronos").and_then(|v| v.as_u64())
+                                .unwrap_or(principal_kx * 1_000_000) as u128;
+                            if principal_chronos > 0 && !lender_str.is_empty() && !borrower_str.is_empty() {
+                                let lender_id = chronx_core::types::AccountId::from_b58(&lender_str)
+                                    .map_err(|_| ChronxError::Other("Invalid lender address".into()))?;
+                                let borrower_id = chronx_core::types::AccountId::from_b58(&borrower_str)
+                                    .map_err(|_| ChronxError::Other("Invalid borrower address".into()))?;
+                                let mut lender_acc = self.db.get_account(&lender_id)?
+                                    .ok_or_else(|| ChronxError::Other("Lender account not found".into()))?;
+                                if lender_acc.balance < principal_chronos {
+                                    return Err(ChronxError::InsufficientBalance {
+                                        need: principal_chronos, have: lender_acc.balance,
+                                    });
+                                }
+                                lender_acc.balance -= principal_chronos;
+                                self.db.put_account(&lender_acc)?;
+                                let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                                    Some(a) => a,
+                                    None => {
+                                        chronx_core::account::Account {
+                                            account_id: borrower_id.clone(), balance: 0,
+                                            auth_policy: chronx_core::account::AuthPolicy::SingleSig {
+                                                public_key: chronx_core::types::DilithiumPublicKey(Vec::new())
+                                            },
+                                            nonce: 0, recovery_state: Default::default(),
+                                            post_recovery_restriction: None,
+                                            verifier_stake: 0, is_verifier: false, account_version: 3,
+                                            created_at: Some(now), display_name_hash: None,
+                                            incoming_locks_count: 0, outgoing_locks_count: 0,
+                                            total_locked_incoming_chronos: 0,
+                                            total_locked_outgoing_chronos: 0,
+                                            preferred_fiat_currency: None, lock_marker: None,
+                                            savings_balance: 0, savings_invested: false, savings_withdrawal_pending: false
+                                        }
+                                    }
+                                };
+                                borrower_acc.balance += principal_chronos;
+                                self.db.put_account(&borrower_acc)?;
+                            }
+                        }
+
+                        // Activate the loan
+                        loan_val["status"] = serde_json::json!("active");
+                        loan_val["activated_at"] = serde_json::json!(now as u64);
+                        loan_val["rescission_waived_by"] = serde_json::json!(waived_by);
+                        loan_val["rescission_waived_at"] = serde_json::json!(now as u64);
+                        let updated = serde_json::to_vec(&loan_val)
+                            .map_err(|_| ChronxError::SerializationError)?;
+                        self.db.save_loan(&lid_bytes, &updated)?;
+                        info!(loan_id = %loan_id, waived_by = %waived_by,
+                              "[RESCISSION WAIVE] Loan activated immediately, KX transferred");
                         Ok(())
                     } else {
                         Err(ChronxError::SerializationError)
@@ -3301,6 +3543,15 @@ impl StateEngine {
                     "Partial loan exit requires governance activation.".into()
                 ))
             }
+
+            // ── Savings account ──────────────────────────────────────────
+            Action::CreateSavingsDeposit { amount_chronos } => {
+                self.handle_savings_deposit(&sender, *amount_chronos, now as i64)
+            }
+
+            Action::WithdrawSavings { amount_chronos } => {
+                self.handle_savings_withdrawal(&sender, *amount_chronos, now as i64)
+            }
         }
     }
 }
@@ -3890,6 +4141,264 @@ impl StateEngine {
         Ok(settled_count)
     }
 
+    // ── One-time migration: create escrow records for pre-fix rescission loans ──
+    /// For any loan in accepted_pending_rescission without an escrow record,
+    /// debit the lender and create the escrow deposit. Idempotent.
+    /// Re-serialize all accounts to include new savings fields (bincode migration).
+    pub fn migrate_account_savings_fields(&self) -> Result<u32, ChronxError> {
+        let mut count = 0u32;
+        let entries = self.db.iter_accounts_raw();
+
+        for (key, val) in entries {
+            match bincode::deserialize::<chronx_core::account::Account>(&val) {
+                Ok(acc) => {
+                    if let Ok(new_val) = bincode::serialize(&acc) {
+                        if new_val.len() != val.len() {
+                            self.db.put_account_raw(&key, &new_val)?;
+                            count += 1;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Old format — append default savings bytes
+                    let mut extended = val.to_vec();
+                    extended.extend_from_slice(&[0u8; 16]); // savings_balance: u128 = 0
+                    extended.push(0); // savings_invested: bool = false
+                    extended.push(0); // savings_withdrawal_pending: bool = false
+
+                    match bincode::deserialize::<chronx_core::account::Account>(&extended) {
+                        Ok(acc) => {
+                            if let Ok(new_val) = bincode::serialize(&acc) {
+                                self.db.put_account_raw(&key, &new_val)?;
+                                count += 1;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to migrate account {}: {}", hex::encode(&key), e);
+                        }
+                    }
+                }
+            }
+        }
+        if count > 0 { self.db.flush()?; }
+        Ok(count)
+    }
+
+    pub fn migrate_rescission_escrows(&self) -> Result<u32, ChronxError> {
+        use chronx_core::types::AccountId;
+        let mut count = 0u32;
+
+        let entries: Vec<_> = self.db.iter_loans().collect();
+        for (key, val) in entries {
+            let loan: serde_json::Value = match serde_json::from_slice(&val) {
+                Ok(v) => v, Err(_) => continue
+            };
+
+            let status = loan.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status != "accepted_pending_rescission" { continue; }
+
+            if key.len() != 32 { continue; }
+            let mut lid = [0u8; 32];
+            lid.copy_from_slice(&key);
+
+            // Skip if escrow already exists
+            if let Ok(Some(_)) = self.db.get_loan_escrow(&lid) { continue; }
+
+            let lender_str = loan.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let principal_kx = loan.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+            let principal_chronos = loan.get("principal_chronos").and_then(|v| v.as_u64())
+                .unwrap_or(principal_kx * 1_000_000) as u128;
+            let expires = loan.get("rescission_expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            if principal_chronos == 0 || lender_str.is_empty() { continue; }
+
+            let lender_id = match AccountId::from_b58(&lender_str) { Ok(id) => id, Err(_) => continue };
+            let mut lender_acc = match self.db.get_account(&lender_id)? {
+                Some(a) => a, None => continue
+            };
+
+            if lender_acc.balance < principal_chronos {
+                warn!(loan_id = %hex::encode(&lid),
+                      "[ESCROW MIGRATION] lender balance {} < principal {}, skipping",
+                      lender_acc.balance, principal_chronos);
+                continue;
+            }
+
+            lender_acc.balance -= principal_chronos;
+            self.db.put_account(&lender_acc)?;
+            self.db.put_loan_escrow(&lid, &lender_str, principal_chronos, expires)?;
+
+            info!(loan_id = %hex::encode(&lid),
+                  principal_kx = principal_chronos / 1_000_000,
+                  lender = %lender_str,
+                  "[ESCROW MIGRATION] Retroactively locked lender funds in escrow");
+            count += 1;
+        }
+        if count > 0 { self.db.flush()?; }
+        Ok(count)
+    }
+
+    // ── Savings account actions ─────────────────────────────────────────────
+
+    fn handle_savings_deposit(&self, sender: &chronx_core::account::Account, amount_chronos: u64, now: i64) -> Result<(), ChronxError> {
+        let amount = amount_chronos as u128;
+        if amount == 0 {
+            return Err(ChronxError::Other("Savings deposit amount must be > 0".into()));
+        }
+
+        // Check governance: savings_enabled
+        let savings_enabled = self.db.get_meta("governance:savings_enabled")
+            .ok().flatten()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s == "true")
+            .unwrap_or(true); // default enabled
+        if !savings_enabled {
+            return Err(ChronxError::FeatureNotActive("Savings deposits require governance activation.".into()));
+        }
+
+        // Check min deposit (100 KX = 100_000_000 chronos)
+        let min_deposit: u128 = 100_000_000;
+        if amount < min_deposit {
+            return Err(ChronxError::Other(format!("Minimum savings deposit is 100 KX (got {} KX)", amount / 1_000_000)));
+        }
+
+        // Check spendable balance
+        let spendable = sender.spendable_balance();
+        if spendable < amount {
+            return Err(ChronxError::InsufficientBalance { need: amount, have: spendable });
+        }
+
+        // Check per-wallet cap ($50 USD at $0.003077/KX = ~16,249 KX = 16,249,000,000 chronos)
+        let max_savings_chronos: u128 = 16_249_000_000;
+        let new_total = sender.savings_balance + amount;
+        if new_total > max_savings_chronos {
+            return Err(ChronxError::Other(format!(
+                "Savings cap exceeded. Max ~16,249 KX ($50). Current: {} KX, deposit: {} KX",
+                sender.savings_balance / 1_000_000, amount / 1_000_000
+            )));
+        }
+
+        // Transfer: spendable -> savings
+        let mut acc = sender.clone();
+        acc.balance -= amount;
+        acc.savings_balance += amount;
+        self.db.put_account(&acc)?;
+
+        info!(wallet = %acc.account_id, amount_kx = amount / 1_000_000,
+              savings_total_kx = acc.savings_balance / 1_000_000,
+              "[SAVINGS DEPOSIT] KX moved to savings bucket");
+        Ok(())
+    }
+
+    fn handle_savings_withdrawal(&self, sender: &chronx_core::account::Account, amount_chronos: u64, _now: i64) -> Result<(), ChronxError> {
+        let amount = amount_chronos as u128;
+        if amount == 0 {
+            return Err(ChronxError::Other("Withdrawal amount must be > 0".into()));
+        }
+
+        if sender.savings_balance < amount {
+            return Err(ChronxError::Other(format!(
+                "Insufficient savings. Have: {} KX, requested: {} KX",
+                sender.savings_balance / 1_000_000, amount / 1_000_000
+            )));
+        }
+
+        // If invested in HedgeKX, queue withdrawal instead of immediate
+        if sender.savings_invested {
+            let mut acc = sender.clone();
+            acc.savings_withdrawal_pending = true;
+            self.db.put_account(&acc)?;
+            info!(wallet = %acc.account_id, amount_kx = amount / 1_000_000,
+                  "[SAVINGS WITHDRAW] Queued — will process at next instrument expiry");
+            return Ok(());
+        }
+
+        // Immediate withdrawal: savings -> spendable
+        let mut acc = sender.clone();
+        acc.savings_balance -= amount;
+        acc.balance += amount;
+        self.db.put_account(&acc)?;
+
+        info!(wallet = %acc.account_id, amount_kx = amount / 1_000_000,
+              savings_remaining_kx = acc.savings_balance / 1_000_000,
+              "[SAVINGS WITHDRAW] KX returned to spendable");
+        Ok(())
+    }
+
+    // ── One-time fix: credit borrower for waived loans that never transferred KX ──
+    /// For active loans with rescission_waived_at set where borrower never received
+    /// principal (old code bug), debit lender and credit borrower. Idempotent via
+    /// escrow_released marker on loan JSON.
+    pub fn fix_waived_loan_transfers(&self) -> Result<u32, ChronxError> {
+        use chronx_core::types::AccountId;
+        let mut count = 0u32;
+
+        let entries: Vec<_> = self.db.iter_loans().collect();
+        for (key, val) in entries {
+            let mut loan: serde_json::Value = match serde_json::from_slice(&val) {
+                Ok(v) => v, Err(_) => continue
+            };
+
+            let status = loan.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status != "active" { continue; }
+
+            // Only fix loans that were waived (not sweep-activated)
+            if loan.get("rescission_waived_at").is_none() { continue; }
+
+            // Skip if already fixed (idempotency marker)
+            if loan.get("escrow_released").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
+            // Also skip if escrow_released is a timestamp (already done)
+            if loan.get("escrow_released").and_then(|v| v.as_u64()).is_some() { continue; }
+
+            let lender_str = loan.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let borrower_str = loan.get("borrower_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let principal_kx = loan.get("principal_kx").and_then(|v| v.as_u64()).unwrap_or(0);
+            let principal_chronos = loan.get("principal_chronos").and_then(|v| v.as_u64())
+                .unwrap_or(principal_kx * 1_000_000) as u128;
+
+            if principal_chronos == 0 || lender_str.is_empty() || borrower_str.is_empty() { continue; }
+            if key.len() != 32 { continue; }
+
+            let lender_id = match AccountId::from_b58(&lender_str) { Ok(id) => id, Err(_) => continue };
+            let borrower_id = match AccountId::from_b58(&borrower_str) { Ok(id) => id, Err(_) => continue };
+
+            // Debit lender
+            let mut lender_acc = match self.db.get_account(&lender_id) {
+                Ok(Some(a)) => a, _ => continue
+            };
+            if lender_acc.balance < principal_chronos {
+                warn!(loan_id = %hex::encode(&key),
+                      "[WAIVE FIX] lender balance {} < principal {}, skipping",
+                      lender_acc.balance, principal_chronos);
+                continue;
+            }
+            lender_acc.balance -= principal_chronos;
+            self.db.put_account(&lender_acc)?;
+
+            // Credit borrower
+            let mut borrower_acc = match self.db.get_account(&borrower_id) {
+                Ok(Some(a)) => a, _ => continue
+            };
+            borrower_acc.balance += principal_chronos;
+            self.db.put_account(&borrower_acc)?;
+
+            // Mark as fixed
+            loan["escrow_released"] = serde_json::json!(true);
+            let mut lid = [0u8; 32];
+            lid.copy_from_slice(&key);
+            let updated = serde_json::to_vec(&loan).unwrap_or_default();
+            let _ = self.db.save_loan(&lid, &updated);
+
+            info!(loan_id = %hex::encode(&key),
+                  principal_kx = principal_chronos / 1_000_000,
+                  lender = %lender_str, borrower = %borrower_str,
+                  "[WAIVE FIX] Credited borrower with principal from waived loan");
+            count += 1;
+        }
+        if count > 0 { self.db.flush()?; }
+        Ok(count)
+    }
+
     // ── Rescission sweep: activate loans past their rescission window ─────────
     /// Sweep loans past their rescission window: transfer principal, set status Active
     pub fn sweep_loan_rescissions(&self, now: i64) -> Result<u32, ChronxError> {
@@ -3917,28 +4426,47 @@ impl StateEngine {
             let principal_chronos = loan.get("principal_chronos").and_then(|v| v.as_u64())
                 .unwrap_or(principal_kx * 1_000_000) as u128;
 
-            if principal_chronos > 0 && !lender_str.is_empty() && !borrower_str.is_empty() {
-                let lender_id = match AccountId::from_b58(&lender_str) { Ok(id) => id, Err(_) => continue };
-                let borrower_id = match AccountId::from_b58(&borrower_str) { Ok(id) => id, Err(_) => continue };
-
-                // Debit lender
-                let mut lender_acc = match self.db.get_account(&lender_id)? {
-                    Some(a) => a, None => continue
-                };
-                if lender_acc.balance < principal_chronos {
-                    warn!(loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
-                          "[RESCISSION SWEEP] lender insufficient balance, skipping");
-                    continue;
+            // Release from escrow to borrower (funds already debited from lender at acceptance)
+            if key.len() == 32 {
+                let mut lid = [0u8; 32];
+                lid.copy_from_slice(&key);
+                if let Ok(Some(escrow_val)) = self.db.get_loan_escrow(&lid) {
+                    let escrow_amount: u128 = escrow_val.get("amount_chronos")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    if escrow_amount > 0 && !borrower_str.is_empty() {
+                        let borrower_id = match AccountId::from_b58(&borrower_str) { Ok(id) => id, Err(_) => continue };
+                        let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                            Some(a) => a, None => continue
+                        };
+                        borrower_acc.balance += escrow_amount;
+                        self.db.put_account(&borrower_acc)?;
+                        let _ = self.db.remove_loan_escrow(&lid);
+                        info!(loan_id_hex = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                              amount_kx = escrow_amount / 1_000_000,
+                              "[ESCROW RELEASE] Sweep: funds released to borrower");
+                    }
+                } else if principal_chronos > 0 && !lender_str.is_empty() && !borrower_str.is_empty() {
+                    // Fallback for pre-fix loans without escrow record
+                    let lender_id = match AccountId::from_b58(&lender_str) { Ok(id) => id, Err(_) => continue };
+                    let borrower_id = match AccountId::from_b58(&borrower_str) { Ok(id) => id, Err(_) => continue };
+                    let mut lender_acc = match self.db.get_account(&lender_id)? {
+                        Some(a) => a, None => continue
+                    };
+                    if lender_acc.balance < principal_chronos {
+                        warn!(loan_id = %loan.get("loan_id_hex").and_then(|v|v.as_str()).unwrap_or("?"),
+                              "[RESCISSION SWEEP] lender insufficient balance, skipping");
+                        continue;
+                    }
+                    lender_acc.balance -= principal_chronos;
+                    self.db.put_account(&lender_acc)?;
+                    let mut borrower_acc = match self.db.get_account(&borrower_id)? {
+                        Some(a) => a, None => continue
+                    };
+                    borrower_acc.balance += principal_chronos;
+                    self.db.put_account(&borrower_acc)?;
                 }
-                lender_acc.balance -= principal_chronos;
-                self.db.put_account(&lender_acc)?;
-
-                // Credit borrower
-                let mut borrower_acc = match self.db.get_account(&borrower_id)? {
-                    Some(a) => a, None => continue
-                };
-                borrower_acc.balance += principal_chronos;
-                self.db.put_account(&borrower_acc)?;
             }
 
             loan["status"] = serde_json::json!("active");
@@ -3961,6 +4489,69 @@ impl StateEngine {
     /// Reads latest oracle price from oracle_cache sled tree.
     /// If price crosses threshold in the configured direction, auto-triggers.
     /// On clean expiry: success_payment then fallback.
+
+    /// Process pending draw requests from the pending_drawrequests sled tree.
+    /// Draws that have passed their lock_until timestamp are eligible for execution.
+    pub fn sweep_pending_drawrequests(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let mut count = 0u32;
+        let mut to_remove: Vec<String> = Vec::new();
+
+        for (key, val) in self.db.iter_pending_drawrequests()? {
+            let lock_until = val.get("lock_until").and_then(|v| v.as_u64()).unwrap_or(0);
+            if lock_until > 0 && now_u64 < lock_until {
+                continue; // Not yet eligible
+            }
+
+            let bond_wallet = val.get("bond_wallet").and_then(|v| v.as_str()).unwrap_or("");
+            let amount_chronos = val.get("amount_chronos").and_then(|v| v.as_u64()).unwrap_or(0);
+            let reason = val.get("reason").and_then(|v| v.as_str()).unwrap_or("scheduled");
+
+            if amount_chronos == 0 || bond_wallet.is_empty() {
+                to_remove.push(key.clone());
+                continue;
+            }
+
+            // Execute the draw: transfer from bond wallet to recipient
+            if let Ok(bond_id) = chronx_core::types::AccountId::from_b58(bond_wallet) {
+                if let Ok(Some(mut bond_acc)) = self.db.get_account(&bond_id) {
+                    if bond_acc.balance >= amount_chronos as u128 {
+                        let dest_wallet = val.get("destination_wallet").and_then(|v| v.as_str()).unwrap_or("");
+                        if !dest_wallet.is_empty() {
+                            if let Ok(dest_id) = chronx_core::types::AccountId::from_b58(dest_wallet) {
+                                if let Ok(Some(mut dest_acc)) = self.db.get_account(&dest_id) {
+                                    bond_acc.balance -= amount_chronos as u128;
+                                    dest_acc.balance += amount_chronos as u128;
+                                    self.db.put_account(&bond_acc)?;
+                                    self.db.put_account(&dest_acc)?;
+                                    count += 1;
+                                    info!(bond = %bond_wallet, dest = %dest_wallet,
+                                          amount_kx = amount_chronos / 1_000_000,
+                                          reason = %reason,
+                                          "[DRAW REQUEST] executed");
+                                }
+                            }
+                        }
+                        to_remove.push(key.clone());
+                    } else {
+                        info!(bond = %bond_wallet, needed = amount_chronos,
+                              balance = %bond_acc.balance,
+                              "[DRAW REQUEST] insufficient bond balance, deferring");
+                    }
+                }
+            }
+        }
+
+        for key in to_remove {
+            let _ = self.db.remove_pending_drawrequest(&key);
+        }
+
+        if count > 0 {
+            self.db.flush()?;
+        }
+        Ok(count)
+    }
+
     pub fn sweep_oracle_triggers(&self, now: i64) -> Result<u32, ChronxError> {
         // Check governance flag
         let enabled = self.db.get_meta("hedgekx_oracle_trigger_enabled")
@@ -4070,7 +4661,8 @@ impl StateEngine {
                         verifier_stake: 0, is_verifier: false, account_version: 3, created_at: Some(now),
                         display_name_hash: None, incoming_locks_count: 0, outgoing_locks_count: 0,
                         total_locked_incoming_chronos: 0, total_locked_outgoing_chronos: 0,
-                        preferred_fiat_currency: None, lock_marker: None
+                        preferred_fiat_currency: None, lock_marker: None,
+                                            savings_balance: 0, savings_invested: false, savings_withdrawal_pending: false
                     };
                     self.db.put_account(&new_acc)?;
                 }

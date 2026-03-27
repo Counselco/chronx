@@ -34,3 +34,4 @@ wallet-build.log
 *.env
 *secret*
 *api_key*
+nul

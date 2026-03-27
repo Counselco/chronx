@@ -1,0 +1,83 @@
+{
+  "version": "1.2",
+  "updated": "2026-03-25",
+  "partners": [
+    {
+      "partner": "CPNX",
+      "bond_kx": 1000000,
+      "bond_wallet": "5g4Fcn8A9BigH8vvyNvVvTGksC6PVWTsQnvT8adRGfFp",
+      "operating_mode": "active",
+      "tagline": "Identity verification and compliance infrastructure",
+      "mandate": "Bonded verifier. Issues blue checkmarks and compliance badges. Zero pricing decisions."
+    },
+    {
+      "partner": "Verifas",
+      "bond_kx": 10000000,
+      "bond_wallet": "CNUuEt3kQNAeQtSP9Y9muyCMujxFWq2AfsTecjHvCYtD",
+      "operating_mode": "active",
+      "tagline": "Attestation and escrow services",
+      "mandate": "Attestor. Escrow agent. Beneficiary identification. Zero fund management."
+    },
+    {
+      "partner": "XChan",
+      "bond_kx": 10000000,
+      "bond_wallet": "68Y97pWzwT8r5kEfozAjhZd6b4bhrKVmJUr84NAfz129",
+      "operating_mode": "active",
+      "tagline": "KX/USDC exchange with tiered spreads",
+      "mandate": "Exchange operator. Spread pricing only. Zero fund custody beyond settlement window.",
+      "max_tx_usd": 250,
+      "max_tx_usd_accredited": 10000
+    },
+    {
+      "partner": "HedgeKX",
+      "bond_kx": 10000000,
+      "bond_wallet": "DqbgpLvxhobS5FcW71ca85RSYxKxw7Dx2tuogkrrkQ1i",
+      "operating_mode": "active",
+      "tagline": "Overnight KX/USD hedge market",
+      "mandate": "Platform only. Order book operator. Oracle trigger attestor. Zero fund management. Zero pricing decisions.",
+      "max_daily_exposure_usd": 250,
+      "max_instrument_duration_seconds": 86400,
+      "oracle_trigger_enabled": false,
+      "compound_condition_enabled": false,
+      "third_party_licensing_enabled": false,
+      "notices": [
+        {
+          "type": "MANDATE",
+          "text": "HedgeKX makes no pricing decisions. All instruments are bilateral. HedgeKX does not guarantee any outcome."
+        },
+        {
+          "type": "CURRENCY_RESTRICTION",
+          "text": "USDC only. All instruments denominated in KX/USD."
+        },
+        {
+          "type": "DAILY_CAP",
+          "text": "$250 total daily exposure. Governance parameter. Resets midnight UTC."
+        },
+        {
+          "type": "DURATION_RESTRICTION",
+          "text": "24-hour maximum instrument duration. Governance parameter."
+        }
+      ]
+    },
+    {
+      "partner": "MISAI",
+      "bond_kx": 10000000,
+      "bond_wallet": "2EY2u8iLXW6KXM6zH2PYcB98WDBzBU7DK4d2PsLL422v",
+      "operating_mode": "gate_restricted",
+      "tagline": "AI-managed investment tranches",
+      "mandate": "Agent executor. Investment mandate fulfillment. Risk scoring. Zero custody.",
+      "conservative_batch_only": true,
+      "hedge_monitoring_enabled": false,
+      "pool_health_score_enabled": false,
+      "fair_value_publishing_enabled": false
+    },
+    {
+      "partner": "KXGC",
+      "bond_kx": 300000000,
+      "bond_wallet": "BqjGDbhzLJJgzpVywRxug4wTa2Qqtwipc1hkcLLJsWzF",
+      "operating_mode": "active",
+      "tagline": "Protocol guarantor of last resort",
+      "mandate": "Tier 0 reserve. Bond slash assumption. Attestor failure backstop. Zero trading. Zero lending."
+    }
+  ]
+}

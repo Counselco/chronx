@@ -188,6 +188,17 @@ pub struct Account {
     /// Reserved for future protocol extensions. Ignored by current nodes.
     #[serde(default)]
     pub lock_marker: Option<Vec<u8>>,
+
+    // ── Savings account fields ───────────────────────────────────────────────
+    /// Balance held in savings bucket (not spendable until withdrawn).
+    #[serde(default)]
+    pub savings_balance: u128,
+    /// Whether savings are currently invested in HedgeKX overnight yield.
+    #[serde(default)]
+    pub savings_invested: bool,
+    /// Pending withdrawal flag (processed at next instrument expiry).
+    #[serde(default)]
+    pub savings_withdrawal_pending: bool,
 }
 
 impl Account {
@@ -211,6 +222,9 @@ impl Account {
             total_locked_outgoing_chronos: 0,
             preferred_fiat_currency: None,
             lock_marker: None,
+            savings_balance: 0,
+            savings_invested: false,
+            savings_withdrawal_pending: false,
         }
     }
 

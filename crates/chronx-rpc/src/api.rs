@@ -363,6 +363,14 @@ pub trait ChronxApi {
     #[method(name = "getLoansByStatus")]
     async fn get_loans_by_status(&self, wallet_b58: String, status: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// Return loan escrow balance for a wallet (funds locked during rescission).
+    #[method(name = "getLoanEscrowBalance")]
+    async fn get_loan_escrow_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value>;
+
+    /// Return savings account balance and yield info for a wallet.
+    #[method(name = "getSavingsBalance")]
+    async fn get_savings_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value>;
+
     /// Return channel info by channel_id hex.
     #[method(name = "getChannelInfo")]
     async fn get_channel_info(&self, channel_id_hex: String) -> RpcResult<serde_json::Value>;
@@ -379,5 +387,73 @@ pub trait ChronxApi {
     /// Return KXGC bond wallet capacity and reserve status.
     #[method(name = "getKXGCCapacity")]
     async fn get_kxgc_capacity(&self) -> RpcResult<serde_json::Value>;
+
+
+    // -- Genesis Zero -- Obligation Transfer RPC queries ----------------------
+
+    /// Return the current owner of an obligation.
+    #[method(name = "getObligationOwner")]
+    async fn get_obligation_owner(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return the transfer history of an obligation.
+    #[method(name = "getTransferHistory")]
+    async fn get_transfer_history(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return all obligations owned by a wallet.
+    #[method(name = "getObligationsByOwner")]
+    async fn get_obligations_by_owner(&self, wallet: String) -> RpcResult<serde_json::Value>;
+
+    /// Return all tranches of a parent obligation.
+    #[method(name = "getTranches")]
+    async fn get_tranches(&self, parent_obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return yield inputs for an obligation (respects terms_visibility).
+    #[method(name = "getYieldInputs")]
+    async fn get_yield_inputs(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return obligation status summary.
+    #[method(name = "getObligationStatus")]
+    async fn get_obligation_status(&self, obligation_id: String) -> RpcResult<serde_json::Value>;
+
+
+    // -- Escalation/failure/hedge scaffold RPC methods ------------------------
+
+    /// Get escalation status for a conditional lock.
+    #[method(name = "getEscalationStatus")]
+    async fn get_escalation_status(&self, conditional_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get all declared attestor failures.
+    #[method(name = "getAttestorFailures")]
+    async fn get_attestor_failures(&self) -> RpcResult<serde_json::Value>;
+
+    /// Get all locks affected by a group failure.
+    #[method(name = "getAffectedPolicies")]
+    async fn get_affected_policies(&self, group_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get hedge instruments linked to a pool.
+    #[method(name = "getHedgeInstruments")]
+    async fn get_hedge_instruments(&self, pool_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get linked spring instrument status.
+    #[method(name = "getLinkedSpringStatus")]
+    async fn get_linked_spring_status(&self, instrument_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Get pool health score (cached, null until MISAI populates).
+    #[method(name = "getPoolHealthScore")]
+    async fn get_pool_health_score(&self, pool_id: String) -> RpcResult<serde_json::Value>;
+
+
+    /// Return partial release history for a conditional lock.
+    #[method(name = "getPartialReleaseHistory")]
+    async fn get_partial_release_history(&self, lock_id: String) -> RpcResult<serde_json::Value>;
+
+
+    /// Return oracle trigger status for a conditional lock.
+    #[method(name = "getOracleTriggerStatus")]
+    async fn get_oracle_trigger_status(&self, lock_id: String) -> RpcResult<serde_json::Value>;
+
+    /// Return all pending draw requests.
+    #[method(name = "getPendingDrawRequests")]
+    async fn get_pending_draw_requests(&self) -> RpcResult<serde_json::Value>;
 
 }

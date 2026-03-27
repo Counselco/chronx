@@ -2125,7 +2125,73 @@ impl ChronxApiServer for RpcServer {
         Ok(loans)
     }
 
-        /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
+    
+    /// `chronx_getLoanEscrowBalance` -- escrow balance for a wallet during rescission.
+    async fn get_loan_escrow_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value> {
+        let escrows = self.state.db.get_loan_escrows_by_wallet(&wallet_b58)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let mut total_locked: u128 = 0;
+        let mut loans = Vec::new();
+        for (loan_id_hex, amount, expires_at) in &escrows {
+            total_locked += amount;
+            loans.push(serde_json::json!({
+                "loan_id": loan_id_hex,
+                "amount_chronos": amount.to_string(),
+                "amount_kx": amount / 1_000_000,
+                "expires_at": expires_at,
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "wallet": wallet_b58,
+            "total_locked_chronos": total_locked.to_string(),
+            "total_locked_kx": total_locked / 1_000_000,
+            "loan_count": escrows.len(),
+            "loans": loans,
+        }))
+    }
+
+    /// chronx_getMicroLoan -- fetch micro-loan by loan_id hex.
+    /// `chronx_getSavingsBalance` -- savings account balance and yield info.
+    async fn get_savings_balance(&self, wallet_b58: String) -> RpcResult<serde_json::Value> {
+        use chronx_core::types::AccountId;
+        let account_id = AccountId::from_b58(&wallet_b58)
+            .map_err(|e| rpc_err(-32602, format!("Invalid wallet: {}", e)))?;
+        let account = self.state.db.get_account(&account_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        match account {
+            Some(acc) => {
+                let savings_kx = acc.savings_balance / 1_000_000;
+                let annual_rate = if acc.savings_invested { 2.1 } else { 0.0 };
+                let daily_yield = (acc.savings_balance as f64) * (annual_rate / 100.0 / 365.0);
+
+                Ok(serde_json::json!({
+                    "wallet": wallet_b58,
+                    "savings_chronos": acc.savings_balance.to_string(),
+                    "savings_kx": savings_kx,
+                    "invested": acc.savings_invested,
+                    "withdrawal_pending": acc.savings_withdrawal_pending,
+                    "annual_rate_pct": annual_rate,
+                    "daily_yield_chronos": (daily_yield as u64).to_string(),
+                    "daily_yield_kx": daily_yield / 1_000_000.0,
+                }))
+            }
+            None => Ok(serde_json::json!({
+                "wallet": wallet_b58,
+                "savings_chronos": "0",
+                "savings_kx": 0,
+                "invested": false,
+                "withdrawal_pending": false,
+                "annual_rate_pct": 0.0,
+                "daily_yield_chronos": "0",
+                "daily_yield_kx": 0.0,
+            }))
+        }
+    }
+
+
     async fn get_micro_loan(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
         let key = hex::decode(&loan_id_hex).unwrap_or_default();
         match self.state.db.micro_loans.get(&key) {
@@ -2449,13 +2515,33 @@ impl ChronxApiServer for RpcServer {
     }
 
     async fn get_affected_policies(&self, group_id: String) -> RpcResult<serde_json::Value> {
-        // Scaffold: scan conditionals tree for locks referencing this group
-        // Full implementation requires attestor_group field in conditionals
+        let db = &self.state.db;
+        let mut affected: Vec<serde_json::Value> = Vec::new();
+
+        // Check escalations tree for entries referencing this group
+        if let Ok(Some(data)) = db.get_attestor_failure(&group_id) {
+            if let Ok(failure) = serde_json::from_slice::<serde_json::Value>(&data) {
+                affected.push(serde_json::json!({
+                    "type": "attestor_failure",
+                    "record": failure
+                }));
+            }
+        }
+
+        // Check escalations tree for conditionals escalated due to this group
+        if let Ok(Some(data)) = db.get_escalation(&group_id) {
+            if let Ok(esc) = serde_json::from_slice::<serde_json::Value>(&data) {
+                affected.push(serde_json::json!({
+                    "type": "escalation",
+                    "record": esc
+                }));
+            }
+        }
+
         Ok(serde_json::json!({
             "group_id": group_id,
-            "affected_locks": [],
-            "count": 0,
-            "note": "Scaffold - full scan pending attestor_group indexing"
+            "affected_records": affected,
+            "count": affected.len()
         }))
     }
 
@@ -2507,6 +2593,83 @@ impl ChronxApiServer for RpcServer {
             }))
         }
     }
+
+    async fn get_oracle_trigger_status(&self, lock_id: String) -> RpcResult<serde_json::Value> {
+        let id_bytes = hex_to_32(&lock_id)?;
+        let db = &self.state.db;
+        match db.get_conditional(&id_bytes) {
+            Ok(Some(cond)) => {
+                let cond_type = cond.condition_type.as_deref().unwrap_or("SingleAttestation");
+                if cond_type != "OracleTrigger" {
+                    return Ok(serde_json::json!({
+                        "lock_id": lock_id,
+                        "error": "Not an OracleTrigger conditional"
+                    }));
+                }
+                let status_str = match cond.status {
+                    chronx_state::db::ConditionalStatus::Pending => "Pending",
+                    chronx_state::db::ConditionalStatus::Released => "Triggered",
+                    chronx_state::db::ConditionalStatus::PartiallyReleased => "PartiallyTriggered",
+                    chronx_state::db::ConditionalStatus::Voided => "Expired",
+                    chronx_state::db::ConditionalStatus::Returned => "Returned",
+                    chronx_state::db::ConditionalStatus::Escrowed => "Escrowed",
+                };
+                let creation_price = cond.oracle_creation_price.unwrap_or(0.0);
+                let threshold = cond.oracle_trigger_threshold.unwrap_or(0.0);
+                let trigger_price = creation_price * threshold;
+                let direction = cond.oracle_trigger_direction.as_deref().unwrap_or("Below");
+                let triggered = status_str == "Triggered";
+
+                Ok(serde_json::json!({
+                    "lock_id": lock_id,
+                    "status": status_str,
+                    "condition_type": "OracleTrigger",
+                    "oracle_pair": cond.oracle_pair,
+                    "creation_price": creation_price,
+                    "trigger_threshold": threshold,
+                    "trigger_price": trigger_price,
+                    "trigger_direction": direction,
+                    "triggered": triggered,
+                    "valid_until": cond.valid_until,
+                    "success_payment_wallet": cond.success_payment_wallet,
+                    "success_payment_chronos": cond.success_payment_chronos
+                }))
+            }
+            _ => Ok(serde_json::json!({
+                "lock_id": lock_id,
+                "error": "Conditional not found"
+            }))
+        }
+    }
+
+    async fn get_pending_draw_requests(&self) -> RpcResult<serde_json::Value> {
+        let db = &self.state.db;
+        match db.iter_pending_drawrequests() {
+            Ok(items) => {
+                let requests: Vec<serde_json::Value> = items.into_iter().map(|(key, val)| {
+                    serde_json::json!({
+                        "id": key,
+                        "bond_wallet": val.get("bond_wallet").and_then(|v| v.as_str()).unwrap_or(""),
+                        "destination_wallet": val.get("destination_wallet").and_then(|v| v.as_str()).unwrap_or(""),
+                        "amount_chronos": val.get("amount_chronos").and_then(|v| v.as_u64()).unwrap_or(0),
+                        "reason": val.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+                        "lock_until": val.get("lock_until").and_then(|v| v.as_u64()).unwrap_or(0),
+                        "auto_generated": val.get("auto_generated").and_then(|v| v.as_bool()).unwrap_or(false),
+                        "queued_at": val.get("queued_at").and_then(|v| v.as_u64()).unwrap_or(0)
+                    })
+                }).collect();
+                Ok(serde_json::json!({
+                    "requests": requests,
+                    "count": requests.len()
+                }))
+            }
+            Err(_) => Ok(serde_json::json!({
+                "requests": [],
+                "count": 0
+            }))
+        }
+    }
+
     async fn get_partial_release_history(&self, lock_id: String) -> RpcResult<serde_json::Value> {
         let id_bytes = hex_to_32(&lock_id)?;
         let db = &self.state.db;

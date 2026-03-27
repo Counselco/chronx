@@ -166,6 +166,27 @@ async fn main() -> anyhow::Result<()> {
     // Share the same DB handle — sled uses an Arc internally so this is safe.
     let engine = Arc::new(StateEngine::new(Arc::clone(&db), args.pow_difficulty));
 
+    // ── Migrate account savings fields (bincode re-serialize) ────────────
+    match engine.migrate_account_savings_fields() {
+        Ok(0) => {},
+        Ok(n) => tracing::info!("[STARTUP] Migrated {n} accounts with savings fields"),
+        Err(e) => tracing::warn!("[STARTUP] Account savings migration error: {e}"),
+    }
+
+    // ── One-time escrow migration for pre-fix rescission loans ────────────
+    match engine.migrate_rescission_escrows() {
+        Ok(0) => {},
+        Ok(n) => tracing::info!("[STARTUP] Migrated {n} rescission loans to escrow"),
+        Err(e) => tracing::warn!("[STARTUP] Escrow migration error: {e}"),
+    }
+
+    // ── One-time fix: credit borrowers for waived loans that never transferred KX
+    match engine.fix_waived_loan_transfers() {
+        Ok(0) => {},
+        Ok(n) => tracing::info!("[STARTUP] Fixed {n} waived loans — borrowers credited"),
+        Err(e) => tracing::warn!("[STARTUP] Waive fix error: {e}"),
+    }
+
     // ── Inbound transaction queue ─────────────────────────────────────────────
     let (tx_sender, mut tx_receiver) =
         tokio::sync::mpsc::channel::<chronx_core::transaction::Transaction>(512);
@@ -408,6 +429,73 @@ async fn main() -> anyhow::Result<()> {
         });
         info!("loan rescission sweep task started (every 300 seconds)");
     }
+    // Oracle trigger sweep (every 60 seconds)
+    {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = chrono::Utc::now().timestamp();
+                match engine.sweep_oracle_triggers(now) {
+                    Ok(n) if n > 0 => tracing::info!(triggered = n, "Oracle trigger sweep completed"),
+                    Err(e) => tracing::warn!(error = %e, "Oracle trigger sweep error"),
+                    _ => {}
+                }
+            }
+        });
+        tracing::info!("oracle trigger sweep started (every 60 seconds)");
+    }
+    // Oracle price poller: fetches KX/USD from HedgeKX API every 60s
+    // and stores in oracle_price_kx_usd meta key for sweep_oracle_triggers
+    {
+        let db = Arc::clone(&engine).db.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                match client.get("http://127.0.0.1:4044/hedgekx/reserves")
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send().await
+                {
+                    Ok(resp) => {
+                        if let Ok(text) = resp.text().await {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(price) = json.get("kx_price_now").and_then(|v| v.as_f64()) {
+                                    if price > 0.0 {
+                                        let _ = db.put_meta("oracle_price_kx_usd", price.to_string().as_bytes());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {} // HedgeKX unavailable, skip
+                }
+            }
+        });
+        tracing::info!("oracle price poller started (every 60 seconds from HedgeKX)");
+    }
+
+    // Pending draw requests sweep (every 60 seconds)
+    {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = chrono::Utc::now().timestamp();
+                match engine.sweep_pending_drawrequests(now) {
+                    Ok(n) if n > 0 => tracing::info!(executed = n, "Draw request sweep completed"),
+                    Err(e) => tracing::warn!(error = %e, "Draw request sweep error"),
+                    _ => {}
+                }
+            }
+        });
+        tracing::info!("pending draw request sweep started (every 60 seconds)");
+    }
+
+
 
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
