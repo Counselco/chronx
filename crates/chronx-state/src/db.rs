@@ -479,6 +479,9 @@ pub struct StateDb {
     pub twap_orders: sled::Tree,
     pub hedge_twap_orders: sled::Tree,
 
+    // protocol — KXGC Credit Facilities (institutional)
+    pub credit_facilities: sled::Tree,
+
 }
 
 impl StateDb {
@@ -658,6 +661,9 @@ impl StateDb {
         let hedge_twap_orders = db
             .open_tree("hedge_twap_orders")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let credit_facilities = db
+            .open_tree("credit_facilities")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let result = Ok(Self {
             _db: db,
             accounts,
@@ -717,6 +723,7 @@ impl StateDb {
             charge_offs,
             twap_orders,
             hedge_twap_orders,
+            credit_facilities,
 
         });
 
@@ -2680,6 +2687,39 @@ impl StateDb {
             let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
             if let Ok(record) = bincode::deserialize::<chronx_core::transaction::HedgeTwapOrderRecord>(&val) {
                 if record.wallet == wallet {
+                    results.push(record);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    // ── Credit Facility Records ──────────────────────────────────────────
+
+    pub fn put_credit_facility(&self, record: &chronx_core::transaction::CreditFacilityRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.credit_facilities.insert(&record.facility_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_credit_facility(&self, facility_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::CreditFacilityRecord>, ChronxError> {
+        match self.credit_facilities.get(facility_id) {
+            Ok(Some(bytes)) => {
+                let record: chronx_core::transaction::CreditFacilityRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn iter_credit_facilities_by_wallet(&self, wallet: &str) -> Result<Vec<chronx_core::transaction::CreditFacilityRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.credit_facilities.iter() {
+            let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            if let Ok(record) = bincode::deserialize::<chronx_core::transaction::CreditFacilityRecord>(&val) {
+                if record.lender_wallet == wallet || record.borrower_wallet == wallet {
                     results.push(record);
                 }
             }

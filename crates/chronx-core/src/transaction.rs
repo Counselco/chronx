@@ -1396,6 +1396,84 @@ pub enum Action {
         memo: Option<String>,
     },
 
+    // ── CreditFacility (KXGC institutional) ─────────────────────────────
+    /// Create a KXGC conditional credit facility for a corporate borrower.
+    /// No $250 cap — governance-set per-facility limits.
+    /// Corporate borrowers only (legal entities, not persons).
+    CreditFacilityCreate {
+        facility_id: [u8; 32],
+        borrower_wallet: AccountId,
+        /// Entity name (mutual benefit corporation, etc.)
+        borrower_entity_name: String,
+        /// CPNX badge ID for KYC verification (required above governance threshold)
+        #[serde(default)]
+        cpnx_badge_id: Option<String>,
+        /// Facility limit in USD
+        facility_limit_usd: f64,
+        /// Annual commitment fee in basis points
+        commitment_fee_bps: u32,
+        /// Interest rate on drawn balance in basis points. Must be >= AFR. Default: 400 (4%).
+        /// Required for tax treatment — cash basis election means KXGC only recognizes
+        /// when actually received, but the rate must exist in the instrument.
+        drawn_interest_rate_bps: u32,
+        /// Draw condition description (e.g. "pool exhausted following verified loss event")
+        draw_condition: String,
+        /// Facility currency: Usdc (hedged) or Kx (unhedged, TWAP mandatory)
+        facility_currency: LoanCurrency,
+        /// KX collateral locked by lender/Tier1 Name
+        kx_collateral_chronos: u128,
+        /// Extension right: borrower may extend without lender approval
+        #[serde(default)]
+        extension_right: Option<bool>,
+        /// Max extensions (governance default if None)
+        #[serde(default)]
+        max_extensions: Option<u32>,
+        #[serde(default)]
+        memo: Option<String>,
+    },
+    /// Draw against an active credit facility (springing trigger or manual).
+    CreditFacilityDraw {
+        facility_id: [u8; 32],
+        draw_amount_usd: f64,
+        /// Oracle attestation or proof of qualifying event
+        #[serde(default)]
+        proof_hash: Option<String>,
+        #[serde(default)]
+        memo: Option<String>,
+    },
+    /// Repay a drawn amount on a credit facility (PAY_AS).
+    CreditFacilityRepay {
+        facility_id: [u8; 32],
+        repayment_amount_usd: f64,
+        /// Base tx hash for USDC repayment proof
+        #[serde(default)]
+        base_tx_hash: Option<String>,
+        #[serde(default)]
+        memo: Option<String>,
+    },
+    /// Terminate a credit facility. Records permanent termination notice on DAG.
+    /// 90-day notice period by default (governance-set). Facility cannot be drawn
+    /// during notice period. After notice period expires, facility is closed.
+    /// Abortable during notice period if both parties agree.
+    CreditFacilityTerminate {
+        facility_id: [u8; 32],
+        /// Who initiated: "lender" or "borrower"
+        initiated_by: String,
+        /// Reason for termination
+        reason: TerminationReason,
+        /// If true: abort a pending termination (both parties must agree)
+        #[serde(default)]
+        abort: bool,
+        /// Eligible for partial commitment fee refund on early termination
+        #[serde(default)]
+        partial_refund_eligible: bool,
+        /// Notice period in days (default 30, min 7)
+        #[serde(default)]
+        notice_days: Option<u32>,
+        #[serde(default)]
+        memo: Option<String>,
+    },
+
 }
 
 /// Credit history visibility setting for a wallet.
@@ -2101,4 +2179,68 @@ pub enum DisbursementElection {
     Usdc { base_address: String },
     /// Receive KX to a ChronX wallet address.
     Kx { chronx_address: String },
+}
+
+// ── CreditFacilityRecord (KXGC institutional) ───────────────────────────────
+
+/// Record stored in the credit_facilities sled tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreditFacilityRecord {
+    pub facility_id: [u8; 32],
+    pub lender_wallet: String,
+    pub borrower_wallet: String,
+    pub borrower_entity_name: String,
+    pub cpnx_badge_id: Option<String>,
+    pub facility_limit_usd: f64,
+    pub commitment_fee_bps: u32,
+    pub drawn_interest_rate_bps: u32,
+    pub draw_condition: String,
+    pub facility_currency: String,    // "Usdc" or "Kx"
+    pub kx_collateral_chronos: u128,
+    pub extension_right: Option<bool>,
+    pub max_extensions: Option<u32>,
+    pub extensions_used: u32,
+    pub created_at: u64,
+    // Standby revolving — no fixed maturity
+    pub facility_type: String,            // "StandbyRevolving"
+    pub repayment_right: String,          // "BorrowerOnly"
+    pub maturity_date: Option<u64>,       // None — no fixed maturity ever
+    pub discharge_on_dissolution: bool,   // true — outstanding discharged when entity ceases to exist
+    pub total_drawn_usd: f64,
+    pub total_repaid_usd: f64,
+    pub outstanding_usd: f64,
+    pub status: String,               // "Active", "TerminationNotice", "Terminated", "ChargedOff"
+    pub termination_notice_at: Option<u64>,
+    pub termination_notice_by: Option<String>,
+    pub termination_reason: Option<String>,
+    pub terminated_at: Option<u64>,
+    pub notice_days: Option<u32>,
+    pub partial_refund_eligible: bool,
+    pub memo: Option<String>,
+    pub tx_id: String,
+}
+
+// ── TerminationReason (CreditFacility) ───────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TerminationReason {
+    RiskProfileChanged,
+    MarketWithdrawal,
+    Nonrenewal,
+    BorrowerRequest,
+    MutualAgreement,
+    Other(String),
+}
+
+impl std::fmt::Display for TerminationReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TerminationReason::RiskProfileChanged => write!(f, "RiskProfileChanged"),
+            TerminationReason::MarketWithdrawal => write!(f, "MarketWithdrawal"),
+            TerminationReason::Nonrenewal => write!(f, "Nonrenewal"),
+            TerminationReason::BorrowerRequest => write!(f, "BorrowerRequest"),
+            TerminationReason::MutualAgreement => write!(f, "MutualAgreement"),
+            TerminationReason::Other(s) => write!(f, "Other({})", s),
+        }
+    }
 }

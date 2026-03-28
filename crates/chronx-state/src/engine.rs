@@ -3979,6 +3979,8 @@ impl StateEngine {
                     (lw, st, ca)
                 } else if let Some(fl) = self.db.get_friendly_loan(loan_id)? {
                     (fl.lender.clone(), fl.status.clone(), fl.created_at)
+                } else if let Some(cf) = self.db.get_credit_facility(loan_id)? {
+                    (cf.lender_wallet.clone(), cf.status.clone(), cf.created_at)
                 } else {
                     return Err(ChronxError::Other(format!("Loan not found: {}", hex::encode(loan_id))));
                 };
@@ -4037,6 +4039,9 @@ impl StateEngine {
                 } else if let Some(mut fl) = self.db.get_friendly_loan(loan_id)? {
                     fl.status = "ChargedOff".to_string();
                     self.db.put_friendly_loan(&fl)?;
+                } else if let Some(mut cf) = self.db.get_credit_facility(loan_id)? {
+                    cf.status = "ChargedOff".to_string();
+                    self.db.put_credit_facility(&cf)?;
                 }
 
                 info!(
@@ -4142,6 +4147,204 @@ impl StateEngine {
                 record.write_off_tx_id = Some(hex::encode(tx_id.0));
                 self.db.put_friendly_loan(&record)?;
                 info!(loan_id = %hex::encode(loan_id), "Friendly loan written off — grace period expired");
+                Ok(())
+            }
+
+            // ── CreditFacilityCreate (KXGC institutional) ───────────────────
+            Action::CreditFacilityCreate {
+                ref facility_id,
+                ref borrower_wallet,
+                ref borrower_entity_name,
+                ref cpnx_badge_id,
+                facility_limit_usd,
+                commitment_fee_bps,
+                drawn_interest_rate_bps,
+                ref draw_condition,
+                ref facility_currency,
+                kx_collateral_chronos,
+                ref extension_right,
+                ref max_extensions,
+                ref memo,
+            } => {
+                use chronx_core::transaction::CreditFacilityRecord;
+                let now_u64 = now as u64;
+
+                // Governance checks
+                let max_usd: f64 = self.db.get_meta("kxgc_max_facility_usd")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(999_999_999.0);
+                let kyc_threshold: f64 = self.db.get_meta("kxgc_kyc_required_above_usd")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10_000.0);
+                let min_interest_bps: u32 = self.db.get_meta("kxgc_min_drawn_interest_bps")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(400);
+
+                if *facility_limit_usd > max_usd {
+                    return Err(ChronxError::Other(format!("Facility limit ${} exceeds governance max ${}", facility_limit_usd, max_usd)));
+                }
+                if *facility_limit_usd > kyc_threshold && cpnx_badge_id.is_none() {
+                    return Err(ChronxError::Other(format!("CPNX KYC badge required for facilities above ${}", kyc_threshold)));
+                }
+                if *drawn_interest_rate_bps < min_interest_bps {
+                    return Err(ChronxError::Other(format!(
+                        "Drawn interest rate {} bps below AFR floor {} bps", drawn_interest_rate_bps, min_interest_bps
+                    )));
+                }
+
+                // Deduct KX collateral from lender
+                let collateral = *kx_collateral_chronos;
+                if sender.balance < collateral {
+                    return Err(ChronxError::InsufficientBalance { need: collateral, have: sender.balance });
+                }
+                sender.balance -= collateral;
+
+                let currency_str = match facility_currency {
+                    chronx_core::transaction::LoanCurrency::Kx => "Kx",
+                    chronx_core::transaction::LoanCurrency::Usdc => "Usdc",
+                };
+
+                let record = CreditFacilityRecord {
+                    facility_id: *facility_id,
+                    lender_wallet: sender.account_id.to_b58(),
+                    borrower_wallet: borrower_wallet.to_b58(),
+                    borrower_entity_name: borrower_entity_name.clone(),
+                    cpnx_badge_id: cpnx_badge_id.clone(),
+                    facility_limit_usd: *facility_limit_usd,
+                    commitment_fee_bps: *commitment_fee_bps,
+                    drawn_interest_rate_bps: *drawn_interest_rate_bps,
+                    draw_condition: draw_condition.clone(),
+                    facility_currency: currency_str.to_string(),
+                    kx_collateral_chronos: *kx_collateral_chronos,
+                    extension_right: *extension_right,
+                    max_extensions: *max_extensions,
+                    extensions_used: 0,
+                    created_at: now_u64,
+                    facility_type: "StandbyRevolving".to_string(),
+                    repayment_right: "BorrowerOnly".to_string(),
+                    maturity_date: None,
+                    discharge_on_dissolution: true,
+                    total_drawn_usd: 0.0,
+                    total_repaid_usd: 0.0,
+                    outstanding_usd: 0.0,
+                    status: "Active".to_string(),
+                    termination_notice_at: None,
+                    termination_notice_by: None,
+                    termination_reason: None,
+                    terminated_at: None,
+                    notice_days: None,
+                    partial_refund_eligible: false,
+                    memo: memo.clone(),
+                    tx_id: hex::encode(tx_id.0),
+                };
+                self.db.put_credit_facility(&record)?;
+                info!(facility_id = %hex::encode(facility_id), limit_usd = facility_limit_usd,
+                      interest_bps = drawn_interest_rate_bps, entity = %borrower_entity_name,
+                      "CreditFacility created — StandbyRevolving, no fixed maturity");
+                Ok(())
+            }
+
+            // ── CreditFacilityDraw ──────────────────────────────────────────
+            Action::CreditFacilityDraw {
+                ref facility_id,
+                draw_amount_usd,
+                ref proof_hash,
+                ref memo,
+            } => {
+                let now_u64 = now as u64;
+                let _ = (proof_hash, memo, now_u64);
+                let mut record = self.db.get_credit_facility(facility_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("Credit facility not found: {}", hex::encode(facility_id))))?;
+                if record.status != "Active" {
+                    return Err(ChronxError::Other(format!("Facility {} is {} — cannot draw", hex::encode(facility_id), record.status)));
+                }
+                let new_outstanding = record.outstanding_usd + *draw_amount_usd;
+                if new_outstanding > record.facility_limit_usd {
+                    return Err(ChronxError::Other(format!(
+                        "Draw ${} would exceed facility limit ${} (outstanding: ${})",
+                        draw_amount_usd, record.facility_limit_usd, record.outstanding_usd
+                    )));
+                }
+                record.total_drawn_usd += *draw_amount_usd;
+                record.outstanding_usd = new_outstanding;
+                self.db.put_credit_facility(&record)?;
+                info!(facility_id = %hex::encode(facility_id), draw = draw_amount_usd,
+                      outstanding = record.outstanding_usd, "CreditFacility draw");
+                Ok(())
+            }
+
+            // ── CreditFacilityRepay ─────────────────────────────────────────
+            Action::CreditFacilityRepay {
+                ref facility_id,
+                repayment_amount_usd,
+                ref base_tx_hash,
+                ref memo,
+            } => {
+                let _ = (base_tx_hash, memo);
+                let mut record = self.db.get_credit_facility(facility_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("Credit facility not found: {}", hex::encode(facility_id))))?;
+                if record.status != "Active" && record.status != "TerminationNotice" {
+                    return Err(ChronxError::Other(format!("Facility {} is {} — cannot repay", hex::encode(facility_id), record.status)));
+                }
+                record.total_repaid_usd += *repayment_amount_usd;
+                record.outstanding_usd = (record.outstanding_usd - *repayment_amount_usd).max(0.0);
+                self.db.put_credit_facility(&record)?;
+                info!(facility_id = %hex::encode(facility_id), repayment = repayment_amount_usd,
+                      outstanding = record.outstanding_usd, "CreditFacility repayment");
+                Ok(())
+            }
+
+            // ── CreditFacilityTerminate ──────────────────────────────────────
+            Action::CreditFacilityTerminate {
+                ref facility_id,
+                ref initiated_by,
+                ref reason,
+                abort,
+                partial_refund_eligible,
+                ref notice_days,
+                ref memo,
+            } => {
+                let now_u64 = now as u64;
+                let _ = memo;
+                let mut record = self.db.get_credit_facility(facility_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("Credit facility not found: {}", hex::encode(facility_id))))?;
+
+                if *abort {
+                    // Abort a pending termination — both parties must have agreed
+                    if record.status != "TerminationNotice" {
+                        return Err(ChronxError::Other("No pending termination to abort".into()));
+                    }
+                    record.status = "Active".to_string();
+                    record.termination_notice_at = None;
+                    record.termination_notice_by = None;
+                    record.termination_reason = None;
+                    record.notice_days = None;
+                    record.partial_refund_eligible = false;
+                    self.db.put_credit_facility(&record)?;
+                    info!(facility_id = %hex::encode(facility_id), "CreditFacility termination aborted — facility reactivated");
+                } else {
+                    // Initiate termination notice
+                    if record.status != "Active" {
+                        return Err(ChronxError::Other(format!("Facility {} is {} — cannot terminate", hex::encode(facility_id), record.status)));
+                    }
+                    let days = notice_days.unwrap_or(30).max(7); // min 7 days, default 30
+                    record.status = "TerminationNotice".to_string();
+                    record.termination_notice_at = Some(now_u64);
+                    record.termination_notice_by = Some(initiated_by.clone());
+                    record.termination_reason = Some(reason.to_string());
+                    record.notice_days = Some(days);
+                    record.partial_refund_eligible = *partial_refund_eligible;
+                    self.db.put_credit_facility(&record)?;
+                    info!(facility_id = %hex::encode(facility_id), by = %initiated_by,
+                          reason = %reason, notice_days = days,
+                          "CreditFacility termination notice — {} day notice period", days);
+                }
                 Ok(())
             }
         }
