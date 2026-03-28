@@ -3,6 +3,7 @@ pub mod account;
 pub mod claims;
 pub mod constants;
 pub mod error;
+pub mod merkle;
 pub mod transaction;
 pub mod types;
 

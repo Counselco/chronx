@@ -13,3 +13,4 @@ hex        = { workspace = true }
 bs58       = { workspace = true }
 thiserror  = { workspace = true }
 chrono     = { workspace = true }
+blake3     = { workspace = true }

@@ -551,6 +551,7 @@ name = "chronx-core"
 version = "9.3.0"
 dependencies = [
  "bincode",
+ "blake3",
  "bs58",
  "chrono",
  "hex",

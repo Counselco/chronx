@@ -38,6 +38,11 @@ pub struct Vertex {
 
     /// Number of validator confirmations received so far.
     pub confirmation_count: u32,
+
+    /// BLAKE3 Merkle root of all account balances after this vertex is applied.
+    /// `None` for vertices created before v9.4 (backward compat via serde default).
+    #[serde(default)]
+    pub state_root: Option<[u8; 32]>,
 }
 
 impl Vertex {
@@ -49,6 +54,7 @@ impl Vertex {
             status: VertexStatus::Pending,
             children: Vec::new(),
             confirmation_count: 0,
+            state_root: None,
         }
     }
 

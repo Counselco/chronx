@@ -216,6 +216,20 @@ impl StateEngine {
         }
         self.db.add_tip(&tx.tx_id)?;
 
+        // ── Compute balance Merkle state root ─────────────────────────────
+        let state_root = match self.db.get_all_accounts() {
+            Ok(accounts) => {
+                let tree = chronx_core::merkle::BalanceMerkleTree::from_accounts(&accounts);
+                let root = tree.root();
+                let _ = self.db.put_latest_state_root(&root);
+                Some(root)
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to compute state root");
+                None
+            }
+        };
+
         // Persist the vertex.
         let depth = if tx.parents.is_empty() {
             0
@@ -228,7 +242,9 @@ impl StateEngine {
                 .unwrap_or(0)
                 + 1
         };
-        self.db.put_vertex(&Vertex::new(tx.clone(), depth, now))?;
+        let mut vertex = Vertex::new(tx.clone(), depth, now);
+        vertex.state_root = state_root;
+        self.db.put_vertex(&vertex)?;
 
         info!(tx_id = %tx.tx_id, "applied transaction");
         Ok(())

@@ -12,6 +12,7 @@ use crate::types::{
     RpcSchema, RpcSearchQuery, RpcTimeLock, RpcVerifierRecord, RpcVersionInfo,
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise, RpcDetailedTx,
     RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
+    RpcStateRoot, RpcSupplyInvariant,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -505,5 +506,15 @@ pub trait ChronxApi {
     /// Get all hedge TWAP orders for a wallet.
     #[method(name = "getHedgeTwapOrdersByWallet")]
     async fn get_hedge_twap_orders_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    // ── ZK Infrastructure — Merkle State Root ────────────────────────────
+
+    /// Return the latest BLAKE3 balance Merkle state root and vertex count.
+    #[method(name = "getStateRoot")]
+    async fn get_state_root(&self) -> RpcResult<RpcStateRoot>;
+
+    /// Verify the supply invariant: sum(balances) + sum(active locks) == TOTAL_SUPPLY.
+    #[method(name = "verifySupplyInvariant")]
+    async fn verify_supply_invariant(&self) -> RpcResult<RpcSupplyInvariant>;
 
 }

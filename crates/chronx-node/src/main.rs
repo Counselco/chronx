@@ -16,7 +16,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 /// Current node software version. Compared against https://chronx.io/version.json at startup.
-const NODE_VERSION: &str = "9.3.0";
+const NODE_VERSION: &str = "9.4.0";
 
 use chronx_consensus::DifficultyConfig;
 use chronx_core::constants::POW_INITIAL_DIFFICULTY;
@@ -185,6 +185,31 @@ async fn main() -> anyhow::Result<()> {
         Ok(0) => {},
         Ok(n) => tracing::info!("[STARTUP] Fixed {n} waived loans — borrowers credited"),
         Err(e) => tracing::warn!("[STARTUP] Waive fix error: {e}"),
+    }
+
+    // ── Compute balance Merkle state root if missing ───────────────────────
+    if db.get_latest_state_root().ok().flatten().is_none() {
+        match db.get_all_accounts() {
+            Ok(accounts) => {
+                let tree = chronx_core::merkle::BalanceMerkleTree::from_accounts(&accounts);
+                let root = tree.root();
+                if let Err(e) = db.put_latest_state_root(&root) {
+                    warn!(error = %e, "failed to persist startup state root");
+                } else {
+                    info!(
+                        state_root = %hex::encode(root),
+                        accounts = accounts.len(),
+                        "state root computed on startup"
+                    );
+                }
+            }
+            Err(e) => warn!(error = %e, "failed to compute state root on startup"),
+        }
+    } else {
+        info!(
+            state_root = %hex::encode(db.get_latest_state_root().ok().flatten().unwrap_or([0u8; 32])),
+            "existing state root found"
+        );
     }
 
     // ── Inbound transaction queue ─────────────────────────────────────────────

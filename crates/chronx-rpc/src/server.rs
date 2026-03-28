@@ -42,6 +42,7 @@ use crate::types::{
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise,
     RpcDetailedTx, RpcActionSummary,
     RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
+    RpcStateRoot, RpcSupplyInvariant,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -820,6 +821,14 @@ impl ChronxApiServer for RpcServer {
             .max()
             .unwrap_or(0);
 
+        let state_root = self
+            .state
+            .db
+            .get_latest_state_root()
+            .ok()
+            .flatten()
+            .map(hex::encode);
+
         Ok(RpcChainStats {
             total_accounts,
             total_timelocks,
@@ -828,6 +837,7 @@ impl ChronxApiServer for RpcServer {
             dag_depth,
             total_supply_chronos: TOTAL_SUPPLY_CHRONOS.to_string(),
             total_supply_kx: (TOTAL_SUPPLY_CHRONOS / CHRONOS_PER_KX).to_string(),
+            state_root,
         })
     }
 
@@ -2920,6 +2930,56 @@ impl ChronxApiServer for RpcServer {
                 .collect()),
             Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
         }
+    }
+
+    // ── ZK Infrastructure — Merkle State Root ────────────────────────────
+
+    /// `chronx_getStateRoot` — return the latest BLAKE3 balance Merkle root.
+    async fn get_state_root(&self) -> RpcResult<RpcStateRoot> {
+        let root = self
+            .state
+            .db
+            .get_latest_state_root()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?
+            .unwrap_or([0u8; 32]);
+
+        let vertex_count = self.state.db.count_vertices();
+
+        Ok(RpcStateRoot {
+            root: hex::encode(root),
+            vertex_count,
+        })
+    }
+
+    /// `chronx_verifySupplyInvariant` — compute and return supply invariant status.
+    async fn verify_supply_invariant(&self) -> RpcResult<RpcSupplyInvariant> {
+        let accounts = self
+            .state
+            .db
+            .get_all_accounts()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let total_spendable: u128 = accounts.iter().map(|(_, bal)| bal).sum();
+
+        let timelocks = self
+            .state
+            .db
+            .iter_all_timelocks()
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let total_locked: u128 = chronx_core::merkle::compute_total_locked_chronos(&timelocks);
+
+        let total = total_spendable.saturating_add(total_locked);
+        let invariant_holds =
+            chronx_core::merkle::verify_supply_invariant(total_spendable, total_locked);
+
+        Ok(RpcSupplyInvariant {
+            total_spendable_chronos: total_spendable.to_string(),
+            total_locked_chronos: total_locked.to_string(),
+            total_chronos: total.to_string(),
+            expected_chronos: TOTAL_SUPPLY_CHRONOS.to_string(),
+            invariant_holds,
+        })
     }
 
 }

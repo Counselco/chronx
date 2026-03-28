@@ -166,6 +166,33 @@ pub struct RpcChainStats {
     pub dag_depth: u64,
     pub total_supply_chronos: String,
     pub total_supply_kx: String,
+    /// Hex-encoded BLAKE3 balance Merkle root (None if not yet computed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_root: Option<String>,
+}
+
+/// State root and vertex count returned by `chronx_getStateRoot`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcStateRoot {
+    /// Hex-encoded BLAKE3 balance Merkle root.
+    pub root: String,
+    /// Total number of vertices (transaction count / "block height").
+    pub vertex_count: u64,
+}
+
+/// Supply invariant verification result returned by `chronx_verifySupplyInvariant`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcSupplyInvariant {
+    /// Sum of all account balances (Chronos).
+    pub total_spendable_chronos: String,
+    /// Sum of all active (non-terminal) timelock amounts (Chronos).
+    pub total_locked_chronos: String,
+    /// total_spendable + total_locked (Chronos).
+    pub total_chronos: String,
+    /// Expected total: TOTAL_SUPPLY_CHRONOS.
+    pub expected_chronos: String,
+    /// Whether the invariant holds.
+    pub invariant_holds: bool,
 }
 
 /// Lightweight global lock statistics returned by `chronx_getLockStats`.

@@ -769,6 +769,22 @@ impl StateDb {
         self.accounts.contains_key(id.as_bytes()).unwrap_or(false)
     }
 
+    /// Return all accounts as `(AccountId, balance_chronos)` pairs.
+    pub fn get_all_accounts(&self) -> Result<Vec<(AccountId, u128)>, ChronxError> {
+        let mut result = Vec::new();
+        for item in self.accounts.iter() {
+            let (key, value) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let acc: Account = bincode::deserialize(&value)
+                .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            let mut id_bytes = [0u8; 32];
+            if key.len() == 32 {
+                id_bytes.copy_from_slice(&key);
+            }
+            result.push((AccountId::from_bytes(id_bytes), acc.balance));
+        }
+        Ok(result)
+    }
+
     // ── Vertices ─────────────────────────────────────────────────────────────
 
     pub fn get_vertex(&self, tx_id: &TxId) -> Result<Option<Vertex>, ChronxError> {
@@ -968,6 +984,24 @@ impl StateDb {
             .map_err(|e| ChronxError::Storage(e.to_string()))
     }
 
+    // ── State Root (Merkle tree) ─────────────────────────────────────────────
+
+    /// Store the latest balance Merkle state root in meta.
+    pub fn put_latest_state_root(&self, root: &[u8; 32]) -> Result<(), ChronxError> {
+        self.put_meta("latest_state_root", root)
+    }
+
+    /// Retrieve the latest balance Merkle state root.
+    pub fn get_latest_state_root(&self) -> Result<Option<[u8; 32]>, ChronxError> {
+        match self.get_meta("latest_state_root")? {
+            Some(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(arr))
+            }
+            _ => Ok(None),
+        }
+    }
 
     // ── Authority Grants ─────────────────────────────────────────────────────
 
