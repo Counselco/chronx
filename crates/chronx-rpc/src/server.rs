@@ -2834,6 +2834,32 @@ impl ChronxApiServer for RpcServer {
         }
     }
 
+    // ── LoanChargeOff RPC methods (Genesis Zero) ────────────────────────
+
+    async fn get_loan_charge_offs(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>> {
+        match self.state.db.iter_charge_offs_by_wallet(&wallet) {
+            Ok(records) => Ok(records.iter()
+                .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .collect()),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
+    async fn get_charge_off_by_id(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
+        let bytes = hex::decode(&loan_id_hex)
+            .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32602, format!("invalid hex: {e}"), None::<String>))?;
+        if bytes.len() != 32 {
+            return Err(jsonrpsee::types::ErrorObjectOwned::owned(-32602, "loan_id must be 32 bytes (64 hex chars)", None::<String>));
+        }
+        let mut loan_id = [0u8; 32];
+        loan_id.copy_from_slice(&bytes);
+        match self.state.db.get_charge_off(&loan_id) {
+            Ok(Some(record)) => Ok(Some(serde_json::to_value(&record).unwrap_or_default())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
 }
 
 

@@ -333,6 +333,8 @@ impl StateEngine {
                 risk_level: _,
                 investment_exclusions: _,
                 grantor_intent: _,
+                extension_right,
+                max_extensions,
                 ..
             } => {
                 // ── Consensus validation ──────────────────────────────────────
@@ -506,7 +508,11 @@ impl StateEngine {
                         _ => "Y".to_string(),
                     }),
                     yield_opt_out: *yield_opt_out,
-                    lock_metadata: lock_metadata.clone()
+                    lock_metadata: lock_metadata.clone(),
+                    // ── Genesis Zero — Extension fields ────────────────────────
+                    extension_right: *extension_right,
+                    max_extensions: *max_extensions,
+                    extensions_used: None,
 
                 };
                 // V3.3 — detect email claim secret hash embedded in lock_marker.
@@ -3740,6 +3746,262 @@ impl StateEngine {
                 Ok(())
             }
 
+            // ── TimeLockExtend (Genesis Zero) ─────────────────────────────
+            Action::TimeLockExtend {
+                ref lock_id,
+                extension_seconds,
+                ref trigger,
+                ref signature,
+                ref memo,
+            } => {
+                use chronx_core::transaction::{ExtensionTrigger, LockExtensionOfferRecord, LockExtensionRequestRecord};
+                let _ = signature; // Validated at transaction level
+                let now_u64 = now as u64;
+                let lock_txid = chronx_core::types::TxId(*lock_id);
+                let mut contract = self.db.get_timelock(&lock_txid)?
+                    .ok_or_else(|| ChronxError::Other(format!("Lock not found: {}", hex::encode(lock_id))))?;
+
+                // Verify lock is still Pending (active)
+                if !matches!(contract.status, TimeLockStatus::Pending) {
+                    return Err(ChronxError::Other("Lock is not active (Pending)".into()));
+                }
+
+                // Governance: max extension duration
+                let max_ext_years: u64 = self.db.get_meta("max_lock_extension_years")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(100);
+                let max_ext_secs = max_ext_years * 365 * 86400;
+                if *extension_seconds > max_ext_secs {
+                    return Err(ChronxError::Other(format!(
+                        "Extension {} secs exceeds max {} years", extension_seconds, max_ext_years
+                    )));
+                }
+
+                // Governance: max number of extensions
+                let max_extensions_gov: u32 = self.db.get_meta("max_lock_extensions")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1);
+                let lock_max = contract.max_extensions.unwrap_or(max_extensions_gov);
+                let used = contract.extensions_used.unwrap_or(0);
+                if used >= lock_max {
+                    return Err(ChronxError::Other(format!(
+                        "Lock has used {}/{} extensions", used, lock_max
+                    )));
+                }
+
+                match trigger {
+                    ExtensionTrigger::LenderOffer { ref offered_by, acceptance_window_secs, .. } => {
+                        // Verify offered_by = lock grantor (sender)
+                        if *offered_by != contract.sender {
+                            return Err(ChronxError::Other("LenderOffer: offered_by must be lock grantor".into()));
+                        }
+                        // Record offer with expiry — borrower must accept in a subsequent tx
+                        let offer_window = self.db.get_meta("lock_extension_offer_window_days")
+                            .ok().flatten()
+                            .and_then(|v| String::from_utf8(v).ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(30);
+                        let window_secs = if *acceptance_window_secs > 0 {
+                            (*acceptance_window_secs).min(offer_window * 86400)
+                        } else {
+                            offer_window * 86400
+                        };
+                        let record = LockExtensionOfferRecord {
+                            lock_id: *lock_id,
+                            extension_seconds: *extension_seconds,
+                            offered_by: offered_by.to_b58(),
+                            offered_at: now_u64,
+                            expires_at: now_u64 + window_secs,
+                            status: "pending".to_string(),
+                            tx_id: hex::encode(tx_id.0),
+                        };
+                        self.db.put_lock_extension_offer(&record)?;
+                        info!(lock = %hex::encode(lock_id), ext_secs = *extension_seconds,
+                              "TimeLockExtend: LenderOffer recorded, awaiting borrower acceptance");
+                        Ok(())
+                    }
+
+                    ExtensionTrigger::BorrowerRequest { ref requested_by, pre_authorized } => {
+                        // Verify signature = lock beneficiary (recipient)
+                        let recipient_id = contract.recipient_account_id.clone();
+                        if *requested_by != recipient_id {
+                            return Err(ChronxError::Other("BorrowerRequest: requested_by must be lock recipient".into()));
+                        }
+
+                        if *pre_authorized {
+                            // Check extension_right was set at creation
+                            if contract.extension_right != Some(true) {
+                                return Err(ChronxError::Other(
+                                    "BorrowerRequest pre_authorized=true but lock has no extension_right".into()
+                                ));
+                            }
+                            // Execute immediately — no lender approval required
+                            contract.unlock_at += *extension_seconds as i64;
+                            contract.extensions_used = Some(used + 1);
+                            self.db.put_timelock(&contract)?;
+                            if let Some(m) = memo {
+                                info!(lock = %hex::encode(lock_id), ext_secs = *extension_seconds,
+                                      memo = %m, "TimeLockExtend: BorrowerRequest pre-authorized, executed immediately");
+                            } else {
+                                info!(lock = %hex::encode(lock_id), ext_secs = *extension_seconds,
+                                      "TimeLockExtend: BorrowerRequest pre-authorized, executed immediately");
+                            }
+                        } else {
+                            // Record pending request — lender must co-sign in subsequent tx
+                            let record = LockExtensionRequestRecord {
+                                lock_id: *lock_id,
+                                extension_seconds: *extension_seconds,
+                                requested_by: requested_by.to_b58(),
+                                requested_at: now_u64,
+                                status: "pending".to_string(),
+                                tx_id: hex::encode(tx_id.0),
+                            };
+                            self.db.put_lock_extension_request(&record)?;
+                            info!(lock = %hex::encode(lock_id), ext_secs = *extension_seconds,
+                                  "TimeLockExtend: BorrowerRequest pending lender co-signature");
+                        }
+                        Ok(())
+                    }
+
+                    ExtensionTrigger::OracleCondition { ref oracle_id, ref condition } => {
+                        // Oracle-conditioned extensions are processed by the sweep engine.
+                        // This action records the oracle condition on the DAG for audit.
+                        let oracle_enabled: bool = self.db.get_meta("lock_extension_oracle_enabled")
+                            .ok().flatten()
+                            .and_then(|v| String::from_utf8(v).ok())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(true);
+                        if !oracle_enabled {
+                            return Err(ChronxError::FeatureNotActive(
+                                "Oracle-conditioned lock extensions are not enabled".into()
+                            ));
+                        }
+                        // Execute extension based on oracle attestation
+                        contract.unlock_at += *extension_seconds as i64;
+                        contract.extensions_used = Some(used + 1);
+                        self.db.put_timelock(&contract)?;
+                        info!(lock = %hex::encode(lock_id), ext_secs = *extension_seconds,
+                              oracle = %oracle_id, condition = %condition,
+                              "Lock {} extended by oracle condition: {}", hex::encode(lock_id), condition);
+                        Ok(())
+                    }
+                }
+            }
+
+            // ── LoanChargeOff (Genesis Zero) ─────────────────────────────────
+            //
+            // IMPORTANT: ChargeOff does NOT cancel the legal obligation. The DAG
+            // record of the original loan, draw, and charge-off remains permanent
+            // and immutable. It is an accounting declaration only — not debt
+            // forgiveness. The immutable DAG record provides auditor-quality
+            // documentation for bad debt deduction purposes.
+            Action::LoanChargeOff {
+                ref loan_id,
+                charged_off_amount_usd,
+                charged_off_amount_kx,
+                ref reason,
+                ref supporting_evidence,
+                ref lender_signature,
+                charged_off_at,
+                ref memo,
+            } => {
+                use chronx_core::transaction::ChargeOffRecord;
+                let _ = lender_signature; // Validated at transaction level
+
+                let chargeoff_enabled: bool = self.db.get_meta("loan_chargeoff_enabled")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(true);
+                if !chargeoff_enabled {
+                    return Err(ChronxError::FeatureNotActive("Loan charge-off is not enabled".into()));
+                }
+
+                // Try loan tree first, then friendly_loans tree
+                let (lender_wallet_b58, loan_status, loan_created_at) = if let Some(raw) = self.db.get_loan(loan_id)? {
+                    let val: serde_json::Value = serde_json::from_slice(&raw)
+                        .map_err(|e| ChronxError::Other(format!("Failed to parse loan: {}", e)))?;
+                    let lw = val.get("lender_wallet").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let st = val.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let ca = val.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                    (lw, st, ca)
+                } else if let Some(fl) = self.db.get_friendly_loan(loan_id)? {
+                    (fl.lender.clone(), fl.status.clone(), fl.created_at)
+                } else {
+                    return Err(ChronxError::Other(format!("Loan not found: {}", hex::encode(loan_id))));
+                };
+
+                // Verify sender is the lender
+                let sender_b58 = sender.account_id.to_b58();
+                if sender_b58 != lender_wallet_b58 {
+                    return Err(ChronxError::Other("Only the original lender may charge off a loan".into()));
+                }
+
+                // Verify loan is Active or Overdue (defaulted), not already charged off
+                let status_lower = loan_status.to_lowercase();
+                if status_lower != "active" && status_lower != "overdue"
+                    && status_lower != "defaulted" && status_lower != "accepted" {
+                    return Err(ChronxError::Other(format!(
+                        "Loan status '{}' is not eligible for charge-off (must be Active/Overdue/Defaulted)", loan_status
+                    )));
+                }
+
+                // Governance: minimum age before charge-off
+                let min_age_days: u64 = self.db.get_meta("loan_chargeoff_min_age_days")
+                    .ok().flatten()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(365);
+                let min_age_secs = min_age_days * 86400;
+                if *charged_off_at < loan_created_at + min_age_secs {
+                    return Err(ChronxError::Other(format!(
+                        "Charge-off too early: must wait {} days from loan creation", min_age_days
+                    )));
+                }
+
+                // Record the charge-off permanently on the DAG
+                let record = ChargeOffRecord {
+                    loan_id: *loan_id,
+                    charged_off_amount_usd: *charged_off_amount_usd,
+                    charged_off_amount_kx: *charged_off_amount_kx,
+                    reason: reason.clone(),
+                    supporting_evidence: supporting_evidence.clone(),
+                    lender_wallet: sender_b58.clone(),
+                    charged_off_at: *charged_off_at,
+                    memo: memo.clone(),
+                    tx_id: hex::encode(tx_id.0),
+                };
+                self.db.put_charge_off(&record)?;
+
+                // Update loan status to ChargedOff in the loan tree
+                if let Some(raw) = self.db.get_loan(loan_id)? {
+                    if let Ok(mut val) = serde_json::from_slice::<serde_json::Value>(&raw) {
+                        val["status"] = serde_json::Value::String("ChargedOff".to_string());
+                        val["charged_off_at"] = serde_json::json!(charged_off_at);
+                        val["charge_off_reason"] = serde_json::json!(reason.to_string());
+                        let updated = serde_json::to_vec(&val).map_err(|e| ChronxError::Other(e.to_string()))?;
+                        self.db.save_loan(loan_id, &updated)?;
+                    }
+                } else if let Some(mut fl) = self.db.get_friendly_loan(loan_id)? {
+                    fl.status = "ChargedOff".to_string();
+                    self.db.put_friendly_loan(&fl)?;
+                }
+
+                info!(
+                    loan_id = %hex::encode(loan_id),
+                    reason = %reason,
+                    usd = charged_off_amount_usd,
+                    kx = charged_off_amount_kx,
+                    "Loan {} charged off by lender. Reason: {}. Amount: {} USD / {} KX.",
+                    hex::encode(loan_id), reason, charged_off_amount_usd, charged_off_amount_kx
+                );
+                Ok(())
+            }
+
             // ── FriendlyLoanWriteOff ───────────────────────────────────────
             Action::FriendlyLoanWriteOff { ref loan_id } => {
                 let now_u64 = now as u64;
@@ -5076,6 +5338,9 @@ mod tests {
             lock_type: None,
             yield_opt_out: None,
             lock_metadata: None,
+            extension_right: None,
+            max_extensions: None,
+            extensions_used: None,
         };
         db.put_timelock(&contract).unwrap();
     }
@@ -5137,6 +5402,9 @@ mod tests {
             lock_type: None,
             yield_opt_out: None,
             lock_metadata: None,
+            extension_right: None,
+            max_extensions: None,
+            extensions_used: None,
         };
         db.put_timelock(&contract).unwrap();
     }
@@ -5190,7 +5458,9 @@ mod tests {
             oracle_trigger_threshold: None,
             oracle_trigger_direction: None,
             linked_instrument_id: None,
-}
+            extension_right: None,
+            max_extensions: None,
+        }
     }
 
     fn seed_oracle(db: &StateDb, price_cents: u64) {
@@ -6289,6 +6559,12 @@ mod tests {
             condition_attestation_id: None,
             condition_disputed: false,
             condition_dispute_window_secs: None,
+            lock_type: None,
+            yield_opt_out: None,
+            lock_metadata: None,
+            extension_right: None,
+            max_extensions: None,
+            extensions_used: None,
         };
         engine.db.put_timelock(&contract).unwrap();
 

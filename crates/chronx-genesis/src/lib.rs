@@ -450,6 +450,9 @@ fn genesis_lock(
         lock_type: None,
         yield_opt_out: None,
         lock_metadata: None,
+        extension_right: None,
+        max_extensions: None,
+        extensions_used: None,
     }
 }
 

@@ -565,4 +565,15 @@ pub struct TimeLockContract {
     #[serde(default)]
     pub lock_metadata: Option<String>,
 
+    // ── Genesis Zero — Extension fields ──────────────────────────────────────
+    /// If true: borrower may extend without lender approval (pre-authorized).
+    #[serde(default)]
+    pub extension_right: Option<bool>,
+    /// Maximum number of extensions permitted (governance default if None).
+    #[serde(default)]
+    pub max_extensions: Option<u32>,
+    /// Number of extensions already used.
+    #[serde(default)]
+    pub extensions_used: Option<u32>,
+
 }

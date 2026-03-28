@@ -459,6 +459,11 @@ pub struct StateDb {
     // protocol — Friendly Loan tree
     pub friendly_loans: sled::Tree,
 
+    // protocol — Lock extensions and charge-offs (Genesis Zero)
+    pub lock_extension_offers: sled::Tree,
+    pub lock_extension_requests: sled::Tree,
+    pub charge_offs: sled::Tree,
+
 }
 
 impl StateDb {
@@ -623,6 +628,15 @@ impl StateDb {
         let friendly_loans = db
             .open_tree("friendly_loans")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let lock_extension_offers = db
+            .open_tree("lock_extension_offers")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let lock_extension_requests = db
+            .open_tree("lock_extension_requests")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let charge_offs = db
+            .open_tree("charge_offs")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let result = Ok(Self {
             _db: db,
             accounts,
@@ -677,6 +691,9 @@ impl StateDb {
             hedge_instruments,
             pool_health_scores,
             friendly_loans,
+            lock_extension_offers,
+            lock_extension_requests,
+            charge_offs,
 
         });
 
@@ -2426,6 +2443,79 @@ impl StateDb {
                 let expires = val.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
                 let loan_id_hex = hex::encode(&key);
                 results.push((loan_id_hex, amount, expires));
+            }
+        }
+        Ok(results)
+    }
+
+    // ── Lock Extension Offers ────────────────────────────────────────────
+
+    pub fn put_lock_extension_offer(&self, record: &chronx_core::transaction::LockExtensionOfferRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.lock_extension_offers.insert(&record.lock_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_lock_extension_offer(&self, lock_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::LockExtensionOfferRecord>, ChronxError> {
+        match self.lock_extension_offers.get(lock_id) {
+            Ok(Some(bytes)) => {
+                let record: chronx_core::transaction::LockExtensionOfferRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    // ── Lock Extension Requests ──────────────────────────────────────────
+
+    pub fn put_lock_extension_request(&self, record: &chronx_core::transaction::LockExtensionRequestRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.lock_extension_requests.insert(&record.lock_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_lock_extension_request(&self, lock_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::LockExtensionRequestRecord>, ChronxError> {
+        match self.lock_extension_requests.get(lock_id) {
+            Ok(Some(bytes)) => {
+                let record: chronx_core::transaction::LockExtensionRequestRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    // ── Charge-Off Records ───────────────────────────────────────────────
+
+    pub fn put_charge_off(&self, record: &chronx_core::transaction::ChargeOffRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.charge_offs.insert(&record.loan_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_charge_off(&self, loan_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::ChargeOffRecord>, ChronxError> {
+        match self.charge_offs.get(loan_id) {
+            Ok(Some(bytes)) => {
+                let record: chronx_core::transaction::ChargeOffRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn iter_charge_offs_by_wallet(&self, wallet: &str) -> Result<Vec<chronx_core::transaction::ChargeOffRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.charge_offs.iter() {
+            let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            if let Ok(record) = bincode::deserialize::<chronx_core::transaction::ChargeOffRecord>(&val) {
+                if record.lender_wallet == wallet {
+                    results.push(record);
+                }
             }
         }
         Ok(results)

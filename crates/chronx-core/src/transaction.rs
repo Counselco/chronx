@@ -817,6 +817,13 @@ pub enum Action {
         #[serde(default)]
         linked_instrument_id: Option<String>,
 
+        // ── Extension rights (Genesis Zero — TimeLockExtend) ─────────────
+        /// If true: borrower may extend without lender approval (pre-authorized).
+        #[serde(default)]
+        extension_right: Option<bool>,
+        /// Maximum number of extensions permitted (default 1 from governance).
+        #[serde(default)]
+        max_extensions: Option<u32>,
 
     },
 
@@ -1331,6 +1338,35 @@ pub enum Action {
         loan_id: [u8; 32],
     },
 
+    // ── TimeLockExtend (Genesis Zero) ────────────────────────────────────
+    /// Extend an existing time-locked promise or loan instrument.
+    /// Three trigger variants: lender-offered, borrower-requested, oracle-conditioned.
+    TimeLockExtend {
+        lock_id: [u8; 32],
+        extension_seconds: u64,
+        trigger: ExtensionTrigger,
+        signature: DilithiumSignature,
+        #[serde(default)]
+        memo: Option<String>,
+    },
+
+    // ── LoanChargeOff (Genesis Zero) ─────────────────────────────────────
+    /// Lender's formal accounting declaration that a receivable is no longer
+    /// expected to be collected. Does NOT cancel the legal obligation — the DAG
+    /// record of the original loan remains permanent and immutable.
+    LoanChargeOff {
+        loan_id: [u8; 32],
+        charged_off_amount_usd: f64,
+        charged_off_amount_kx: u128,
+        reason: ChargeOffReason,
+        #[serde(default)]
+        supporting_evidence: Option<String>,
+        lender_signature: DilithiumSignature,
+        charged_off_at: u64,
+        #[serde(default)]
+        memo: Option<String>,
+    },
+
 }
 
 /// Credit history visibility setting for a wallet.
@@ -1841,3 +1877,92 @@ pub enum PaymentSourcePolicy {
 
 
 fn default_true() -> bool { true }
+
+// ── ExtensionTrigger (Genesis Zero — TimeLockExtend) ─────────────────────────
+
+/// Three extension trigger types for TimeLockExtend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ExtensionTrigger {
+    /// Lender proposes an extension; borrower must accept within window.
+    LenderOffer {
+        offered_by: AccountId,
+        acceptance_window_secs: u64,
+        requires_borrower_acceptance: bool,
+    },
+    /// Borrower requests an extension.
+    /// If pre_authorized: true was set at lock creation → executes immediately.
+    /// If pre_authorized: false → requires lender co-signature.
+    BorrowerRequest {
+        requested_by: AccountId,
+        pre_authorized: bool,
+    },
+    /// Extension fires automatically when oracle attests condition.
+    /// No signature from either party required — the oracle attestation is the trigger.
+    OracleCondition {
+        oracle_id: String,
+        condition: String,
+    },
+}
+
+// ── ChargeOffReason (Genesis Zero — LoanChargeOff) ───────────────────────────
+
+/// Reason for charging off a loan receivable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ChargeOffReason {
+    EntityDissolved,
+    NoContactExceededThreshold,
+    BorrowerDeceased,
+    InsolvencyConfirmed,
+    OracleConfirmedUnrecoverable,
+    Other(String),
+}
+
+impl std::fmt::Display for ChargeOffReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChargeOffReason::EntityDissolved => write!(f, "EntityDissolved"),
+            ChargeOffReason::NoContactExceededThreshold => write!(f, "NoContactExceededThreshold"),
+            ChargeOffReason::BorrowerDeceased => write!(f, "BorrowerDeceased"),
+            ChargeOffReason::InsolvencyConfirmed => write!(f, "InsolvencyConfirmed"),
+            ChargeOffReason::OracleConfirmedUnrecoverable => write!(f, "OracleConfirmedUnrecoverable"),
+            ChargeOffReason::Other(s) => write!(f, "Other({})", s),
+        }
+    }
+}
+
+/// Record stored in the charge_offs sled tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChargeOffRecord {
+    pub loan_id: [u8; 32],
+    pub charged_off_amount_usd: f64,
+    pub charged_off_amount_kx: u128,
+    pub reason: ChargeOffReason,
+    pub supporting_evidence: Option<String>,
+    pub lender_wallet: String,
+    pub charged_off_at: u64,
+    pub memo: Option<String>,
+    pub tx_id: String,
+}
+
+/// Record stored in the lock_extension_offers sled tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockExtensionOfferRecord {
+    pub lock_id: [u8; 32],
+    pub extension_seconds: u64,
+    pub offered_by: String,
+    pub offered_at: u64,
+    pub expires_at: u64,
+    pub status: String,   // "pending", "accepted", "expired"
+    pub tx_id: String,
+}
+
+/// Record stored in the lock_extension_requests sled tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockExtensionRequestRecord {
+    pub lock_id: [u8; 32],
+    pub extension_seconds: u64,
+    pub requested_by: String,
+    pub requested_at: u64,
+    pub status: String,   // "pending", "approved", "executed"
+    pub tx_id: String,
+}

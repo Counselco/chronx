@@ -485,6 +485,8 @@ async fn main() -> anyhow::Result<()> {
                     oracle_trigger_threshold: None,
                     oracle_trigger_direction: None,
                     linked_instrument_id: None,
+                    extension_right: None,
+                    max_extensions: None,
 }],
                 &client,
             )
@@ -595,6 +597,8 @@ async fn main() -> anyhow::Result<()> {
                     oracle_trigger_threshold: None,
                     oracle_trigger_direction: None,
                     linked_instrument_id: None,
+                    extension_right: None,
+                    max_extensions: None,
 }],
                 &client,
             )
@@ -859,6 +863,8 @@ async fn main() -> anyhow::Result<()> {
                         oracle_trigger_threshold: None,
                         oracle_trigger_direction: None,
                         linked_instrument_id: None,
+                    extension_right: None,
+                    max_extensions: None,
 }
                 })
                 .collect();

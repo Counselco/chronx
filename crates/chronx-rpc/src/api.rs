@@ -472,4 +472,14 @@ pub trait ChronxApi {
     #[method(name = "getActiveFriendlyLoans")]
     async fn get_active_friendly_loans(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    // ── LoanChargeOff RPC methods (Genesis Zero) ────────────────────────────
+
+    /// Get all charge-off records for a wallet (as lender).
+    #[method(name = "getLoanChargeOffs")]
+    async fn get_loan_charge_offs(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Get a specific charge-off record by loan_id.
+    #[method(name = "getChargeOffById")]
+    async fn get_charge_off_by_id(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
+
 }
