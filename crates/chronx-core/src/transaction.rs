@@ -206,6 +206,13 @@ pub struct CreateConditionalAction {
     pub success_payment_wallet: Option<String>,
     #[serde(default)]
     pub success_payment_chronos: Option<u64>,
+    // ── Genesis Zero — HedgeKX limit orders + TWAP fills ────────────
+    /// Maximum basis points per annum the buyer will pay. None = accept market rate.
+    #[serde(default)]
+    pub max_rate_bps: Option<u32>,
+    /// Hedge execution method. None = Immediate (default).
+    #[serde(default)]
+    pub hedge_execution: Option<HedgeExecution>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -824,6 +831,11 @@ pub enum Action {
         /// Maximum number of extensions permitted (default 1 from governance).
         #[serde(default)]
         max_extensions: Option<u32>,
+
+        // ── TWAP execution (Genesis Zero — PAY_AS) ──────────────────────
+        /// PAY_AS execution method. None = governance decides at maturity.
+        #[serde(default)]
+        pay_as_execution: Option<PayAsExecution>,
 
     },
 
@@ -1965,4 +1977,87 @@ pub struct LockExtensionRequestRecord {
     pub requested_at: u64,
     pub status: String,   // "pending", "approved", "executed"
     pub tx_id: String,
+}
+
+// ── PayAsExecution (Genesis Zero — TWAP) ─────────────────────────────────────
+
+/// Execution method for PAY_AS KX→USDC conversions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PayAsExecution {
+    /// Single conversion at current XChan rate. Default for small transactions.
+    Immediate,
+    /// Time-Weighted Average Price: spread conversion over time.
+    Twap {
+        /// Max % of XChan daily volume to sell per day. Default: governance param.
+        max_daily_volume_pct: f64,
+        /// Execute partial conversion every X hours. Default: 1.
+        interval_hours: u32,
+        /// Base address for USDC proceeds.
+        proceeds_address: String,
+        /// Begin immediately on maturity or draw. Default: true.
+        auto_start: bool,
+        /// If true: promise cannot execute by any other method. Grantor's instruction is final.
+        required: bool,
+    },
+}
+
+/// Record stored in the twap_orders sled tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TwapOrderRecord {
+    pub order_id: [u8; 32],
+    pub source_tx_id: [u8; 32],
+    pub wallet: String,
+    pub kx_remaining: u128,
+    pub kx_total: u128,
+    pub max_daily_pct: f64,
+    pub interval_hours: u32,
+    pub proceeds_address: String,
+    pub created_at: u64,
+    pub last_executed_at: u64,
+    pub status: String,   // "Active", "Complete", "Cancelled"
+}
+
+// ── HedgeExecution (Genesis Zero — HedgeKX limit orders + TWAP fills) ────────
+
+/// Execution method for HedgeKX hedge requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum HedgeExecution {
+    /// Full amount or reject. Default.
+    Immediate,
+    /// Gradual fill as pool depth allows.
+    Twap {
+        /// Max % of pool depth to fill per day.
+        max_daily_pool_pct: f64,
+        /// Execute partial fill every X hours.
+        interval_hours: u32,
+        /// Accept partial fill if full fill is impossible within hedge duration.
+        partial_fill_ok: bool,
+    },
+}
+
+/// Response from HedgeKX when a hedge request is submitted with rate limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HedgeMatchResponse {
+    pub filled_amount_usd: f64,
+    pub rejected_reason: Option<String>,
+    pub current_market_rate_bps: u32,
+    pub suggested_duration_for_limit: Option<u32>,
+    pub partial_fill_available_usd: f64,
+    pub twap_order_id: Option<[u8; 32]>,
+}
+
+/// Record stored in the hedge_twap_orders sled tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HedgeTwapOrderRecord {
+    pub order_id: [u8; 32],
+    pub wallet: String,
+    pub total_usd: f64,
+    pub filled_usd: f64,
+    pub max_rate_bps: Option<u32>,
+    pub max_daily_pool_pct: f64,
+    pub interval_hours: u32,
+    pub partial_fill_ok: bool,
+    pub created_at: u64,
+    pub last_filled_at: u64,
+    pub status: String,   // "Active", "Complete", "Cancelled", "PartialFill"
 }

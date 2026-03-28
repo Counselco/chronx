@@ -2860,6 +2860,68 @@ impl ChronxApiServer for RpcServer {
         }
     }
 
+    // ── TWAP Order RPC implementations ──────────────────────────────────
+
+    async fn get_twap_order(&self, order_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
+        let bytes = hex::decode(&order_id_hex)
+            .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32602, format!("invalid hex: {e}"), None::<String>))?;
+        if bytes.len() != 32 {
+            return Err(jsonrpsee::types::ErrorObjectOwned::owned(-32602, "order_id must be 32 bytes", None::<String>));
+        }
+        let mut order_id = [0u8; 32];
+        order_id.copy_from_slice(&bytes);
+        match self.state.db.get_twap_order(&order_id) {
+            Ok(Some(record)) => Ok(Some(serde_json::to_value(&record).unwrap_or_default())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
+    async fn get_twap_orders_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>> {
+        match self.state.db.iter_twap_orders_by_wallet(&wallet) {
+            Ok(records) => Ok(records.iter()
+                .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .collect()),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
+    async fn get_active_twap_orders(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>> {
+        match self.state.db.iter_twap_orders_by_wallet(&wallet) {
+            Ok(records) => Ok(records.iter()
+                .filter(|r| r.status == "Active")
+                .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .collect()),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
+    // ── Hedge TWAP Order RPC implementations ────────────────────────────
+
+    async fn get_hedge_twap_order(&self, order_id_hex: String) -> RpcResult<Option<serde_json::Value>> {
+        let bytes = hex::decode(&order_id_hex)
+            .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32602, format!("invalid hex: {e}"), None::<String>))?;
+        if bytes.len() != 32 {
+            return Err(jsonrpsee::types::ErrorObjectOwned::owned(-32602, "order_id must be 32 bytes", None::<String>));
+        }
+        let mut order_id = [0u8; 32];
+        order_id.copy_from_slice(&bytes);
+        match self.state.db.get_hedge_twap_order(&order_id) {
+            Ok(Some(record)) => Ok(Some(serde_json::to_value(&record).unwrap_or_default())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
+    async fn get_hedge_twap_orders_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>> {
+        match self.state.db.iter_hedge_twap_orders_by_wallet(&wallet) {
+            Ok(records) => Ok(records.iter()
+                .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .collect()),
+            Err(e) => Err(jsonrpsee::types::ErrorObjectOwned::owned(-32000, e.to_string(), None::<String>)),
+        }
+    }
+
 }
 
 

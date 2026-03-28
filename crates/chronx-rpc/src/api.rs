@@ -482,4 +482,28 @@ pub trait ChronxApi {
     #[method(name = "getChargeOffById")]
     async fn get_charge_off_by_id(&self, loan_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
 
+    // ── TWAP Order RPC methods (Genesis Zero) ───────────────────────────
+
+    /// Get a TWAP order by order_id.
+    #[method(name = "getTwapOrder")]
+    async fn get_twap_order(&self, order_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Get all TWAP orders for a wallet.
+    #[method(name = "getTwapOrdersByWallet")]
+    async fn get_twap_orders_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    /// Get active TWAP orders for a wallet.
+    #[method(name = "getActiveTwapOrders")]
+    async fn get_active_twap_orders(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
+    // ── Hedge TWAP Order RPC methods (Genesis Zero) ─────────────────────
+
+    /// Get a hedge TWAP order by order_id.
+    #[method(name = "getHedgeTwapOrder")]
+    async fn get_hedge_twap_order(&self, order_id_hex: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Get all hedge TWAP orders for a wallet.
+    #[method(name = "getHedgeTwapOrdersByWallet")]
+    async fn get_hedge_twap_orders_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
+
 }

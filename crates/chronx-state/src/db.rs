@@ -464,6 +464,10 @@ pub struct StateDb {
     pub lock_extension_requests: sled::Tree,
     pub charge_offs: sled::Tree,
 
+    // protocol — TWAP orders and hedge TWAP orders (Genesis Zero)
+    pub twap_orders: sled::Tree,
+    pub hedge_twap_orders: sled::Tree,
+
 }
 
 impl StateDb {
@@ -637,6 +641,12 @@ impl StateDb {
         let charge_offs = db
             .open_tree("charge_offs")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let twap_orders = db
+            .open_tree("twap_orders")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let hedge_twap_orders = db
+            .open_tree("hedge_twap_orders")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let result = Ok(Self {
             _db: db,
             accounts,
@@ -694,6 +704,8 @@ impl StateDb {
             lock_extension_offers,
             lock_extension_requests,
             charge_offs,
+            twap_orders,
+            hedge_twap_orders,
 
         });
 
@@ -2514,6 +2526,85 @@ impl StateDb {
             let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
             if let Ok(record) = bincode::deserialize::<chronx_core::transaction::ChargeOffRecord>(&val) {
                 if record.lender_wallet == wallet {
+                    results.push(record);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    // ── TWAP Orders ──────────────────────────────────────────────────────
+
+    pub fn put_twap_order(&self, record: &chronx_core::transaction::TwapOrderRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.twap_orders.insert(&record.order_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_twap_order(&self, order_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::TwapOrderRecord>, ChronxError> {
+        match self.twap_orders.get(order_id) {
+            Ok(Some(bytes)) => {
+                let record: chronx_core::transaction::TwapOrderRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn iter_twap_orders_by_wallet(&self, wallet: &str) -> Result<Vec<chronx_core::transaction::TwapOrderRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.twap_orders.iter() {
+            let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            if let Ok(record) = bincode::deserialize::<chronx_core::transaction::TwapOrderRecord>(&val) {
+                if record.wallet == wallet {
+                    results.push(record);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn iter_active_twap_orders(&self) -> Result<Vec<chronx_core::transaction::TwapOrderRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.twap_orders.iter() {
+            let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            if let Ok(record) = bincode::deserialize::<chronx_core::transaction::TwapOrderRecord>(&val) {
+                if record.status == "Active" {
+                    results.push(record);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    // ── Hedge TWAP Orders ────────────────────────────────────────────────
+
+    pub fn put_hedge_twap_order(&self, record: &chronx_core::transaction::HedgeTwapOrderRecord) -> Result<(), ChronxError> {
+        let bytes = bincode::serialize(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.hedge_twap_orders.insert(&record.order_id, bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_hedge_twap_order(&self, order_id: &[u8; 32]) -> Result<Option<chronx_core::transaction::HedgeTwapOrderRecord>, ChronxError> {
+        match self.hedge_twap_orders.get(order_id) {
+            Ok(Some(bytes)) => {
+                let record: chronx_core::transaction::HedgeTwapOrderRecord =
+                    bincode::deserialize(&bytes).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(ChronxError::Storage(e.to_string())),
+        }
+    }
+
+    pub fn iter_hedge_twap_orders_by_wallet(&self, wallet: &str) -> Result<Vec<chronx_core::transaction::HedgeTwapOrderRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.hedge_twap_orders.iter() {
+            let (_, val) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            if let Ok(record) = bincode::deserialize::<chronx_core::transaction::HedgeTwapOrderRecord>(&val) {
+                if record.wallet == wallet {
                     results.push(record);
                 }
             }

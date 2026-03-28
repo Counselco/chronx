@@ -487,6 +487,7 @@ async fn main() -> anyhow::Result<()> {
                     linked_instrument_id: None,
                     extension_right: None,
                     max_extensions: None,
+                    pay_as_execution: None,
 }],
                 &client,
             )
@@ -599,6 +600,7 @@ async fn main() -> anyhow::Result<()> {
                     linked_instrument_id: None,
                     extension_right: None,
                     max_extensions: None,
+                    pay_as_execution: None,
 }],
                 &client,
             )
@@ -865,6 +867,7 @@ async fn main() -> anyhow::Result<()> {
                         linked_instrument_id: None,
                     extension_right: None,
                     max_extensions: None,
+                    pay_as_execution: None,
 }
                 })
                 .collect();
@@ -1145,6 +1148,8 @@ async fn main() -> anyhow::Result<()> {
                 oracle_trigger_direction: oracle_trigger_direction.clone(),
                 success_payment_wallet: success_payment_wallet.clone(),
                 success_payment_chronos: spc,
+                max_rate_bps: None,
+                hedge_execution: None,
             });
 
             let tx = build_and_sign(&kp, vec![action], &client).await?;

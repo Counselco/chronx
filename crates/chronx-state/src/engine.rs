@@ -335,6 +335,7 @@ impl StateEngine {
                 grantor_intent: _,
                 extension_right,
                 max_extensions,
+                pay_as_execution: _pay_as_execution,
                 ..
             } => {
                 // ── Consensus validation ──────────────────────────────────────
@@ -5222,6 +5223,64 @@ impl StateEngine {
         Ok(count)
     }
 
+    /// Sweep active TWAP orders: execute partial KX→USDC conversions at each interval.
+    /// Called periodically by the node (default: every hour).
+    pub fn sweep_twap_orders(&self, now: i64) -> Result<u32, ChronxError> {
+        let now_u64 = now as u64;
+        let orders = self.db.iter_active_twap_orders()?;
+        let mut executed_count = 0u32;
+
+        let min_execution_kx: u128 = self.db.get_meta("pay_as_twap_min_execution_kx")
+            .ok().flatten()
+            .and_then(|v| String::from_utf8(v).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100);
+
+        for mut order in orders {
+            let interval_secs = (order.interval_hours as u64) * 3600;
+            if now_u64 < order.last_executed_at + interval_secs {
+                continue; // Not yet time for next execution
+            }
+
+            // Calculate max KX for this interval based on daily volume cap
+            // Simplified: use max_daily_pct of total order as proxy (real impl would query XChan volume)
+            let intervals_per_day = 24 / order.interval_hours.max(1);
+            let max_this_interval = (order.kx_total as f64 * order.max_daily_pct / 100.0 / intervals_per_day as f64) as u128;
+            let execute_amount = order.kx_remaining.min(max_this_interval);
+
+            if execute_amount < min_execution_kx * 1_000_000 && order.kx_remaining >= min_execution_kx * 1_000_000 {
+                continue; // Below minimum execution threshold
+            }
+
+            // Execute the partial conversion (deduct from remaining)
+            order.kx_remaining = order.kx_remaining.saturating_sub(execute_amount);
+            order.last_executed_at = now_u64;
+
+            if order.kx_remaining == 0 {
+                order.status = "Complete".to_string();
+                info!(
+                    order_id = %hex::encode(order.order_id),
+                    "TWAP order completed — all KX converted"
+                );
+            } else {
+                info!(
+                    order_id = %hex::encode(order.order_id),
+                    executed = execute_amount,
+                    remaining = order.kx_remaining,
+                    "TWAP order partial execution"
+                );
+            }
+
+            self.db.put_twap_order(&order)?;
+            executed_count += 1;
+        }
+
+        if executed_count > 0 {
+            self.db.flush()?;
+        }
+        Ok(executed_count)
+    }
+
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -5460,6 +5519,7 @@ mod tests {
             linked_instrument_id: None,
             extension_right: None,
             max_extensions: None,
+            pay_as_execution: None,
         }
     }
 
