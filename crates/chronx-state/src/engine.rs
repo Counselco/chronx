@@ -3619,6 +3619,8 @@ impl StateEngine {
                 locked_kx_usd_rate,
                 ref repayment_base_address,
                 ref memo,
+                ref loan_currency,
+                ref claim_token,
             } => {
                 let now_u64 = now as u64;
                 // Governance checks
@@ -3676,8 +3678,14 @@ impl StateEngine {
 
                 let fee_usd = f64::max(principal_usd * (fee_pct / 100.0) * (*term_days as f64 / 30.0), min_fee);
                 let total_repayment_usd = principal_usd + fee_usd;
-                let due_at = now_u64 + (*term_days as u64) * 86400;
-                let write_off_at = due_at + (grace_days as u64) * 86400;
+
+                // Acceptance timeout (default 3 days)
+                let timeout_days: u64 = self.db.get_meta("friendly_loan_address_timeout_days")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(3);
+                let base_address_expires_at = now_u64 + timeout_days * 86400;
 
                 // Derive loan_id from tx_id + action_idx like TimeLockCreate
                 let loan_id = if action_idx == 0 {
@@ -3690,6 +3698,23 @@ impl StateEngine {
                     *h.as_bytes()
                 };
 
+                // Generate claim_token: BLAKE3(tx_id || "claim" || loan_id)
+                let generated_token = if let Some(ref ct) = claim_token {
+                    if ct.is_empty() { hex::encode(&loan_id[..16]) } else { ct.clone() }
+                } else {
+                    let mut h = blake3::Hasher::new();
+                    h.update(&tx_id.0);
+                    h.update(b"claim");
+                    h.update(&loan_id);
+                    hex::encode(&h.finalize().as_bytes()[..16])
+                };
+
+                let currency_str = match loan_currency {
+                    Some(chronx_core::transaction::LoanCurrency::Kx) => "Kx",
+                    _ => "Usdc",
+                };
+
+                // Due date is set when borrower accepts (0 = pending)
                 let record = FriendlyLoanRecord {
                     loan_id,
                     lender: sender.account_id.to_b58(),
@@ -3702,18 +3727,24 @@ impl StateEngine {
                     grace_days,
                     kx_collateral_chronos: *kx_collateral_chronos,
                     locked_kx_usd_rate: *locked_kx_usd_rate,
-                    repayment_base_address: settlement_addr,
+                    repayment_base_address: repayment_base_address.clone(),
                     created_at: now_u64,
-                    due_at,
-                    write_off_at,
-                    status: "Active".to_string(),
+                    due_at: 0,           // Set when borrower accepts
+                    write_off_at: 0,     // Set when borrower accepts
+                    status: "PendingAcceptance".to_string(),
                     repayment_usdc: None,
                     base_tx_hash: None,
                     write_off_tx_id: None,
                     memo: memo.clone(),
+                    loan_currency: currency_str.to_string(),
+                    claim_token: generated_token.clone(),
+                    friend_address: None,
+                    base_address_expires_at,
+                    base_address_provided_at: None,
                 };
                 self.db.put_friendly_loan(&record)?;
-                info!(loan_id = %hex::encode(loan_id), principal_usd, term_days, fee_usd, "Friendly loan created");
+                info!(loan_id = %hex::encode(loan_id), principal_usd, term_days, fee_usd,
+                      currency = currency_str, "Friendly loan created — PendingAcceptance");
                 Ok(())
             }
 
@@ -4000,6 +4031,81 @@ impl StateEngine {
                     "Loan {} charged off by lender. Reason: {}. Amount: {} USD / {} KX.",
                     hex::encode(loan_id), reason, charged_off_amount_usd, charged_off_amount_kx
                 );
+                Ok(())
+            }
+
+            // ── FriendlyLoanAccept ────────────────────────────────────────
+            Action::FriendlyLoanAccept {
+                ref loan_id,
+                ref claim_token,
+                ref disbursement_election,
+            } => {
+                use chronx_core::transaction::DisbursementElection;
+                let now_u64 = now as u64;
+                let mut record = self.db.get_friendly_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("friendly loan not found: {}", hex::encode(loan_id))))?;
+                if record.status != "PendingAcceptance" {
+                    return Err(ChronxError::Other(format!("friendly loan {} is not PendingAcceptance (is {})", hex::encode(loan_id), record.status)));
+                }
+                if now_u64 > record.base_address_expires_at {
+                    return Err(ChronxError::Other("Loan offer has expired".into()));
+                }
+                if *claim_token != record.claim_token {
+                    return Err(ChronxError::Other("Invalid claim token".into()));
+                }
+
+                let address = match disbursement_election {
+                    DisbursementElection::Usdc { ref base_address } => {
+                        if !base_address.starts_with("0x") || base_address.len() != 42 {
+                            return Err(ChronxError::Other("Invalid Base address format (must be 0x + 40 hex chars)".into()));
+                        }
+                        base_address.clone()
+                    }
+                    DisbursementElection::Kx { ref chronx_address } => {
+                        chronx_address.clone()
+                    }
+                };
+
+                // Set loan to Active, start the clock
+                let grace_days = record.grace_days as u64;
+                record.friend_address = Some(address);
+                record.base_address_provided_at = Some(now_u64);
+                record.status = "Active".to_string();
+                record.due_at = now_u64 + (record.term_days as u64) * 86400;
+                record.write_off_at = record.due_at + grace_days * 86400;
+                self.db.put_friendly_loan(&record)?;
+
+                info!(loan_id = %hex::encode(loan_id), "Friendly loan accepted — status Active, clock started");
+                Ok(())
+            }
+
+            // ── FriendlyLoanCancel ───────────────────────────────────────────
+            Action::FriendlyLoanCancel {
+                ref loan_id,
+                ref reason,
+            } => {
+                let now_u64 = now as u64;
+                let _ = now_u64;
+                let mut record = self.db.get_friendly_loan(loan_id)?
+                    .ok_or_else(|| ChronxError::Other(format!("friendly loan not found: {}", hex::encode(loan_id))))?;
+                if record.status != "PendingAcceptance" {
+                    return Err(ChronxError::Other(format!(
+                        "Cannot cancel — loan {} is {} (can only cancel PendingAcceptance)", hex::encode(loan_id), record.status
+                    )));
+                }
+                // Verify sender is the lender
+                let sender_b58 = sender.account_id.to_b58();
+                if sender_b58 != record.lender {
+                    return Err(ChronxError::Other("Only the lender can cancel a friend loan".into()));
+                }
+                // Return KX collateral to lender
+                sender.balance += record.kx_collateral_chronos as u128;
+                record.status = "Cancelled".to_string();
+                if let Some(ref r) = reason {
+                    record.memo = Some(format!("Cancelled: {}", r));
+                }
+                self.db.put_friendly_loan(&record)?;
+                info!(loan_id = %hex::encode(loan_id), "Friendly loan cancelled by lender — KX returned");
                 Ok(())
             }
 
@@ -5199,11 +5305,12 @@ impl StateEngine {
     /// Sweep friendly loans past write-off date.
     pub fn sweep_friendly_loan_writeoffs(&self, now: i64) -> Result<u32, ChronxError> {
         let now_u64 = now as u64;
-        let active = self.db.iter_active_friendly_loans()?;
         let mut count = 0u32;
 
+        // 1. Write off Active loans past grace period
+        let active = self.db.iter_active_friendly_loans()?;
         for record in active {
-            if now_u64 >= record.write_off_at {
+            if record.write_off_at > 0 && now_u64 >= record.write_off_at {
                 let mut updated = record.clone();
                 updated.status = "WrittenOff".to_string();
                 self.db.put_friendly_loan(&updated)?;
@@ -5212,6 +5319,29 @@ impl StateEngine {
                     lender = %record.lender,
                     principal_usd = record.principal_usd,
                     "Friendly loan written off by sweep — grace period expired"
+                );
+                count += 1;
+            }
+        }
+
+        // 2. Expire PendingAcceptance loans past acceptance window
+        let pending = self.db.iter_pending_friendly_loans()?;
+        for record in pending {
+            if record.base_address_expires_at > 0 && now_u64 >= record.base_address_expires_at {
+                // Return KX collateral to lender
+                if let Ok(lender_id) = chronx_core::types::AccountId::from_b58(&record.lender) {
+                    if let Ok(Some(mut lender_acc)) = self.db.get_account(&lender_id) {
+                        lender_acc.balance += record.kx_collateral_chronos as u128;
+                        self.db.put_account(&lender_acc)?;
+                    }
+                }
+                let mut updated = record.clone();
+                updated.status = "Expired".to_string();
+                self.db.put_friendly_loan(&updated)?;
+                info!(
+                    loan_id = %hex::encode(record.loan_id),
+                    lender = %record.lender,
+                    "Friendly loan offer expired — borrower did not accept, KX returned"
                 );
                 count += 1;
             }

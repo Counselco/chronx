@@ -1,0 +1,13 @@
+   Compiling chronx-core v1.0.0 (C:\Users\Josep\chronx\crates\chronx-core)
+   Compiling chronx-crypto v1.0.0 (C:\Users\Josep\chronx\crates\chronx-crypto)
+   Compiling chronx-dag v1.0.0 (C:\Users\Josep\chronx\crates\chronx-dag)
+   Compiling chronx-state v1.0.0 (C:\Users\Josep\chronx\crates\chronx-state)
+   Compiling chronx-p2p v1.0.0 (C:\Users\Josep\chronx\crates\chronx-p2p)
+   Compiling chronx-timelock v1.0.0 (C:\Users\Josep\chronx\crates\chronx-timelock)
+   Compiling chronx-consensus v1.0.0 (C:\Users\Josep\chronx\crates\chronx-consensus)
+   Compiling chronx-recovery v1.0.0 (C:\Users\Josep\chronx\crates\chronx-recovery)
+   Compiling chronx-genesis v1.0.0 (C:\Users\Josep\chronx\crates\chronx-genesis)
+   Compiling chronx-rpc v1.0.0 (C:\Users\Josep\chronx\crates\chronx-rpc)
+   Compiling chronx-wallet v1.0.0 (C:\Users\Josep\chronx\crates\chronx-wallet)
+   Compiling chronx-node v1.0.0 (C:\Users\Josep\chronx\crates\chronx-node)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.62s

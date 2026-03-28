@@ -1338,8 +1338,13 @@ pub enum Action {
         term_days: u32,
         kx_collateral_chronos: u64,
         locked_kx_usd_rate: f64,
+        #[serde(default)]
         repayment_base_address: String,
         memo: Option<String>,
+        #[serde(default)]
+        loan_currency: Option<LoanCurrency>,
+        #[serde(default)]
+        claim_token: Option<String>,
     },
     FriendlyLoanRepay {
         loan_id: [u8; 32],
@@ -1348,6 +1353,18 @@ pub enum Action {
     },
     FriendlyLoanWriteOff {
         loan_id: [u8; 32],
+    },
+    /// Borrower accepts a friend loan offer and provides disbursement address.
+    FriendlyLoanAccept {
+        loan_id: [u8; 32],
+        claim_token: String,
+        disbursement_election: DisbursementElection,
+    },
+    /// Lender cancels a friend loan before borrower accepts.
+    FriendlyLoanCancel {
+        loan_id: [u8; 32],
+        #[serde(default)]
+        reason: Option<String>,
     },
 
     // ── TimeLockExtend (Genesis Zero) ────────────────────────────────────
@@ -2060,4 +2077,28 @@ pub struct HedgeTwapOrderRecord {
     pub created_at: u64,
     pub last_filled_at: u64,
     pub status: String,   // "Active", "Complete", "Cancelled", "PartialFill"
+}
+
+// ── LoanCurrency (Genesis Zero — Friendly Loan) ─────────────────────────────
+
+/// Currency denomination for friendly loans.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LoanCurrency {
+    /// USDC: HedgeKX hedges at creation, rate locked, borrower receives USDC on Base.
+    Usdc,
+    /// KX: No hedge required, direct DAG transfer, borrower receives KX.
+    Kx,
+}
+
+impl Default for LoanCurrency {
+    fn default() -> Self { LoanCurrency::Usdc }
+}
+
+/// Borrower's choice at acceptance — where to receive funds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DisbursementElection {
+    /// Receive USDC to a Base wallet address.
+    Usdc { base_address: String },
+    /// Receive KX to a ChronX wallet address.
+    Kx { chronx_address: String },
 }

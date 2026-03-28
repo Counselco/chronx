@@ -245,6 +245,17 @@ pub struct FriendlyLoanRecord {
     pub base_tx_hash: Option<String>,
     pub write_off_tx_id: Option<String>,
     pub memo: Option<String>,
+    // ── Genesis Zero — Friend Loan flow fields ──────────────────────────
+    #[serde(default)]
+    pub loan_currency: String,    // "Usdc" or "Kx"
+    #[serde(default)]
+    pub claim_token: String,
+    #[serde(default)]
+    pub friend_address: Option<String>,    // Base address (USDC) or ChronX address (KX)
+    #[serde(default)]
+    pub base_address_expires_at: u64,
+    #[serde(default)]
+    pub base_address_provided_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1741,6 +1752,19 @@ impl StateDb {
             let record: FriendlyLoanRecord =
                 serde_json::from_slice(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
             if record.status == "Active" {
+                results.push(record);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn iter_pending_friendly_loans(&self) -> Result<Vec<FriendlyLoanRecord>, ChronxError> {
+        let mut results = Vec::new();
+        for kv in self.friendly_loans.iter() {
+            let (_, v) = kv.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let record: FriendlyLoanRecord =
+                serde_json::from_slice(&v).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+            if record.status == "PendingAcceptance" {
                 results.push(record);
             }
         }
