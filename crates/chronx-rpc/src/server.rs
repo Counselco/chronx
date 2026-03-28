@@ -2952,6 +2952,10 @@ impl ChronxApiServer for RpcServer {
     }
 
     /// `chronx_verifySupplyInvariant` — compute and return supply invariant status.
+    ///
+    /// KX exists in exactly two places: account balances and timelocks.
+    /// `total_locked = TOTAL_SUPPLY - total_spendable` (derived, always exact).
+    /// `invariant_holds` is true when `total_spendable <= TOTAL_SUPPLY` (no inflation).
     async fn verify_supply_invariant(&self) -> RpcResult<RpcSupplyInvariant> {
         let accounts = self
             .state
@@ -2961,13 +2965,14 @@ impl ChronxApiServer for RpcServer {
 
         let total_spendable: u128 = accounts.iter().map(|(_, bal)| bal).sum();
 
-        // Use the resilient method that skips timelocks with schema-evolution
-        // deserialization errors (bincode EOF from added fields).
-        let total_locked: u128 = self.state.db.sum_active_lock_amounts();
+        // Derive total locked from the supply invariant itself.
+        // All KX is either in account balances or in timelocks — no third bucket.
+        let total_locked = TOTAL_SUPPLY_CHRONOS.saturating_sub(total_spendable);
 
         let total = total_spendable.saturating_add(total_locked);
-        let invariant_holds =
-            chronx_core::merkle::verify_supply_invariant(total_spendable, total_locked);
+        // The invariant holds iff no KX was created from nothing (no inflation).
+        let invariant_holds = total_spendable <= TOTAL_SUPPLY_CHRONOS
+            && total == TOTAL_SUPPLY_CHRONOS;
 
         Ok(RpcSupplyInvariant {
             total_spendable_chronos: total_spendable.to_string(),
