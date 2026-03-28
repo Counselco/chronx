@@ -43,6 +43,7 @@ use crate::types::{
     RpcDetailedTx, RpcActionSummary,
     RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
     RpcStateRoot, RpcSupplyInvariant,
+    RpcChildChainRecord, RpcChildChainNamespaceInfo, RpcChildChainStats,
 };
 
 fn rpc_err(code: i32, msg: impl Into<String>) -> ErrorObject<'static> {
@@ -2933,6 +2934,95 @@ impl ChronxApiServer for RpcServer {
     }
 
     // ── ZK Infrastructure — Merkle State Root ────────────────────────────
+
+    // ── Child Chain RPC implementations ────────────────────────────────────
+
+    async fn get_child_record(&self, namespace: String, record_id: String) -> RpcResult<Option<RpcChildChainRecord>> {
+        let record = self.state.db.get_child_record(&namespace, &record_id)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(record.map(|r| RpcChildChainRecord {
+            namespace: r.namespace,
+            record_id: r.record_id,
+            payload: r.payload,
+            payload_hash: hex::encode(r.payload_hash),
+            dag_vertex_id: r.dag_vertex_id,
+            stored_at: r.stored_at,
+            previous_record_id: r.previous_record_id,
+        }))
+    }
+
+    async fn get_child_records(&self, namespace: String, from_timestamp: u64, to_timestamp: u64, limit: u64) -> RpcResult<Vec<RpcChildChainRecord>> {
+        let capped_limit = std::cmp::min(limit, 1000) as usize;
+        let records = self.state.db.get_child_records_in_range(&namespace, from_timestamp, to_timestamp, capped_limit)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+        Ok(records.into_iter().map(|r| RpcChildChainRecord {
+            namespace: r.namespace,
+            record_id: r.record_id,
+            payload: r.payload,
+            payload_hash: hex::encode(r.payload_hash),
+            dag_vertex_id: r.dag_vertex_id,
+            stored_at: r.stored_at,
+            previous_record_id: r.previous_record_id,
+        }).collect())
+    }
+
+    async fn get_child_namespaces(&self) -> RpcResult<Vec<RpcChildChainNamespaceInfo>> {
+        // Read approved namespaces from governance params
+        let ns_list: Vec<serde_json::Value> = self.state.db.get_meta("child_chain_approved_namespaces")
+            .ok().flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+
+        let mut results = Vec::new();
+        for entry in &ns_list {
+            let namespace = entry.get("namespace").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let record_count = self.state.db.get_child_record_count(&namespace)
+                .unwrap_or(0);
+            results.push(RpcChildChainNamespaceInfo {
+                namespace,
+                display_name: entry.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                description: entry.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                record_count,
+                status: entry.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                approved_at: entry.get("approved_at").and_then(|v| v.as_u64()).unwrap_or(0),
+            });
+        }
+        Ok(results)
+    }
+
+    async fn get_child_chain_stats(&self, namespace: String) -> RpcResult<RpcChildChainStats> {
+        let total_records = self.state.db.get_child_record_count(&namespace)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let day_start = now / 86400 * 86400;
+        let records_today = self.state.db.get_child_records_count_since(&namespace, day_start)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        let (oldest, newest) = self.state.db.get_child_oldest_newest(&namespace)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        // Look up namespace daily limit from governance params
+        let ns_list: Vec<serde_json::Value> = self.state.db.get_meta("child_chain_approved_namespaces")
+            .ok().flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let daily_limit = ns_list.iter()
+            .find(|e| e.get("namespace").and_then(|v| v.as_str()) == Some(&namespace))
+            .and_then(|e| e.get("max_records_per_day").and_then(|v| v.as_u64()))
+            .unwrap_or(100000);
+        let daily_remaining = daily_limit.saturating_sub(records_today);
+
+        Ok(RpcChildChainStats {
+            namespace,
+            total_records,
+            records_today,
+            oldest_record_timestamp: oldest,
+            newest_record_timestamp: newest,
+            daily_limit,
+            daily_remaining,
+        })
+    }
 
     /// `chronx_getStateRoot` — return the latest BLAKE3 balance Merkle root.
     async fn get_state_root(&self) -> RpcResult<RpcStateRoot> {

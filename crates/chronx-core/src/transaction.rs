@@ -1474,6 +1474,44 @@ pub enum Action {
         memo: Option<String>,
     },
 
+    // ── Child Chain Infrastructure ──────────────────────────────────────────
+
+    /// A data record written to a registered child chain namespace.
+    /// Zero KX transfer. Only accepted from whitelisted namespace owner keys.
+    /// Stored permanently on DAG under the namespace prefix.
+    ChildChainRecord {
+        /// The registered namespace. Must exist in child_chain_approved_namespaces.
+        namespace: String,
+        /// Unique record ID within this namespace. Format: namespace:record_type:id
+        record_id: String,
+        /// The data payload. JSON string, max 4KB. Schema defined per namespace.
+        payload: String,
+        /// BLAKE3 hash of the payload. Computed by the submitter, verified by engine.
+        payload_hash: [u8; 32],
+        /// The namespace owner's Dilithium2 signature over the payload.
+        owner_signature: DilithiumSignature,
+        /// Optional: links this record to a previous record in the same namespace.
+        #[serde(default)]
+        previous_record_id: Option<String>,
+    },
+
+    /// Register a new child chain namespace. Requires bond payment.
+    /// Goes into pending_applications until governance approves.
+    ChildChainRegister {
+        /// Desired namespace identifier. Lowercase alphanumeric + hyphens, max 32 chars.
+        namespace: String,
+        /// Human-readable name.
+        display_name: String,
+        /// Description of what this namespace stores.
+        description: String,
+        /// Applicant's public key. Whitelisted to write ChildChainRecord if approved.
+        owner_pubkey: Vec<u8>,
+        /// Lock ID of the bond payment. Must be a TimeLock of exactly child_chain_bond_kx KX.
+        bond_lock_id: [u8; 32],
+        /// Signature from the applicant.
+        applicant_signature: DilithiumSignature,
+    },
+
 }
 
 /// Credit history visibility setting for a wallet.

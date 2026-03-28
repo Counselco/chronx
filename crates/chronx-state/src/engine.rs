@@ -4347,6 +4347,189 @@ impl StateEngine {
                 }
                 Ok(())
             }
+
+            // ── Child Chain Infrastructure ──────────────────────────────────
+            Action::ChildChainRecord {
+                ref namespace,
+                ref record_id,
+                ref payload,
+                ref payload_hash,
+                owner_signature: _,
+                ref previous_record_id,
+            } => {
+                // 1. Check child_chains_enabled
+                let enabled: bool = self.db.get_meta("child_chains_enabled")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(false);
+                if !enabled {
+                    return Err(ChronxError::Other("Child chains not enabled".into()));
+                }
+
+                // 2. Look up namespace in child_chain_approved_namespaces
+                let ns_list: Vec<serde_json::Value> = self.db.get_meta("child_chain_approved_namespaces")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                let ns_entry = ns_list.iter().find(|e| {
+                    e.get("namespace").and_then(|v| v.as_str()) == Some(namespace)
+                });
+                let ns_entry = match ns_entry {
+                    Some(e) => e.clone(),
+                    None => return Err(ChronxError::Other("Namespace not registered".into())),
+                };
+
+                // 3. Check namespace status == "active"
+                let status = ns_entry.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                if status != "active" {
+                    return Err(ChronxError::Other("Namespace not active".into()));
+                }
+
+                // 4. Verify sender is namespace owner (owner_pubkey match)
+                let owner_pubkey_hex = ns_entry.get("owner_pubkey").and_then(|v| v.as_str()).unwrap_or("");
+                let sender_pubkey_hex = if let chronx_core::account::AuthPolicy::SingleSig { ref public_key } = sender.auth_policy {
+                    hex::encode(&public_key.0)
+                } else {
+                    String::new()
+                };
+                if sender_pubkey_hex != owner_pubkey_hex {
+                    return Err(ChronxError::Other("Signature does not match namespace owner key".into()));
+                }
+
+                // 5. Verify payload_hash matches BLAKE3(payload.as_bytes())
+                let computed_hash = blake3::hash(payload.as_bytes());
+                if computed_hash.as_bytes() != payload_hash {
+                    return Err(ChronxError::Other("Payload hash mismatch".into()));
+                }
+
+                // 6. Check payload size
+                let max_size: usize = self.db.get_meta("child_chain_max_record_size_bytes")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(4096);
+                if payload.len() > max_size {
+                    return Err(ChronxError::Other("Payload exceeds maximum size".into()));
+                }
+
+                // 7. Per-block rate limit (use rate-limit key per block window)
+                let block_window = now / 10; // 10-second block windows
+                let block_key = format!("rl:child_block:{}", block_window);
+                let block_count: u64 = self.db.get_meta(&block_key)
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(0);
+                let max_per_block: u64 = self.db.get_meta("child_chain_max_records_per_block")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(1000);
+                if block_count >= max_per_block {
+                    return Err(ChronxError::Other("Rate limit exceeded".into()));
+                }
+                let _ = self.db.put_meta(&block_key, &serde_json::to_vec(&(block_count + 1)).unwrap_or_default());
+
+                // 8. Namespace daily limit
+                let day_start = (now as u64) / 86400 * 86400;
+                let daily_count = self.db.get_child_records_count_since(namespace, day_start)?;
+                let max_per_day = ns_entry.get("max_records_per_day").and_then(|v| v.as_u64()).unwrap_or(100000);
+                if daily_count >= max_per_day {
+                    return Err(ChronxError::Other("Namespace daily limit exceeded".into()));
+                }
+
+                // 9-10. Store the record and index
+                let now_u64 = now as u64;
+                let entry = crate::db::ChildChainRecordEntry {
+                    namespace: namespace.clone(),
+                    record_id: record_id.clone(),
+                    payload: payload.clone(),
+                    payload_hash: *payload_hash,
+                    stored_at: now_u64,
+                    dag_vertex_id: tx_id.to_hex(),
+                    previous_record_id: previous_record_id.clone(),
+                };
+                self.db.put_child_record(&entry)?;
+
+                info!(namespace = %namespace, record_id = %record_id, "ChildChainRecord stored");
+                Ok(())
+            }
+
+            Action::ChildChainRegister {
+                ref namespace,
+                ref display_name,
+                ref description,
+                ref owner_pubkey,
+                ref bond_lock_id,
+                applicant_signature: _,
+            } => {
+                // 1. Check child_chains_enabled
+                let enabled: bool = self.db.get_meta("child_chains_enabled")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(false);
+                if !enabled {
+                    return Err(ChronxError::Other("Child chains not enabled".into()));
+                }
+
+                // 2. Verify namespace is available and matches format
+                if namespace.is_empty() || namespace.len() > 32
+                    || !namespace.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    || namespace.starts_with('-')
+                {
+                    return Err(ChronxError::Other("Invalid namespace format: lowercase alphanumeric + hyphens, max 32 chars".into()));
+                }
+
+                let ns_list: Vec<serde_json::Value> = self.db.get_meta("child_chain_approved_namespaces")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                if ns_list.iter().any(|e| e.get("namespace").and_then(|v| v.as_str()) == Some(namespace)) {
+                    return Err(ChronxError::Other("Namespace already registered".into()));
+                }
+
+                let pending: Vec<serde_json::Value> = self.db.get_meta("child_chain_pending_applications")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                if pending.iter().any(|e| e.get("namespace").and_then(|v| v.as_str()) == Some(namespace)) {
+                    return Err(ChronxError::Other("Namespace already has a pending application".into()));
+                }
+
+                // 3. Verify bond_lock_id exists and is valid
+                let lock_id_txid = chronx_core::types::TxId::from_bytes(*bond_lock_id);
+                let lock = self.db.get_timelock(&lock_id_txid)?
+                    .ok_or_else(|| ChronxError::Other("Bond lock not found".into()))?;
+                let bond_kx: u64 = self.db.get_meta("child_chain_bond_kx")
+                    .ok().flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(1_000_000);
+                let bond_chronos = bond_kx * 1_000_000; // CHRONOS_PER_KX
+                if lock.amount != bond_chronos as u128 {
+                    return Err(ChronxError::Other("Bond amount does not match required child_chain_bond_kx".into()));
+                }
+
+                // 4. Verify applicant_signature — sender must sign
+                // (Already validated by outer tx signature check.)
+
+                // 5. Add to pending_applications
+                let now_u64 = now as u64;
+                let application = serde_json::json!({
+                    "namespace": namespace,
+                    "display_name": display_name,
+                    "description": description,
+                    "owner_pubkey": hex::encode(owner_pubkey),
+                    "bond_lock_id": hex::encode(bond_lock_id),
+                    "applied_at": now_u64,
+                    "status": "pending"
+                });
+                let mut pending = pending;
+                pending.push(application);
+                let _ = self.db.put_meta(
+                    "child_chain_pending_applications",
+                    &serde_json::to_vec(&pending).unwrap_or_default(),
+                );
+
+                info!(namespace = %namespace, display_name = %display_name, "ChildChainRegister application submitted");
+                Ok(())
+            }
         }
     }
 }

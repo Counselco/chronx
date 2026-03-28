@@ -35,3 +35,6 @@ wallet-build.log
 *secret*
 *api_key*
 nul
+
+# Child chain oracle keys — never commit
+oracom-oracle-key.json

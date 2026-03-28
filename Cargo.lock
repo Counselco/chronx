@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-consensus"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "chronx-core",
  "chronx-crypto",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-core"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-crypto"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "blake3",
  "chronx-core",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-dag"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "bincode",
  "chronx-core",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-genesis"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-node"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-p2p"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "bincode",
  "chronx-core",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-recovery"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "chronx-core",
  "chronx-state",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-rpc"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-state"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-timelock"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "chronx-core",
  "chronx-state",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "chronx-wallet"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "anyhow",
  "bincode",

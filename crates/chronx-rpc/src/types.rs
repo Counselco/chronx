@@ -646,3 +646,37 @@ pub struct RpcLoanCounts {
     pub early_payoff: u64,
     pub reinstated: u64,
 }
+
+// ── Child Chain types ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcChildChainRecord {
+    pub namespace: String,
+    pub record_id: String,
+    pub payload: String,
+    pub payload_hash: String,
+    pub dag_vertex_id: String,
+    pub stored_at: u64,
+    pub previous_record_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcChildChainNamespaceInfo {
+    pub namespace: String,
+    pub display_name: String,
+    pub description: String,
+    pub record_count: u64,
+    pub status: String,
+    pub approved_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcChildChainStats {
+    pub namespace: String,
+    pub total_records: u64,
+    pub records_today: u64,
+    pub oldest_record_timestamp: u64,
+    pub newest_record_timestamp: u64,
+    pub daily_limit: u64,
+    pub daily_remaining: u64,
+}

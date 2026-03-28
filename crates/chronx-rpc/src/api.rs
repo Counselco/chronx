@@ -13,6 +13,7 @@ use crate::types::{
     RpcAgentRecord, RpcAgentLoanRecord, RpcAgentCustodyRecord, RpcAxiomConsentRecord, RpcInvestablePromise, RpcDetailedTx,
     RpcLoanPaymentStage, RpcLoanDefaultRecord, RpcOraclePrice, RpcLoanCounts,
     RpcStateRoot, RpcSupplyInvariant,
+    RpcChildChainRecord, RpcChildChainNamespaceInfo, RpcChildChainStats,
 };
 
 /// ChronX JSON-RPC 2.0 API definition.
@@ -508,6 +509,24 @@ pub trait ChronxApi {
     async fn get_hedge_twap_orders_by_wallet(&self, wallet: String) -> RpcResult<Vec<serde_json::Value>>;
 
     // ── ZK Infrastructure — Merkle State Root ────────────────────────────
+
+    // ── Child Chain queries ────────────────────────────────────────────────
+
+    /// Return a single child chain record by namespace and record_id.
+    #[method(name = "getChildRecord")]
+    async fn get_child_record(&self, namespace: String, record_id: String) -> RpcResult<Option<RpcChildChainRecord>>;
+
+    /// Return child chain records in a time range, sorted oldest first, paginated by limit.
+    #[method(name = "getChildRecords")]
+    async fn get_child_records(&self, namespace: String, from_timestamp: u64, to_timestamp: u64, limit: u64) -> RpcResult<Vec<RpcChildChainRecord>>;
+
+    /// Return all registered child chain namespaces with their info.
+    #[method(name = "getChildNamespaces")]
+    async fn get_child_namespaces(&self) -> RpcResult<Vec<RpcChildChainNamespaceInfo>>;
+
+    /// Return statistics for a child chain namespace.
+    #[method(name = "getChildChainStats")]
+    async fn get_child_chain_stats(&self, namespace: String) -> RpcResult<RpcChildChainStats>;
 
     /// Return the latest BLAKE3 balance Merkle state root and vertex count.
     #[method(name = "getStateRoot")]

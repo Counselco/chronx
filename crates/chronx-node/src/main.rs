@@ -16,7 +16,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 /// Current node software version. Compared against https://chronx.io/version.json at startup.
-const NODE_VERSION: &str = "9.4.0";
+const NODE_VERSION: &str = "9.5.0";
 
 use chronx_consensus::DifficultyConfig;
 use chronx_core::constants::POW_INITIAL_DIFFICULTY;
@@ -290,6 +290,32 @@ async fn main() -> anyhow::Result<()> {
     info!(email=sweep_email_secs, timelock=sweep_timelock_secs, executor=sweep_executor_secs,
           humanity=sweep_humanity_secs, guardian=sweep_guardian_secs, promise=sweep_promise_secs,
           loan=sweep_loan_secs, "sweep intervals loaded from genesis-params");
+
+    // ── Store child chain governance params in meta (idempotent) ─────────────
+    {
+        let gp_content = args.genesis_params.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_default())
+            .unwrap_or_default();
+        let gp: serde_json::Value = serde_json::from_str(&gp_content).unwrap_or(serde_json::Value::Null);
+        if let Some(enabled) = gp.get("child_chains_enabled") {
+            let _ = db.put_meta("child_chains_enabled", &serde_json::to_vec(enabled).unwrap_or_default());
+        }
+        if let Some(bond) = gp.get("child_chain_bond_kx") {
+            let _ = db.put_meta("child_chain_bond_kx", &serde_json::to_vec(bond).unwrap_or_default());
+        }
+        if let Some(max_size) = gp.get("child_chain_max_record_size_bytes") {
+            let _ = db.put_meta("child_chain_max_record_size_bytes", &serde_json::to_vec(max_size).unwrap_or_default());
+        }
+        if let Some(max_records) = gp.get("child_chain_max_records_per_block") {
+            let _ = db.put_meta("child_chain_max_records_per_block", &serde_json::to_vec(max_records).unwrap_or_default());
+        }
+        if let Some(ns) = gp.get("child_chain_approved_namespaces") {
+            let _ = db.put_meta("child_chain_approved_namespaces", &serde_json::to_vec(ns).unwrap_or_default());
+        }
+        if let Some(pending) = gp.get("child_chain_pending_applications") {
+            let _ = db.put_meta("child_chain_pending_applications", &serde_json::to_vec(pending).unwrap_or_default());
+        }
+        info!("child chain governance params loaded into meta store");
+    }
 
     // ── Background sweep: revert expired email locks every 5 minutes ──────────
     {

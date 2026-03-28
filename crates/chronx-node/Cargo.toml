@@ -9,6 +9,10 @@ license.workspace = true
 name = "chronx-node"
 path = "src/main.rs"
 
+[[bin]]
+name = "keygen"
+path = "src/keygen.rs"
+
 [dependencies]
 chronx-core      = { workspace = true }
 chronx-crypto    = { workspace = true }

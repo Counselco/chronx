@@ -129,6 +129,18 @@ pub struct AxiomConsentRecord {
 }
 
 
+// ── Child Chain record (stored in child_records sled tree) ────────────────
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChildChainRecordEntry {
+    pub namespace: String,
+    pub record_id: String,
+    pub payload: String,
+    pub payload_hash: [u8; 32],
+    pub stored_at: u64,
+    pub dag_vertex_id: String,
+    pub previous_record_id: Option<String>,
+}
+
 // ── MISAI ExecutorWithdraw tracking ────────────────────────────────────────
 
 /// Record of an ExecutorWithdraw submission, stored in the `executor_withdrawals` tree.
@@ -482,6 +494,10 @@ pub struct StateDb {
     // protocol — KXGC Credit Facilities (institutional)
     pub credit_facilities: sled::Tree,
 
+    // protocol — Child Chain Infrastructure
+    pub child_records: sled::Tree,
+    pub child_index: sled::Tree,
+
 }
 
 impl StateDb {
@@ -664,6 +680,12 @@ impl StateDb {
         let credit_facilities = db
             .open_tree("credit_facilities")
             .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let child_records = db
+            .open_tree("child_records")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
+        let child_index = db
+            .open_tree("child_index")
+            .map_err(|e| ChronxError::Storage(e.to_string()))?;
         let result = Ok(Self {
             _db: db,
             accounts,
@@ -724,6 +746,8 @@ impl StateDb {
             twap_orders,
             hedge_twap_orders,
             credit_facilities,
+            child_records,
+            child_index,
 
         });
 
@@ -2725,5 +2749,126 @@ impl StateDb {
             }
         }
         Ok(results)
+    }
+
+    // ── Child Chain methods ──────────────────────────────────────────────────
+
+    pub fn put_child_record(&self, record: &ChildChainRecordEntry) -> Result<(), ChronxError> {
+        let key = format!("child:{}:{}", record.namespace, record.record_id);
+        let bytes = serde_json::to_vec(record).map_err(|e| ChronxError::Serialization(e.to_string()))?;
+        self.child_records.insert(key.as_bytes(), bytes).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        // Also write to the time index
+        let idx_key = format!("child_idx:{}:{}:{}", record.namespace, record.stored_at, record.record_id);
+        self.child_index.insert(idx_key.as_bytes(), record.record_id.as_bytes()).map_err(|e| ChronxError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_child_record(&self, namespace: &str, record_id: &str) -> Result<Option<ChildChainRecordEntry>, ChronxError> {
+        let key = format!("child:{}:{}", namespace, record_id);
+        match self.child_records.get(key.as_bytes()).map_err(|e| ChronxError::Storage(e.to_string()))? {
+            Some(bytes) => {
+                let record: ChildChainRecordEntry = serde_json::from_slice(&bytes)
+                    .map_err(|e| ChronxError::Serialization(e.to_string()))?;
+                Ok(Some(record))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_child_records_in_range(
+        &self,
+        namespace: &str,
+        from_timestamp: u64,
+        to_timestamp: u64,
+        limit: usize,
+    ) -> Result<Vec<ChildChainRecordEntry>, ChronxError> {
+        let prefix = format!("child_idx:{}:", namespace);
+        let from_key = format!("child_idx:{}:{}", namespace, from_timestamp);
+        let mut results = Vec::new();
+        for item in self.child_index.range(from_key.as_bytes()..) {
+            let (key, _val) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let key_str = std::str::from_utf8(&key).unwrap_or("");
+            if !key_str.starts_with(&prefix) {
+                break;
+            }
+            // Parse timestamp from key: child_idx:{ns}:{ts}:{record_id}
+            let parts: Vec<&str> = key_str.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let ts: u64 = parts[2].parse().unwrap_or(0);
+            if ts > to_timestamp {
+                break;
+            }
+            let record_id = parts[3];
+            if let Some(record) = self.get_child_record(namespace, record_id)? {
+                results.push(record);
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn get_child_record_count(&self, namespace: &str) -> Result<u64, ChronxError> {
+        let prefix = format!("child:{}:", namespace);
+        let mut count = 0u64;
+        for item in self.child_records.scan_prefix(prefix.as_bytes()) {
+            let _ = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    pub fn get_child_namespaces(&self) -> Result<Vec<String>, ChronxError> {
+        let mut namespaces = std::collections::HashSet::new();
+        for item in self.child_records.iter() {
+            let (key, _) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let key_str = std::str::from_utf8(&key).unwrap_or("");
+            // key format: "child:{namespace}:{record_id}"
+            if let Some(rest) = key_str.strip_prefix("child:") {
+                if let Some(ns_end) = rest.find(':') {
+                    namespaces.insert(rest[..ns_end].to_string());
+                }
+            }
+        }
+        let mut result: Vec<String> = namespaces.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    pub fn get_child_records_count_since(&self, namespace: &str, since_timestamp: u64) -> Result<u64, ChronxError> {
+        let from_key = format!("child_idx:{}:{}", namespace, since_timestamp);
+        let prefix = format!("child_idx:{}:", namespace);
+        let mut count = 0u64;
+        for item in self.child_index.range(from_key.as_bytes()..) {
+            let (key, _) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let key_str = std::str::from_utf8(&key).unwrap_or("");
+            if !key_str.starts_with(&prefix) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    pub fn get_child_oldest_newest(&self, namespace: &str) -> Result<(u64, u64), ChronxError> {
+        let prefix = format!("child_idx:{}:", namespace);
+        let mut oldest = u64::MAX;
+        let mut newest = 0u64;
+        for item in self.child_index.scan_prefix(prefix.as_bytes()) {
+            let (key, _) = item.map_err(|e| ChronxError::Storage(e.to_string()))?;
+            let key_str = std::str::from_utf8(&key).unwrap_or("");
+            let parts: Vec<&str> = key_str.splitn(4, ':').collect();
+            if parts.len() >= 3 {
+                if let Ok(ts) = parts[2].parse::<u64>() {
+                    if ts < oldest { oldest = ts; }
+                    if ts > newest { newest = ts; }
+                }
+            }
+        }
+        if oldest == u64::MAX { oldest = 0; }
+        Ok((oldest, newest))
     }
 }
