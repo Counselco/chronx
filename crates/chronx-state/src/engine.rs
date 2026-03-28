@@ -3643,6 +3643,14 @@ impl StateEngine {
                     return Err(ChronxError::Other(format!("friendly loan term {} days outside {}-{} range", term_days, min_days, max_days)));
                 }
 
+                let settlement_addr = self.db.get_meta("hedgekx_settlement_base_address")
+                    .ok().flatten()
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .unwrap_or_default();
+                if settlement_addr.is_empty() {
+                    return Err(ChronxError::Other("HedgeKX settlement address not configured".into()));
+                }
+
                 let collateral = *kx_collateral_chronos as u128;
                 if sender.balance < collateral {
                     return Err(ChronxError::InsufficientBalance { need: collateral, have: sender.balance });
@@ -3677,7 +3685,7 @@ impl StateEngine {
                     grace_days,
                     kx_collateral_chronos: *kx_collateral_chronos,
                     locked_kx_usd_rate: *locked_kx_usd_rate,
-                    repayment_base_address: repayment_base_address.clone(),
+                    repayment_base_address: settlement_addr,
                     created_at: now_u64,
                     due_at,
                     write_off_at,
