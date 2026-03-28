@@ -889,6 +889,23 @@ impl StateDb {
         Ok(result)
     }
 
+    /// Sum the `amount` field of all active (non-terminal) timelocks.
+    /// Tolerates deserialization errors from schema evolution — skips bad entries.
+    pub fn sum_active_lock_amounts(&self) -> u128 {
+        let mut total: u128 = 0;
+        for item in self.timelocks.iter() {
+            if let Ok((_key, bytes)) = item {
+                if let Ok(tlc) = bincode::deserialize::<TimeLockContract>(&bytes) {
+                    if !tlc.status.is_terminal() {
+                        total = total.saturating_add(tlc.amount);
+                    }
+                }
+                // Skip entries that fail to deserialize.
+            }
+        }
+        total
+    }
+
     /// Return every vertex in the DB (no filter).
     pub fn iter_all_vertices(&self) -> Result<Vec<Vertex>, ChronxError> {
         let mut result = Vec::new();

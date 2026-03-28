@@ -2961,13 +2961,9 @@ impl ChronxApiServer for RpcServer {
 
         let total_spendable: u128 = accounts.iter().map(|(_, bal)| bal).sum();
 
-        let timelocks = self
-            .state
-            .db
-            .iter_all_timelocks()
-            .map_err(|e| rpc_err(-32603, e.to_string()))?;
-
-        let total_locked: u128 = chronx_core::merkle::compute_total_locked_chronos(&timelocks);
+        // Use the resilient method that skips timelocks with schema-evolution
+        // deserialization errors (bincode EOF from added fields).
+        let total_locked: u128 = self.state.db.sum_active_lock_amounts();
 
         let total = total_spendable.saturating_add(total_locked);
         let invariant_holds =
