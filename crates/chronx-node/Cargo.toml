@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "keygen"
 path = "src/keygen.rs"
 
+[[bin]]
+name = "oracom-submit"
+path = "src/oracom_submit.rs"
+
 [dependencies]
 chronx-core      = { workspace = true }
 chronx-crypto    = { workspace = true }
@@ -33,6 +37,7 @@ anyhow           = { workspace = true }
 chrono           = { workspace = true }
 reqwest          = { workspace = true }
 hex              = { workspace = true }
+blake3           = { workspace = true }
 semver           = { workspace = true }
 notify-rust      = { workspace = true }
 

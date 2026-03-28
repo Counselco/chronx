@@ -609,6 +609,7 @@ version = "9.5.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "blake3",
  "chrono",
  "chronx-consensus",
  "chronx-core",
