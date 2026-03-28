@@ -1522,6 +1522,16 @@ impl StateEngine {
                 Ok(())
             }
 
+            // ── Foundation multisig governance scaffold ──────────────────────────
+            // When foundation_multisig_testing_mode is true (current state):
+            //   Single founder signature accepted for governance changes.
+            // When false (after YubiKey ceremony):
+            //   Requires 2-of-3 YubiKey signatures from foundation_multisig_keys.
+            // The testing_mode flag itself can only be turned off via deliberate
+            // tier change (30-day DrawRequest), ensuring the upgrade to full
+            // multisig is a public, documented event.
+            // TODO: Implement GovernanceParamUpdate action with multisig check.
+
             // ── Verifier registration (governance only) ────────────────────────
             Action::VerifierRegister {
                 ref verifier_name,

@@ -9198,6 +9198,9 @@
     80
   ],
   "governance_wallet_b58": "6AyvnXZkLXA95gTBN2aG39h81R5gUZ42MPZsuwAjxeNf",
+  "foundation_multisig_testing_mode": true,
+  "foundation_multisig_testing_note": "Testing phase — single founder signature accepted for immediate tier changes. Full 2-of-3 YubiKey multisig activates when foundation_multisig_testing_mode is set to false via deliberate tier governance change.",
+  "foundation_multisig_keys": [],
   "misai_agent_wallet_pubkey": [
     216,
     212,
