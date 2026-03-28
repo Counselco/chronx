@@ -16,7 +16,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 /// Current node software version. Compared against https://chronx.io/version.json at startup.
-const NODE_VERSION: &str = "9.1.0";
+const NODE_VERSION: &str = "9.2.0";
 
 use chronx_consensus::DifficultyConfig;
 use chronx_core::constants::POW_INITIAL_DIFFICULTY;
@@ -530,6 +530,15 @@ async fn main() -> anyhow::Result<()> {
         });
         tracing::info!("friendly loan write-off sweep started (every 60 seconds)");
     }
+
+    // ── Periodic node version check (every 24 hours) ─────────────────────────
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+            check_node_version().await;
+        }
+    });
+    tracing::info!("node version check scheduled (every 24 hours)");
 
     // ── Main loop: validate & apply ───────────────────────────────────────────
     let mut difficulty = DifficultyConfig::new(args.pow_difficulty, 10_000, 100);
