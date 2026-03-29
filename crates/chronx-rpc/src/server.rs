@@ -3024,6 +3024,86 @@ impl ChronxApiServer for RpcServer {
         })
     }
 
+    /// `chronx_submitChildChainRecord` — convenience method for harvesters.
+    /// Accepts JSON params, stores the record directly in the child chain sled trees.
+    /// Validates namespace, payload hash, and size limits. No PoW/signing required.
+    async fn submit_child_chain_record(&self, params: serde_json::Value) -> RpcResult<serde_json::Value> {
+        let namespace = params.get("namespace").and_then(|v| v.as_str()).unwrap_or("")
+            .to_string();
+        let record_id = params.get("record_id").and_then(|v| v.as_str()).unwrap_or("")
+            .to_string();
+        let payload = params.get("payload").and_then(|v| v.as_str()).unwrap_or("")
+            .to_string();
+        let payload_hash_hex = params.get("payload_hash").and_then(|v| v.as_str()).unwrap_or("")
+            .to_string();
+
+        if namespace.is_empty() || record_id.is_empty() || payload.is_empty() {
+            return Err(rpc_err(-32602, "Missing required fields: namespace, record_id, payload"));
+        }
+
+        // Verify namespace is approved
+        let ns_list: Vec<serde_json::Value> = self.state.db.get_meta("child_chain_approved_namespaces")
+            .ok().flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let ns_entry = ns_list.iter().find(|e| {
+            e.get("namespace").and_then(|v| v.as_str()) == Some(&namespace)
+        });
+        if ns_entry.is_none() {
+            return Err(rpc_err(-32602, "Namespace not registered"));
+        }
+        let ns_entry = ns_entry.unwrap();
+        if ns_entry.get("status").and_then(|v| v.as_str()) != Some("active") {
+            return Err(rpc_err(-32602, "Namespace not active"));
+        }
+
+        // Verify payload size
+        let max_size: usize = self.state.db.get_meta("child_chain_max_record_size_bytes")
+            .ok().flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(4096);
+        if payload.len() > max_size {
+            return Err(rpc_err(-32602, "Payload exceeds maximum size"));
+        }
+
+        // Verify payload hash
+        let computed_hash = blake3::hash(payload.as_bytes());
+        let computed_hex = hex::encode(computed_hash.as_bytes());
+        if !payload_hash_hex.is_empty() && computed_hex != payload_hash_hex {
+            return Err(rpc_err(-32602, "Payload hash mismatch"));
+        }
+
+        // Check daily limit
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let day_start = now / 86400 * 86400;
+        let daily_count = self.state.db.get_child_records_count_since(&namespace, day_start)
+            .unwrap_or(0);
+        let max_per_day = ns_entry.get("max_records_per_day").and_then(|v| v.as_u64()).unwrap_or(100000);
+        if daily_count >= max_per_day {
+            return Err(rpc_err(-32602, "Namespace daily limit exceeded"));
+        }
+
+        // Store the record
+        let entry = chronx_state::db::ChildChainRecordEntry {
+            namespace: namespace.clone(),
+            record_id: record_id.clone(),
+            payload: payload.clone(),
+            payload_hash: *computed_hash.as_bytes(),
+            stored_at: now,
+            dag_vertex_id: computed_hex.clone(),
+            previous_record_id: params.get("previous_record_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        };
+        self.state.db.put_child_record(&entry)
+            .map_err(|e| rpc_err(-32603, e.to_string()))?;
+
+        Ok(serde_json::json!({
+            "record_id": record_id,
+            "namespace": namespace,
+            "payload_hash": computed_hex,
+            "stored_at": now,
+        }))
+    }
+
     /// `chronx_getStateRoot` — return the latest BLAKE3 balance Merkle root.
     async fn get_state_root(&self) -> RpcResult<RpcStateRoot> {
         let root = self

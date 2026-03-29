@@ -528,6 +528,12 @@ pub trait ChronxApi {
     #[method(name = "getChildChainStats")]
     async fn get_child_chain_stats(&self, namespace: String) -> RpcResult<RpcChildChainStats>;
 
+    /// Submit a ChildChainRecord via JSON params. The node constructs, signs, and submits
+    /// the transaction using the oracle key loaded at startup. Returns the record_id on success.
+    /// This is a convenience method for harvesters that cannot do bincode serialization + PoW.
+    #[method(name = "submitChildChainRecord")]
+    async fn submit_child_chain_record(&self, params: serde_json::Value) -> RpcResult<serde_json::Value>;
+
     /// Return the latest BLAKE3 balance Merkle state root and vertex count.
     #[method(name = "getStateRoot")]
     async fn get_state_root(&self) -> RpcResult<RpcStateRoot>;
